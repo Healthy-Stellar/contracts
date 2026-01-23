@@ -2,7 +2,7 @@
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short,
-    Address, Bytes, Env, String,
+    Address, Bytes, Env, String, Vec, Map,
 };
 
 /// --------------------
@@ -36,7 +36,20 @@ pub enum DataKey {
     Patient(Address),
     Doctor(Address),
     Institution(Address),
+    MedicalRecords(Address),        
+    AuthorizedDoctors(Address),      
 }
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MedicalRecord {
+    pub doctor: Address,
+    pub record_hash: Bytes,
+    pub description: String,
+    pub timestamp: u64,
+}
+
+
 
 #[contract]
 pub struct MedicalRegistry;
@@ -167,6 +180,82 @@ impl MedicalRegistry {
         let key = DataKey::Institution(institution_wallet);
         env.storage().persistent().set(&key, &true);
     }
+
+    // =====================================================
+//            MEDICAL RECORD ACCESS CONTROL
+// =====================================================
+
+pub fn grant_access(env: Env, patient: Address, doctor: Address) {
+    patient.require_auth();
+
+    let key = DataKey::AuthorizedDoctors(patient.clone());
+    let mut map: Map<Address, bool> =
+        env.storage().persistent().get(&key).unwrap_or(Map::new(&env));
+
+    map.set(doctor, true);
+    env.storage().persistent().set(&key, &map);
+}
+
+pub fn revoke_access(env: Env, patient: Address, doctor: Address) {
+    patient.require_auth();
+
+    let key = DataKey::AuthorizedDoctors(patient.clone());
+    let mut map: Map<Address, bool> =
+        env.storage().persistent().get(&key).unwrap_or(Map::new(&env));
+
+    map.remove(doctor);
+    env.storage().persistent().set(&key, &map);
+}
+
+pub fn get_authorized_doctors(env: Env, patient: Address) -> Vec<Address> {
+    let key = DataKey::AuthorizedDoctors(patient);
+    let map: Map<Address, bool> =
+        env.storage().persistent().get(&key).unwrap_or(Map::new(&env));
+
+    map.keys()
+}
+
+pub fn add_medical_record(
+    env: Env,
+    patient: Address,
+    doctor: Address,
+    record_hash: Bytes,
+    description: String,
+) {
+    doctor.require_auth();
+
+    // Check access
+    let access_key = DataKey::AuthorizedDoctors(patient.clone());
+    let access_map: Map<Address, bool> =
+        env.storage().persistent().get(&access_key).unwrap_or(Map::new(&env));
+
+    if !access_map.contains_key(doctor.clone()) {
+        panic!("Doctor not authorized");
+    }
+
+    let record = MedicalRecord {
+        doctor,
+        record_hash,
+        description,
+        timestamp: env.ledger().timestamp(),
+    };
+
+    let records_key = DataKey::MedicalRecords(patient.clone());
+    let mut records: Vec<MedicalRecord> =
+        env.storage().persistent().get(&records_key).unwrap_or(Vec::new(&env));
+
+    records.push_back(record);
+    env.storage().persistent().set(&records_key, &records);
+}
+
+pub fn get_medical_records(env: Env, patient: Address) -> Vec<MedicalRecord> {
+    let key = DataKey::MedicalRecords(patient);
+    env.storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(Vec::new(&env))
+}
+
 }
 #[cfg(test)]
 mod test;
