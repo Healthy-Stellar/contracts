@@ -40,6 +40,16 @@ pub enum DataKey {
     AuthorizedDoctors(Address),      
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MedicalRecord {
+    pub doctor: Address,
+    pub record_hash: Bytes,
+    pub description: String,
+    pub timestamp: u64,
+}
+
+
 
 #[contract]
 pub struct MedicalRegistry;
