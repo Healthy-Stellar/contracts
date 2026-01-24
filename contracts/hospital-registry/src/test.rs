@@ -22,8 +22,14 @@ fn test_register_hospital() {
     let hospital = client.get_hospital(&hospital_wallet);
 
     assert_eq!(hospital.name, String::from_str(&env, "General Hospital"));
-    assert_eq!(hospital.location, String::from_str(&env, "123 Main St, New York, NY"));
-    assert_eq!(hospital.metadata, String::from_str(&env, "Services: ER, Surgery, Cardiology"));
+    assert_eq!(
+        hospital.location,
+        String::from_str(&env, "123 Main St, New York, NY")
+    );
+    assert_eq!(
+        hospital.metadata,
+        String::from_str(&env, "Services: ER, Surgery, Cardiology")
+    );
 }
 
 #[test]
@@ -50,7 +56,10 @@ fn test_update_hospital() {
 
     let hospital = client.get_hospital(&hospital_wallet);
 
-    assert_eq!(hospital.metadata, String::from_str(&env, "Services: ER, ICU, Pediatrics, Oncology"));
+    assert_eq!(
+        hospital.metadata,
+        String::from_str(&env, "Services: ER, ICU, Pediatrics, Oncology")
+    );
     assert_eq!(hospital.name, String::from_str(&env, "City Hospital"));
 }
 

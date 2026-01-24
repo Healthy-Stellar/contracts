@@ -1,9 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short,
-    Address, Env, String,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, String};
 
 /// --------------------
 /// Hospital Structures
@@ -30,7 +27,7 @@ pub struct HospitalRegistry;
 #[contractimpl]
 impl HospitalRegistry {
     /// Register a new hospital with basic information
-    /// 
+    ///
     /// # Arguments
     /// * `wallet` - The wallet address of the hospital
     /// * `name` - The name of the hospital
@@ -65,7 +62,7 @@ impl HospitalRegistry {
     }
 
     /// Update hospital metadata
-    /// 
+    ///
     /// # Arguments
     /// * `wallet` - The wallet address of the hospital
     /// * `metadata` - Updated metadata information
@@ -89,10 +86,10 @@ impl HospitalRegistry {
     }
 
     /// Retrieve hospital data by wallet address
-    /// 
+    ///
     /// # Arguments
     /// * `wallet` - The wallet address of the hospital
-    /// 
+    ///
     /// # Returns
     /// The HospitalData for the given wallet address
     pub fn get_hospital(env: Env, wallet: Address) -> HospitalData {
