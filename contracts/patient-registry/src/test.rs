@@ -1,10 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{
-    testutils::Address as _,
-    Address, Bytes, Env, String,
-};
+use soroban_sdk::{testutils::Address as _, Address, Bytes, Env, String};
 
 /// ------------------------------------------------
 /// PATIENT TESTS
@@ -70,12 +67,7 @@ fn test_register_and_get_doctor() {
 
     env.mock_all_auths();
 
-    client.register_doctor(
-        &doctor_wallet,
-        &name,
-        &specialization,
-        &cert_hash,
-    );
+    client.register_doctor(&doctor_wallet, &name, &specialization, &cert_hash);
 
     let doctor = client.get_doctor(&doctor_wallet);
     assert_eq!(doctor.name, name);
@@ -100,12 +92,7 @@ fn test_register_institution_and_verify_doctor() {
     env.mock_all_auths();
 
     // Register doctor
-    client.register_doctor(
-        &doctor_wallet,
-        &name,
-        &specialization,
-        &cert_hash,
-    );
+    client.register_doctor(&doctor_wallet, &name, &specialization, &cert_hash);
 
     // Register institution
     client.register_institution(&institution_wallet);
@@ -133,12 +120,7 @@ fn test_verify_doctor_by_unregistered_institution_should_fail() {
 
     env.mock_all_auths();
 
-    client.register_doctor(
-        &doctor_wallet,
-        &name,
-        &specialization,
-        &cert_hash,
-    );
+    client.register_doctor(&doctor_wallet, &name, &specialization, &cert_hash);
 
     // This should panic
     client.verify_doctor(&doctor_wallet, &fake_institution);
