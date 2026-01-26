@@ -4,3 +4,9 @@ target
 # Local settings
 .soroban
 .stellar
+
+.agents
+.cursor
+.windsurf
+.github
+requirements.md
