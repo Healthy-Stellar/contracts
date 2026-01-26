@@ -1,0 +1,1071 @@
+{
+  "generators": {
+    "address": 2,
+    "nonce": 0,
+    "mux_id": 0
+  },
+  "auth": [
+    [],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "function_name": "register_hospital",
+              "args": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                },
+                {
+                  "string": "Regional Medical Center"
+                },
+                {
+                  "string": "789 Pine Rd"
+                },
+                {
+                  "string": "Accredited, trauma level II"
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "function_name": "set_hospital_config",
+              "args": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                },
+                {
+                  "map": [
+                    {
+                      "key": {
+                        "symbol": "alerts"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "map": [
+                              {
+                                "key": {
+                                  "symbol": "alert_type"
+                                },
+                                "val": {
+                                  "string": "code_blue"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "channels"
+                                },
+                                "val": {
+                                  "vec": [
+                                    {
+                                      "string": "sms"
+                                    },
+                                    {
+                                      "string": "email"
+                                    }
+                                  ]
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "enabled"
+                                },
+                                "val": {
+                                  "bool": true
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "escalation_contact"
+                                },
+                                "val": {
+                                  "string": "+1-555-0100"
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "billing"
+                      },
+                      "val": {
+                        "map": [
+                          {
+                            "key": {
+                              "symbol": "currency"
+                            },
+                            "val": {
+                              "string": "USD"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "payment_terms"
+                            },
+                            "val": {
+                              "string": "Net 30"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "tax_id"
+                            },
+                            "val": {
+                              "string": "TAX-001"
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "departments"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "map": [
+                              {
+                                "key": {
+                                  "symbol": "contact"
+                                },
+                                "val": {
+                                  "string": "er@rmc.org"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "head"
+                                },
+                                "val": {
+                                  "string": "Dr. Smith"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "name"
+                                },
+                                "val": {
+                                  "string": "Emergency"
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "emergency_protocols"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "map": [
+                              {
+                                "key": {
+                                  "symbol": "contact"
+                                },
+                                "val": {
+                                  "string": "safety@rmc.org"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "description"
+                                },
+                                "val": {
+                                  "string": "Evacuate wing A"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "last_updated"
+                                },
+                                "val": {
+                                  "u64": "1700000000"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "protocol_name"
+                                },
+                                "val": {
+                                  "string": "Fire"
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "equipment"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "map": [
+                              {
+                                "key": {
+                                  "symbol": "metadata"
+                                },
+                                "val": {
+                                  "string": "Siemens Aera"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "name"
+                                },
+                                "val": {
+                                  "string": "MRI"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "quantity"
+                                },
+                                "val": {
+                                  "u32": 2
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "status"
+                                },
+                                "val": {
+                                  "string": "operational"
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "insurance_providers"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "map": [
+                              {
+                                "key": {
+                                  "symbol": "billing_contact"
+                                },
+                                "val": {
+                                  "string": "billing@acmehealth.com"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "metadata"
+                                },
+                                "val": {
+                                  "string": "EDI enabled"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "plan_codes"
+                                },
+                                "val": {
+                                  "vec": [
+                                    {
+                                      "string": "HMO-101"
+                                    },
+                                    {
+                                      "string": "PPO-202"
+                                    }
+                                  ]
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "provider_name"
+                                },
+                                "val": {
+                                  "string": "Acme Health"
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "locations"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "map": [
+                              {
+                                "key": {
+                                  "symbol": "address"
+                                },
+                                "val": {
+                                  "string": "789 Pine Rd"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "metadata"
+                                },
+                                "val": {
+                                  "string": "24/7"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "name"
+                                },
+                                "val": {
+                                  "string": "Main Campus"
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "policies"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "map": [
+                              {
+                                "key": {
+                                  "symbol": "details"
+                                },
+                                "val": {
+                                  "string": "Hand hygiene and PPE policy"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "title"
+                                },
+                                "val": {
+                                  "string": "Infection Control"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "version"
+                                },
+                                "val": {
+                                  "string": "v3"
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
+    [],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "function_name": "update_departments",
+              "args": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                },
+                {
+                  "vec": [
+                    {
+                      "map": [
+                        {
+                          "key": {
+                            "symbol": "contact"
+                          },
+                          "val": {
+                            "string": "cardio@rmc.org"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "head"
+                          },
+                          "val": {
+                            "string": "Dr. Lee"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "name"
+                          },
+                          "val": {
+                            "string": "Cardiology"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
+    []
+  ],
+  "ledger": {
+    "protocol_version": 23,
+    "sequence_number": 0,
+    "timestamp": 0,
+    "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
+    "base_reserve": 0,
+    "min_persistent_entry_ttl": 4096,
+    "min_temp_entry_ttl": 16,
+    "max_entry_ttl": 6312000,
+    "ledger_entries": [
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
+                  "symbol": "Hospital"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "Hospital"
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "map": [
+                    {
+                      "key": {
+                        "symbol": "location"
+                      },
+                      "val": {
+                        "string": "789 Pine Rd"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "metadata"
+                      },
+                      "val": {
+                        "string": "Accredited, trauma level II"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "name"
+                      },
+                      "val": {
+                        "string": "Regional Medical Center"
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
+                  "symbol": "HospitalConfig"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "HospitalConfig"
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "map": [
+                    {
+                      "key": {
+                        "symbol": "alerts"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "map": [
+                              {
+                                "key": {
+                                  "symbol": "alert_type"
+                                },
+                                "val": {
+                                  "string": "code_blue"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "channels"
+                                },
+                                "val": {
+                                  "vec": [
+                                    {
+                                      "string": "sms"
+                                    },
+                                    {
+                                      "string": "email"
+                                    }
+                                  ]
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "enabled"
+                                },
+                                "val": {
+                                  "bool": true
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "escalation_contact"
+                                },
+                                "val": {
+                                  "string": "+1-555-0100"
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "billing"
+                      },
+                      "val": {
+                        "map": [
+                          {
+                            "key": {
+                              "symbol": "currency"
+                            },
+                            "val": {
+                              "string": "USD"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "payment_terms"
+                            },
+                            "val": {
+                              "string": "Net 30"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "tax_id"
+                            },
+                            "val": {
+                              "string": "TAX-001"
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "departments"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "map": [
+                              {
+                                "key": {
+                                  "symbol": "contact"
+                                },
+                                "val": {
+                                  "string": "cardio@rmc.org"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "head"
+                                },
+                                "val": {
+                                  "string": "Dr. Lee"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "name"
+                                },
+                                "val": {
+                                  "string": "Cardiology"
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "emergency_protocols"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "map": [
+                              {
+                                "key": {
+                                  "symbol": "contact"
+                                },
+                                "val": {
+                                  "string": "safety@rmc.org"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "description"
+                                },
+                                "val": {
+                                  "string": "Evacuate wing A"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "last_updated"
+                                },
+                                "val": {
+                                  "u64": "1700000000"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "protocol_name"
+                                },
+                                "val": {
+                                  "string": "Fire"
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "equipment"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "map": [
+                              {
+                                "key": {
+                                  "symbol": "metadata"
+                                },
+                                "val": {
+                                  "string": "Siemens Aera"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "name"
+                                },
+                                "val": {
+                                  "string": "MRI"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "quantity"
+                                },
+                                "val": {
+                                  "u32": 2
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "status"
+                                },
+                                "val": {
+                                  "string": "operational"
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "insurance_providers"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "map": [
+                              {
+                                "key": {
+                                  "symbol": "billing_contact"
+                                },
+                                "val": {
+                                  "string": "billing@acmehealth.com"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "metadata"
+                                },
+                                "val": {
+                                  "string": "EDI enabled"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "plan_codes"
+                                },
+                                "val": {
+                                  "vec": [
+                                    {
+                                      "string": "HMO-101"
+                                    },
+                                    {
+                                      "string": "PPO-202"
+                                    }
+                                  ]
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "provider_name"
+                                },
+                                "val": {
+                                  "string": "Acme Health"
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "locations"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "map": [
+                              {
+                                "key": {
+                                  "symbol": "address"
+                                },
+                                "val": {
+                                  "string": "789 Pine Rd"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "metadata"
+                                },
+                                "val": {
+                                  "string": "24/7"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "name"
+                                },
+                                "val": {
+                                  "string": "Main Campus"
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "policies"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "map": [
+                              {
+                                "key": {
+                                  "symbol": "details"
+                                },
+                                "val": {
+                                  "string": "Hand hygiene and PPE policy"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "title"
+                                },
+                                "val": {
+                                  "string": "Infection Control"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "version"
+                                },
+                                "val": {
+                                  "string": "v3"
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": "ledger_key_contract_instance",
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": "ledger_key_contract_instance",
+                "durability": "persistent",
+                "val": {
+                  "contract_instance": {
+                    "executable": {
+                      "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                    },
+                    "storage": null
+                  }
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+            "key": {
+              "ledger_key_nonce": {
+                "nonce": "801925984706572462"
+              }
+            },
+            "durability": "temporary"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+                "key": {
+                  "ledger_key_nonce": {
+                    "nonce": "801925984706572462"
+                  }
+                },
+                "durability": "temporary",
+                "val": "void"
+              }
+            },
+            "ext": "v0"
+          },
+          6311999
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+            "key": {
+              "ledger_key_nonce": {
+                "nonce": "1033654523790656264"
+              }
+            },
+            "durability": "temporary"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+                "key": {
+                  "ledger_key_nonce": {
+                    "nonce": "1033654523790656264"
+                  }
+                },
+                "durability": "temporary",
+                "val": "void"
+              }
+            },
+            "ext": "v0"
+          },
+          6311999
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+            "key": {
+              "ledger_key_nonce": {
+                "nonce": "5541220902715666415"
+              }
+            },
+            "durability": "temporary"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+                "key": {
+                  "ledger_key_nonce": {
+                    "nonce": "5541220902715666415"
+                  }
+                },
+                "durability": "temporary",
+                "val": "void"
+              }
+            },
+            "ext": "v0"
+          },
+          6311999
+        ]
+      ],
+      [
+        {
+          "contract_code": {
+            "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_code": {
+                "ext": "v0",
+                "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "code": ""
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ]
+    ]
+  },
+  "events": []
+}

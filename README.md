@@ -168,6 +168,30 @@ soroban contract invoke \
   --credentials <CREDENTIAL_HASH>
 ```
 
+### Hospital Configuration
+
+```bash
+soroban contract invoke \
+  --id <HOSPITAL_REGISTRY_CONTRACT> \
+  --source hospital \
+  --network testnet \
+  -- register_hospital \
+  --wallet <HOSPITAL_WALLET> \
+  --name "Regional Medical Center" \
+  --location "789 Pine Rd" \
+  --metadata "Accredited, trauma level II"
+```
+
+```bash
+soroban contract invoke \
+  --id <HOSPITAL_REGISTRY_CONTRACT> \
+  --source hospital \
+  --network testnet \
+  -- set_hospital_config \
+  --wallet <HOSPITAL_WALLET> \
+  --config <CONFIG_XDR>
+```
+
 ### Grant Data Access
 
 ```bash
