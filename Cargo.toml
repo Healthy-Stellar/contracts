@@ -6,6 +6,7 @@ members = [
   "contracts/hospital-registry",
   "contracts/insurer-registry",
   "contracts/financial-records",
+  "contracts/doctor-registry",
   "contracts/access-control",
 ]
 
