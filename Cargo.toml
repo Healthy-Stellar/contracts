@@ -7,10 +7,12 @@ members = [
   "contracts/insurer-registry",
   "contracts/financial-records",
   "contracts/doctor-registry",
-  "contracts/access-control", "prescription-management",
   "contracts/access-control",
+  "contracts/prescription-management",
   "contracts/healthcare-analytics",
   "contracts/telemedicine",
+  "contracts/referral",
+  "contracts/lab-management",
 ]
 
 [workspace.dependencies]
