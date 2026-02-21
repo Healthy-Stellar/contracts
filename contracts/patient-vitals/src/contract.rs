@@ -1,6 +1,6 @@
 use crate::types::{
-    AlertThresholds, DataKey, DeviceReading, DeviceRegistration, Error, MonitoringParameters, Range,
-    VitalAlert, VitalReading, VitalSigns, VitalStatistics,
+    AlertThresholds, DataKey, DeviceReading, DeviceRegistration, Error, MonitoringParameters,
+    Range, VitalAlert, VitalReading, VitalSigns, VitalStatistics,
 };
 use soroban_sdk::{contract, contractimpl, Address, Env, String, Symbol, Vec};
 
