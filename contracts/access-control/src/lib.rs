@@ -1,8 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, String, Vec};
 
 mod test;
 
@@ -50,8 +48,8 @@ pub struct AccessPermission {
 pub enum DataKey {
     Admin,
     Entity(Address),
-    AccessList(Address),              // Entity -> Vec<AccessPermission>
-    ResourceAccess(String),           // Resource -> Vec<Address> (authorized parties)
+    AccessList(Address),    // Entity -> Vec<AccessPermission>
+    ResourceAccess(String), // Resource -> Vec<Address> (authorized parties)
 }
 
 #[contract]
@@ -70,10 +68,8 @@ impl AccessControl {
         admin.require_auth();
         env.storage().persistent().set(&DataKey::Admin, &admin);
 
-        env.events().publish(
-            (symbol_short!("init"), admin),
-            symbol_short!("success"),
-        );
+        env.events()
+            .publish((symbol_short!("init"), admin), symbol_short!("success"));
     }
 
     /// Register a new entity in the system
@@ -112,10 +108,8 @@ impl AccessControl {
             .persistent()
             .set(&DataKey::AccessList(wallet.clone()), &empty_access);
 
-        env.events().publish(
-            (symbol_short!("reg_ent"), wallet),
-            symbol_short!("success"),
-        );
+        env.events()
+            .publish((symbol_short!("reg_ent"), wallet), symbol_short!("success"));
     }
 
     /// Grant access permission to an entity for a specific resource
@@ -241,7 +235,9 @@ impl AccessControl {
             panic!("Access permission not found");
         }
 
-        env.storage().persistent().set(&access_key, &new_access_list);
+        env.storage()
+            .persistent()
+            .set(&access_key, &new_access_list);
 
         // Remove from resource's authorized parties
         let resource_key = DataKey::ResourceAccess(resource_id.clone());
@@ -259,7 +255,9 @@ impl AccessControl {
                 }
             }
         }
-        env.storage().persistent().set(&resource_key, &new_authorized);
+        env.storage()
+            .persistent()
+            .set(&resource_key, &new_authorized);
 
         env.events().publish(
             (symbol_short!("revoke"), revokee, resource_id),
@@ -362,10 +360,8 @@ impl AccessControl {
         entity.metadata = metadata;
         env.storage().persistent().set(&key, &entity);
 
-        env.events().publish(
-            (symbol_short!("upd_ent"), wallet),
-            symbol_short!("success"),
-        );
+        env.events()
+            .publish((symbol_short!("upd_ent"), wallet), symbol_short!("success"));
     }
 
     /// Deactivate an entity (admin only)
@@ -396,9 +392,7 @@ impl AccessControl {
         entity.active = false;
         env.storage().persistent().set(&key, &entity);
 
-        env.events().publish(
-            (symbol_short!("deact"), wallet),
-            symbol_short!("success"),
-        );
+        env.events()
+            .publish((symbol_short!("deact"), wallet), symbol_short!("success"));
     }
 }

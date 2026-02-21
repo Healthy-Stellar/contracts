@@ -1,7 +1,7 @@
 #![cfg(test)]
 use super::*;
 use soroban_sdk::testutils::{Address as _, Ledger};
-use soroban_sdk::{Env};
+use soroban_sdk::Env;
 
 #[test]
 fn test_add_and_get_records() {
@@ -62,7 +62,12 @@ fn test_unauthorized_access() {
     let owner = Address::generate(&e);
     let stranger = Address::generate(&e);
 
-    client.add_financial_record(&owner, &RecordType::Invoice, &String::from_str(&e, "h"), &String::from_str(&e, "d"));
+    client.add_financial_record(
+        &owner,
+        &RecordType::Invoice,
+        &String::from_str(&e, "h"),
+        &String::from_str(&e, "d"),
+    );
 
     // Stranger cannot see
     client.get_financial_records(&stranger, &owner);
@@ -80,7 +85,12 @@ fn test_revoked_access() {
     let owner = Address::generate(&e);
     let auditor = Address::generate(&e);
 
-    client.add_financial_record(&owner, &RecordType::Invoice, &String::from_str(&e, "h"), &String::from_str(&e, "d"));
+    client.add_financial_record(
+        &owner,
+        &RecordType::Invoice,
+        &String::from_str(&e, "h"),
+        &String::from_str(&e, "d"),
+    );
 
     client.grant_access(&owner, &auditor);
     client.get_financial_records(&auditor, &owner); // Should be fine
@@ -101,13 +111,28 @@ fn test_filtering() {
 
     // Add multiple records with different types and timestamps
     e.ledger().set_timestamp(100);
-    client.add_financial_record(&owner, &RecordType::Invoice, &String::from_str(&e, "h1"), &String::from_str(&e, "d1"));
-    
+    client.add_financial_record(
+        &owner,
+        &RecordType::Invoice,
+        &String::from_str(&e, "h1"),
+        &String::from_str(&e, "d1"),
+    );
+
     e.ledger().set_timestamp(200);
-    client.add_financial_record(&owner, &RecordType::TaxDocument, &String::from_str(&e, "h2"), &String::from_str(&e, "d2"));
+    client.add_financial_record(
+        &owner,
+        &RecordType::TaxDocument,
+        &String::from_str(&e, "h2"),
+        &String::from_str(&e, "d2"),
+    );
 
     e.ledger().set_timestamp(300);
-    client.add_financial_record(&owner, &RecordType::Invoice, &String::from_str(&e, "h3"), &String::from_str(&e, "d3"));
+    client.add_financial_record(
+        &owner,
+        &RecordType::Invoice,
+        &String::from_str(&e, "h3"),
+        &String::from_str(&e, "d3"),
+    );
 
     // Filter by type
     let invoices = client.get_records_by_type(&owner, &owner, &RecordType::Invoice);

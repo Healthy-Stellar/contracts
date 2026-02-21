@@ -1,79 +1,13 @@
 {
   "generators": {
-    "address": 4,
+    "address": 1,
     "nonce": 0,
     "mux_id": 0
   },
   "auth": [
     [],
-    [
-      [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "order_lab_test",
-              "args": [
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                },
-                {
-                  "map": [
-                    {
-                      "key": {
-                        "symbol": "clinical_info_hash"
-                      },
-                      "val": {
-                        "bytes": "0000000000000000000000000000000000000000000000000000000000000000"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "collection_date"
-                      },
-                      "val": "void"
-                    },
-                    {
-                      "key": {
-                        "symbol": "fasting_required"
-                      },
-                      "val": {
-                        "bool": false
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "priority"
-                      },
-                      "val": {
-                        "symbol": "Routine"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "test_panel"
-                      },
-                      "val": {
-                        "vec": [
-                          {
-                            "string": "LOINC-1"
-                          }
-                        ]
-                      }
-                    }
-                  ]
-                }
-              ]
-            }
-          },
-          "sub_invocations": []
-        }
-      ]
-    ],
+    [],
+    [],
     []
   ],
   "ledger": {
@@ -91,7 +25,14 @@
           "contract_data": {
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
             "key": {
-              "u64": "0"
+              "vec": [
+                {
+                  "symbol": "Medication"
+                },
+                {
+                  "string": "99999-0001"
+                }
+              ]
             },
             "durability": "persistent"
           }
@@ -104,65 +45,142 @@
                 "ext": "v0",
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
                 "key": {
-                  "u64": "0"
+                  "vec": [
+                    {
+                      "symbol": "Medication"
+                    },
+                    {
+                      "string": "99999-0001"
+                    }
+                  ]
                 },
                 "durability": "persistent",
                 "val": {
                   "map": [
                     {
                       "key": {
-                        "symbol": "lab_id"
-                      },
-                      "val": "void"
-                    },
-                    {
-                      "key": {
-                        "symbol": "patient_id"
+                        "symbol": "brand_names"
                       },
                       "val": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                        "vec": []
                       }
                     },
                     {
                       "key": {
-                        "symbol": "provider_id"
+                        "symbol": "drug_class"
                       },
                       "val": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                        "symbol": "classx"
                       }
                     },
                     {
                       "key": {
-                        "symbol": "quality_control_passed"
+                        "symbol": "generic_name"
                       },
                       "val": {
-                        "bool": false
+                        "string": "Drug X"
                       }
                     },
                     {
                       "key": {
-                        "symbol": "results_hash"
-                      },
-                      "val": "void"
-                    },
-                    {
-                      "key": {
-                        "symbol": "status"
+                        "symbol": "interaction_profile_hash"
                       },
                       "val": {
-                        "symbol": "Ordered"
+                        "bytes": "0707070707070707070707070707070707070707070707070707070707070707"
                       }
                     },
                     {
                       "key": {
-                        "symbol": "test_panel"
+                        "symbol": "ndc_code"
                       },
                       "val": {
-                        "vec": [
-                          {
-                            "string": "LOINC-1"
-                          }
-                        ]
+                        "string": "99999-0001"
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
+                  "symbol": "Medication"
+                },
+                {
+                  "string": "99999-0002"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "Medication"
+                    },
+                    {
+                      "string": "99999-0002"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "map": [
+                    {
+                      "key": {
+                        "symbol": "brand_names"
+                      },
+                      "val": {
+                        "vec": []
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "drug_class"
+                      },
+                      "val": {
+                        "symbol": "classy"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "generic_name"
+                      },
+                      "val": {
+                        "string": "Drug Y"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "interaction_profile_hash"
+                      },
+                      "val": {
+                        "bytes": "0808080808080808080808080808080808080808080808080808080808080808"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "ndc_code"
+                      },
+                      "val": {
+                        "string": "99999-0002"
                       }
                     }
                   ]
@@ -196,16 +214,7 @@
                     "executable": {
                       "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
                     },
-                    "storage": [
-                      {
-                        "key": {
-                          "symbol": "LAB_ID"
-                        },
-                        "val": {
-                          "u64": "1"
-                        }
-                      }
-                    ]
+                    "storage": null
                   }
                 }
               }
@@ -213,39 +222,6 @@
             "ext": "v0"
           },
           4095
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-            "key": {
-              "ledger_key_nonce": {
-                "nonce": "801925984706572462"
-              }
-            },
-            "durability": "temporary"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-                "key": {
-                  "ledger_key_nonce": {
-                    "nonce": "801925984706572462"
-                  }
-                },
-                "durability": "temporary",
-                "val": "void"
-              }
-            },
-            "ext": "v0"
-          },
-          6311999
         ]
       ],
       [

@@ -1,10 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{
-    testutils::Address as _,
-    Env, String,
-};
+use soroban_sdk::{testutils::Address as _, Env, String};
 
 #[test]
 fn test_register_insurer() {

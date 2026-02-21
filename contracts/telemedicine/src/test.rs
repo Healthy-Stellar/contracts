@@ -1,8 +1,11 @@
 #![cfg(test)]
 
-use soroban_sdk::{testutils::{Address as _, Events}, Env, Address, String, Symbol, BytesN, Vec};
 use crate::contract::{TelemedicineContract, TelemedicineContractClient};
-use crate::types::{Error, VisitStatus, EligibilityResult, PrescriptionRequest};
+use crate::types::{EligibilityResult, Error, PrescriptionRequest, VisitStatus};
+use soroban_sdk::{
+    testutils::{Address as _, Events},
+    Address, BytesN, Env, String, Symbol, Vec,
+};
 
 #[test]
 fn test_telemedicine_lifecycle() {
@@ -65,19 +68,14 @@ fn test_telemedicine_lifecycle() {
         frequency: String::from_str(&env, "BID"),
         duration_days: 10,
     };
-    let rx_id = client.prescribe_during_visit(
-        &visit_id,
-        &provider_id,
-        &patient_id,
-        &rx_request,
-    );
+    let rx_id = client.prescribe_during_visit(&visit_id, &provider_id, &patient_id, &rx_request);
     assert_eq!(rx_id, 0);
 
     // 6. Record documentation
     let note_hash = BytesN::from_array(&env, &[1; 32]);
     let mut diagnosis_codes = Vec::new(&env);
     diagnosis_codes.push_back(String::from_str(&env, "J01.90"));
-    
+
     client.record_visit_documentation(
         &visit_id,
         &provider_id,
@@ -88,15 +86,11 @@ fn test_telemedicine_lifecycle() {
     );
 
     // 7. End session
-    client.end_virtual_session(
-        &visit_id,
-        &provider_id,
-        &(session_start_time + 1200),
-        &20,
-    );
+    client.end_virtual_session(&visit_id, &provider_id, &(session_start_time + 1200), &20);
 
     // Error case: End already completed session
-    let res = client.try_end_virtual_session(&visit_id, &provider_id, &(session_start_time + 1200), &20);
+    let res =
+        client.try_end_virtual_session(&visit_id, &provider_id, &(session_start_time + 1200), &20);
     assert!(res.is_err());
 }
 
@@ -110,7 +104,7 @@ fn test_auth_and_eligibility_failures() {
 
     let patient_id = Address::generate(&env);
     let provider_id = Address::generate(&env);
-    
+
     // Test ineligible state
     let eligibility = client.verify_telemedicine_eligibility(
         &patient_id,
@@ -140,7 +134,7 @@ fn test_auth_and_eligibility_failures() {
         &String::from_str(&env, "NY"),
     );
     assert!(res.is_err());
-    
+
     // Try prescribing to wrong patient
     let wrong_patient = Address::generate(&env);
     let rx_request = PrescriptionRequest {
@@ -149,11 +143,7 @@ fn test_auth_and_eligibility_failures() {
         frequency: String::from_str(&env, "BID"),
         duration_days: 10,
     };
-    let rx_res = client.try_prescribe_during_visit(
-        &visit_id,
-        &provider_id,
-        &wrong_patient,
-        &rx_request,
-    );
+    let rx_res =
+        client.try_prescribe_during_visit(&visit_id, &provider_id, &wrong_patient, &rx_request);
     assert!(rx_res.is_err());
 }

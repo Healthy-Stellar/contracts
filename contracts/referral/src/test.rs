@@ -1,8 +1,11 @@
 #![cfg(test)]
 
-use soroban_sdk::{testutils::{Address as _, Events}, Env, Address, String, Symbol, BytesN, Vec};
 use crate::contract::{ReferralContract, ReferralContractClient};
-use crate::types::{Error};
+use crate::types::Error;
+use soroban_sdk::{
+    testutils::{Address as _, Events},
+    Address, BytesN, Env, String, Symbol, Vec,
+};
 
 #[test]
 fn test_referral_lifecycle() {
@@ -34,7 +37,7 @@ fn test_referral_lifecycle() {
         &requested_services,
     );
     assert_eq!(referral_id, 1);
-    
+
     // 2. Accept Referral
     let estimated_appointment_date = Some(1234567890);
     client.accept_referral(&referral_id, &referred_to, &estimated_appointment_date);
@@ -53,7 +56,13 @@ fn test_referral_lifecycle() {
     let consultation_summary_hash = BytesN::from_array(&env, &[3; 32]);
     let recommendations = String::from_str(&env, "Rest and medication");
     let followup_required = true;
-    client.complete_referral(&referral_id, &referred_to, &consultation_summary_hash, &recommendations, &followup_required);
+    client.complete_referral(
+        &referral_id,
+        &referred_to,
+        &consultation_summary_hash,
+        &recommendations,
+        &followup_required,
+    );
 
     // Error case: Try to accept a completed referral (InvalidStatusTransition)
     let res = client.try_accept_referral(&referral_id, &referred_to, &estimated_appointment_date);
@@ -71,7 +80,7 @@ fn test_decline_and_update_status() {
     let referring_provider = Address::generate(&env);
     let patient_id = Address::generate(&env);
     let referred_to = Address::generate(&env);
-    
+
     let referral_id = client.create_referral(
         &referring_provider,
         &patient_id,
@@ -82,7 +91,7 @@ fn test_decline_and_update_status() {
         &BytesN::from_array(&env, &[1; 32]),
         &Vec::new(&env),
     );
-    
+
     // Decline Referral
     let decline_reason = String::from_str(&env, "Not taking new patients");
     client.decline_referral(&referral_id, &referred_to, &decline_reason, &None);
@@ -98,8 +107,13 @@ fn test_decline_and_update_status() {
         &BytesN::from_array(&env, &[1; 32]),
         &Vec::new(&env),
     );
-    
-    client.update_referral_status(&referral_id2, &referred_to, &Symbol::new(&env, "Scheduled"), &None);
+
+    client.update_referral_status(
+        &referral_id2,
+        &referred_to,
+        &Symbol::new(&env, "Scheduled"),
+        &None,
+    );
 }
 
 #[test]
@@ -113,7 +127,7 @@ fn test_auth_failures() {
     let referring_provider = Address::generate(&env);
     let patient_id = Address::generate(&env);
     let referred_to = Address::generate(&env);
-    
+
     let referral_id = client.create_referral(
         &referring_provider,
         &patient_id,
@@ -124,10 +138,9 @@ fn test_auth_failures() {
         &BytesN::from_array(&env, &[1; 32]),
         &Vec::new(&env),
     );
-    
+
     // Try to accept with wrong provider
     let wrong_provider = Address::generate(&env);
     let res = client.try_accept_referral(&referral_id, &wrong_provider, &None);
     assert!(res.is_err()); // NotAuthorized
 }
-

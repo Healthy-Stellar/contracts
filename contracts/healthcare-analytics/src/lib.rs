@@ -210,10 +210,8 @@ impl HealthcareAnalytics {
         outcomes.push_back(outcome);
         env.storage().persistent().set(&key, &outcomes);
 
-        env.events().publish(
-            (symbol_short!("rec_out"), condition),
-            outcome_type,
-        );
+        env.events()
+            .publish((symbol_short!("rec_out"), condition), outcome_type);
     }
 
     /// Record quality metric for a provider
@@ -242,13 +240,12 @@ impl HealthcareAnalytics {
             calculated_rate,
         };
 
-        let key = DataKey::QualityMetrics(provider_id.clone(), metric_name.clone(), reporting_period);
+        let key =
+            DataKey::QualityMetrics(provider_id.clone(), metric_name.clone(), reporting_period);
         env.storage().persistent().set(&key, &metric);
 
-        env.events().publish(
-            (symbol_short!("rec_qm"), provider_id),
-            metric_name,
-        );
+        env.events()
+            .publish((symbol_short!("rec_qm"), provider_id), metric_name);
     }
 
     /// Calculate comprehensive provider scorecard
@@ -263,13 +260,17 @@ impl HealthcareAnalytics {
 
         for i in 0..metrics.len() {
             let metric_name = metrics.get(i).unwrap();
-            
+
             for period in period_start..=period_end {
                 let key = DataKey::QualityMetrics(provider_id.clone(), metric_name.clone(), period);
                 if let Some(metric) = env.storage().persistent().get::<_, QualityMetric>(&key) {
                     let score = metric.calculated_rate;
                     let target = 8500u32;
-                    let percentile = if score >= target { 90 } else { (score as u64 * 90 / target as u64) as u32 };
+                    let percentile = if score >= target {
+                        90
+                    } else {
+                        (score as u64 * 90 / target as u64) as u32
+                    };
 
                     quality_metrics.push_back(QualityScore {
                         metric_name: metric_name.clone(),
@@ -283,7 +284,8 @@ impl HealthcareAnalytics {
             }
         }
 
-        let satisfaction = Self::get_avg_satisfaction(&env, provider_id.clone(), period_start, period_end);
+        let satisfaction =
+            Self::get_avg_satisfaction(&env, provider_id.clone(), period_start, period_end);
 
         let efficiency_metrics: Vec<EfficiencyMetric> = Vec::new(&env);
 
@@ -414,19 +416,19 @@ impl HealthcareAnalytics {
         facility_id.require_auth();
 
         let key = DataKey::Readmissions(facility_id.clone(), condition.clone(), reporting_period);
-        
-        let record: ReadmissionRecord = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or(ReadmissionRecord {
-                facility_id: facility_id.clone(),
-                condition: condition.clone(),
-                admission_count: 0,
-                readmission_count: 0,
-                days,
-                reporting_period,
-            });
+
+        let record: ReadmissionRecord =
+            env.storage()
+                .persistent()
+                .get(&key)
+                .unwrap_or(ReadmissionRecord {
+                    facility_id: facility_id.clone(),
+                    condition: condition.clone(),
+                    admission_count: 0,
+                    readmission_count: 0,
+                    days,
+                    reporting_period,
+                });
 
         let readmission_rate = if record.admission_count > 0 {
             (record.readmission_count * 10000 / record.admission_count) as u32
@@ -444,10 +446,8 @@ impl HealthcareAnalytics {
             reporting_period,
         };
 
-        env.events().publish(
-            (symbol_short!("track_r"), facility_id),
-            condition,
-        );
+        env.events()
+            .publish((symbol_short!("track_r"), facility_id), condition);
 
         stats
     }
@@ -477,10 +477,8 @@ impl HealthcareAnalytics {
         let key = DataKey::Satisfaction(visit_id);
         env.storage().persistent().set(&key, &record);
 
-        env.events().publish(
-            (symbol_short!("rec_sat"), patient_id),
-            satisfaction_score,
-        );
+        env.events()
+            .publish((symbol_short!("rec_sat"), patient_id), satisfaction_score);
     }
 
     /// Generate compliance report for a provider
@@ -525,8 +523,9 @@ impl HealthcareAnalytics {
         peer_group: Symbol,
     ) -> BenchmarkResult {
         let current_period = env.ledger().timestamp() / 86400;
-        
-        let provider_key = DataKey::QualityMetrics(provider_id.clone(), metric.clone(), current_period);
+
+        let provider_key =
+            DataKey::QualityMetrics(provider_id.clone(), metric.clone(), current_period);
         let provider_metric: QualityMetric = env
             .storage()
             .persistent()
@@ -548,7 +547,7 @@ impl HealthcareAnalytics {
             .unwrap_or((8000, 8200));
 
         let provider_value = provider_metric.calculated_rate;
-        
+
         let percentile = if provider_value >= peer_avg {
             50 + ((provider_value - peer_avg) as u64 * 50 / peer_avg.max(1) as u64) as u32
         } else {
@@ -639,7 +638,9 @@ impl HealthcareAnalytics {
         provider_id.require_auth();
 
         let key = DataKey::ComplianceData(provider_id, compliance_type, period);
-        env.storage().persistent().set(&key, &(compliant_cases, total_cases));
+        env.storage()
+            .persistent()
+            .set(&key, &(compliant_cases, total_cases));
     }
 
     /// Admin function to update benchmark data
@@ -651,15 +652,13 @@ impl HealthcareAnalytics {
         peer_median: u32,
     ) {
         let key = DataKey::BenchmarkData(peer_group, metric);
-        env.storage().persistent().set(&key, &(peer_average, peer_median));
+        env.storage()
+            .persistent()
+            .set(&key, &(peer_average, peer_median));
     }
 
     /// Link satisfaction to provider
-    pub fn link_satisfaction_to_provider(
-        env: Env,
-        provider_id: Address,
-        visit_id: u64,
-    ) {
+    pub fn link_satisfaction_to_provider(env: Env, provider_id: Address, visit_id: u64) {
         provider_id.require_auth();
 
         let visit_key = DataKey::Satisfaction(visit_id);

@@ -57,10 +57,8 @@ impl DoctorRegistry {
 
         env.storage().persistent().set(&key, &doctor_profile);
 
-        env.events().publish(
-            (symbol_short!("crt_doc"), wallet),
-            symbol_short!("success"),
-        );
+        env.events()
+            .publish((symbol_short!("crt_doc"), wallet), symbol_short!("success"));
     }
 
     /// Update doctor profile specialization and metadata
@@ -88,10 +86,8 @@ impl DoctorRegistry {
         doctor_profile.metadata = metadata;
         env.storage().persistent().set(&key, &doctor_profile);
 
-        env.events().publish(
-            (symbol_short!("upd_doc"), wallet),
-            symbol_short!("success"),
-        );
+        env.events()
+            .publish((symbol_short!("upd_doc"), wallet), symbol_short!("success"));
     }
 
     /// Retrieve doctor profile data by wallet address

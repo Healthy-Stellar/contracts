@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec, vec};
+use soroban_sdk::{contract, contractimpl, contracttype, vec, Address, Env, String, Vec};
 
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -23,8 +23,8 @@ pub struct FinancialRecord {
 
 #[contracttype]
 pub enum DataKey {
-    Record(Address, u32), // (Owner, Index) -> FinancialRecord
-    RecordCount(Address), // Owner -> Number of records
+    Record(Address, u32),     // (Owner, Index) -> FinancialRecord
+    RecordCount(Address),     // Owner -> Number of records
     Access(Address, Address), // (Owner, Authorized) -> bool
 }
 
@@ -43,7 +43,11 @@ impl FinancialRecordContract {
     ) {
         owner.require_auth();
 
-        let count: u32 = e.storage().persistent().get(&DataKey::RecordCount(owner.clone())).unwrap_or(0);
+        let count: u32 = e
+            .storage()
+            .persistent()
+            .get(&DataKey::RecordCount(owner.clone()))
+            .unwrap_or(0);
         let timestamp = e.ledger().timestamp();
 
         let record = FinancialRecord {
@@ -54,8 +58,12 @@ impl FinancialRecordContract {
             description,
         };
 
-        e.storage().persistent().set(&DataKey::Record(owner.clone(), count), &record);
-        e.storage().persistent().set(&DataKey::RecordCount(owner.clone()), &(count + 1));
+        e.storage()
+            .persistent()
+            .set(&DataKey::Record(owner.clone(), count), &record);
+        e.storage()
+            .persistent()
+            .set(&DataKey::RecordCount(owner.clone()), &(count + 1));
     }
 
     /// Retrieves all financial records for an owner.
@@ -63,11 +71,19 @@ impl FinancialRecordContract {
     pub fn get_financial_records(e: Env, caller: Address, owner: Address) -> Vec<FinancialRecord> {
         Self::check_access(&e, &caller, &owner);
 
-        let count: u32 = e.storage().persistent().get(&DataKey::RecordCount(owner.clone())).unwrap_or(0);
+        let count: u32 = e
+            .storage()
+            .persistent()
+            .get(&DataKey::RecordCount(owner.clone()))
+            .unwrap_or(0);
         let mut records = vec![&e];
 
         for i in 0..count {
-            if let Some(record) = e.storage().persistent().get(&DataKey::Record(owner.clone(), i)) {
+            if let Some(record) = e
+                .storage()
+                .persistent()
+                .get(&DataKey::Record(owner.clone(), i))
+            {
                 records.push_back(record);
             }
         }
@@ -84,11 +100,19 @@ impl FinancialRecordContract {
     ) -> Vec<FinancialRecord> {
         Self::check_access(&e, &caller, &owner);
 
-        let count: u32 = e.storage().persistent().get(&DataKey::RecordCount(owner.clone())).unwrap_or(0);
+        let count: u32 = e
+            .storage()
+            .persistent()
+            .get(&DataKey::RecordCount(owner.clone()))
+            .unwrap_or(0);
         let mut records = vec![&e];
 
         for i in 0..count {
-            if let Some(record) = e.storage().persistent().get::<DataKey, FinancialRecord>(&DataKey::Record(owner.clone(), i)) {
+            if let Some(record) = e
+                .storage()
+                .persistent()
+                .get::<DataKey, FinancialRecord>(&DataKey::Record(owner.clone(), i))
+            {
                 if record.timestamp >= start && record.timestamp <= end {
                     records.push_back(record);
                 }
@@ -106,11 +130,19 @@ impl FinancialRecordContract {
     ) -> Vec<FinancialRecord> {
         Self::check_access(&e, &caller, &owner);
 
-        let count: u32 = e.storage().persistent().get(&DataKey::RecordCount(owner.clone())).unwrap_or(0);
+        let count: u32 = e
+            .storage()
+            .persistent()
+            .get(&DataKey::RecordCount(owner.clone()))
+            .unwrap_or(0);
         let mut records = vec![&e];
 
         for i in 0..count {
-            if let Some(record) = e.storage().persistent().get::<DataKey, FinancialRecord>(&DataKey::Record(owner.clone(), i)) {
+            if let Some(record) = e
+                .storage()
+                .persistent()
+                .get::<DataKey, FinancialRecord>(&DataKey::Record(owner.clone(), i))
+            {
                 if record.record_type == record_type {
                     records.push_back(record);
                 }
@@ -122,13 +154,17 @@ impl FinancialRecordContract {
     /// Grants access to another address.
     pub fn grant_access(e: Env, owner: Address, authorized: Address) {
         owner.require_auth();
-        e.storage().persistent().set(&DataKey::Access(owner, authorized), &true);
+        e.storage()
+            .persistent()
+            .set(&DataKey::Access(owner, authorized), &true);
     }
 
     /// Revokes access from another address.
     pub fn revoke_access(e: Env, owner: Address, authorized: Address) {
         owner.require_auth();
-        e.storage().persistent().remove(&DataKey::Access(owner, authorized));
+        e.storage()
+            .persistent()
+            .remove(&DataKey::Access(owner, authorized));
     }
 
     /// Internal helper to check access.
@@ -141,7 +177,7 @@ impl FinancialRecordContract {
             .persistent()
             .get(&DataKey::Access(owner.clone(), caller.clone()))
             .unwrap_or(false);
-        
+
         if !is_authorized {
             panic!("Access denied");
         }

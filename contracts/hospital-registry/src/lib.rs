@@ -1,8 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, String, Vec};
 
 /// --------------------
 /// Hospital Structures
@@ -223,10 +221,8 @@ impl HospitalRegistry {
         let key = DataKey::HospitalConfig(wallet.clone());
         env.storage().persistent().set(&key, &config);
 
-        env.events().publish(
-            (symbol_short!("cfg_set"), wallet),
-            symbol_short!("success"),
-        );
+        env.events()
+            .publish((symbol_short!("cfg_set"), wallet), symbol_short!("success"));
     }
 
     /// Retrieve hospital configuration
@@ -272,10 +268,8 @@ impl HospitalRegistry {
         config.locations = locations;
         env.storage().persistent().set(&key, &config);
 
-        env.events().publish(
-            (symbol_short!("upd_loc"), wallet),
-            symbol_short!("success"),
-        );
+        env.events()
+            .publish((symbol_short!("upd_loc"), wallet), symbol_short!("success"));
     }
 
     pub fn update_equipment(env: Env, wallet: Address, equipment: Vec<EquipmentResource>) {
@@ -292,10 +286,8 @@ impl HospitalRegistry {
         config.equipment = equipment;
         env.storage().persistent().set(&key, &config);
 
-        env.events().publish(
-            (symbol_short!("upd_eq"), wallet),
-            symbol_short!("success"),
-        );
+        env.events()
+            .publish((symbol_short!("upd_eq"), wallet), symbol_short!("success"));
     }
 
     pub fn update_policies(env: Env, wallet: Address, policies: Vec<PolicyProcedure>) {
@@ -312,10 +304,8 @@ impl HospitalRegistry {
         config.policies = policies;
         env.storage().persistent().set(&key, &config);
 
-        env.events().publish(
-            (symbol_short!("upd_pol"), wallet),
-            symbol_short!("success"),
-        );
+        env.events()
+            .publish((symbol_short!("upd_pol"), wallet), symbol_short!("success"));
     }
 
     pub fn update_alerts(env: Env, wallet: Address, alerts: Vec<AlertSetting>) {
@@ -356,10 +346,8 @@ impl HospitalRegistry {
         config.insurance_providers = insurance_providers;
         env.storage().persistent().set(&key, &config);
 
-        env.events().publish(
-            (symbol_short!("upd_ins"), wallet),
-            symbol_short!("success"),
-        );
+        env.events()
+            .publish((symbol_short!("upd_ins"), wallet), symbol_short!("success"));
     }
 
     pub fn update_billing(env: Env, wallet: Address, billing: BillingConfig) {
@@ -400,10 +388,8 @@ impl HospitalRegistry {
         config.emergency_protocols = protocols;
         env.storage().persistent().set(&key, &config);
 
-        env.events().publish(
-            (symbol_short!("upd_emg"), wallet),
-            symbol_short!("success"),
-        );
+        env.events()
+            .publish((symbol_short!("upd_emg"), wallet), symbol_short!("success"));
     }
 }
 

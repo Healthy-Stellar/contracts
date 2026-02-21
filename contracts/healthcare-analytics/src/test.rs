@@ -2,7 +2,8 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger}, Address, BytesN, Env, String, Vec,
+    testutils::{Address as _, Ledger},
+    Address, BytesN, Env, String, Vec,
 };
 
 #[test]
@@ -81,7 +82,7 @@ fn test_calculate_provider_scorecard() {
 
     let provider_id = Address::generate(&env);
     let metric_name = String::from_str(&env, "Patient Safety");
-    
+
     env.mock_all_auths();
 
     client.record_quality_metric(&provider_id, &metric_name, &90, &100, &202401);
@@ -181,7 +182,7 @@ fn test_get_population_statistics_with_time_filter() {
     env.mock_all_auths();
 
     let condition = String::from_str(&env, "COVID-19");
-    
+
     env.ledger().with_mut(|li| {
         li.timestamp = 1640200000;
     });
@@ -284,10 +285,7 @@ fn test_record_patient_satisfaction_with_feedback() {
     let patient_id = Address::generate(&env);
     let visit_id = 12346;
     let satisfaction_score = 95;
-    let feedback_hash: BytesN<32> = BytesN::from_array(
-        &env,
-        &[1; 32],
-    );
+    let feedback_hash: BytesN<32> = BytesN::from_array(&env, &[1; 32]);
 
     env.mock_all_auths();
 
@@ -437,7 +435,7 @@ fn test_calculate_provider_scorecard_with_satisfaction() {
     let provider_id = Address::generate(&env);
     let patient_id = Address::generate(&env);
     let metric_name = String::from_str(&env, "Care Quality");
-    
+
     env.mock_all_auths();
 
     client.record_quality_metric(&provider_id, &metric_name, &85, &100, &202401);
@@ -490,7 +488,7 @@ fn test_multiple_quality_metrics_for_provider() {
     let client = HealthcareAnalyticsClient::new(&env, &contract_id);
 
     let provider_id = Address::generate(&env);
-    
+
     env.mock_all_auths();
 
     let mut metric_vec: Vec<String> = Vec::new(&env);
@@ -503,7 +501,8 @@ fn test_multiple_quality_metrics_for_provider() {
         client.record_quality_metric(&provider_id, &metric, &92, &100, &202401);
     }
 
-    let scorecard = client.calculate_provider_scorecard(&provider_id, &metric_vec, &202401, &202401);
+    let scorecard =
+        client.calculate_provider_scorecard(&provider_id, &metric_vec, &202401, &202401);
     assert_eq!(scorecard.quality_metrics.len(), 3);
 }
 
@@ -548,7 +547,7 @@ fn test_outcome_distribution_tracking() {
     );
 
     let stats = client.get_population_statistics(&condition, &None, &0);
-    
+
     assert_eq!(stats.total_cases, 3);
     assert_eq!(stats.outcome_distribution.len(), 2);
 }
@@ -583,7 +582,7 @@ fn test_treatment_tracking() {
     }
 
     let stats = client.get_population_statistics(&condition, &None, &0);
-    
+
     assert_eq!(stats.total_cases, 4);
     assert_eq!(stats.common_treatments.len(), 3);
 }
