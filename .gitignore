@@ -6,6 +6,7 @@ target
 .stellar
 
 # IDE and editor files
+.agent
 .agents
 .cursor
 .windsurf
@@ -40,3 +41,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+issue.md
+COMMIT.md
