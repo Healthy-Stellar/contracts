@@ -20,6 +20,7 @@ members = [
   "contracts/medical-claims",
   "contracts/emergency-medical-info",
   "contracts/imaging-radiology",
+  "contracts/clinical-guideline",
 ]
 
 [workspace.dependencies]
