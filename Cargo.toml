@@ -22,8 +22,9 @@ members = [
   "contracts/imaging-radiology",
   "contracts/clinical-guideline",
   "contracts/hospital-discharge-management",
-  contracts/care-plan,
+  "contracts/care-plan",
   "contracts/pacs-integration",
+  "contracts/prenatal-pediatric",
 ]
 
 [workspace.dependencies]
