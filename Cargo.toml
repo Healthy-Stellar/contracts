@@ -25,6 +25,7 @@ members = [
   "contracts/care-plan",
   "contracts/pacs-integration",
   "contracts/prenatal-pediatric",
+  "contracts/hai-tracking",
 ]
 
 [workspace.dependencies]
