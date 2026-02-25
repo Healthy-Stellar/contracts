@@ -1,1046 +1,717 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{
-    testutils::{Address as _, Ledger},
-    symbol_short, Address, BytesN, Env, String, Symbol, Vec,
-};
+use soroban_sdk::{symbol_short, testutils::Address as _, Address, BytesN, Env, String};
 
-#[test]
-fn test_record_anonymized_outcome() {
+fn setup() -> (Env, HealthcareAnalyticsClient<'static>) {
     let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-
     env.mock_all_auths();
-
-    let outcome_type = symbol_short!("surgery");
-    let condition = String::from_str(&env, "Appendicitis");
-    let treatment = String::from_str(&env, "Appendectomy");
-    let result = symbol_short!("success");
-    let age_group = symbol_short!("age19_35");
-    let gender = symbol_short!("female");
-    let timestamp = 1640000000;
-
-    client.record_anonymized_outcome(
-        &outcome_type,
-        &condition,
-        &treatment,
-        &result,
-        &age_group,
-        &gender,
-        &timestamp,
-    );
-
-    let stats = client.get_population_statistics(&condition, &None, &0);
-    assert_eq!(stats.total_cases, 1);
-}
-
-#[test]
-fn test_record_quality_metric() {
-    let env = Env::default();
     let contract_id = env.register(HealthcareAnalytics, ());
     let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-
-    let provider_id = Address::generate(&env);
-    let metric_name = String::from_str(&env, "Infection Rate");
-    let numerator = 5;
-    let denominator = 100;
-    let reporting_period = 202401;
-
-    env.mock_all_auths();
-
-    client.record_quality_metric(
-        &provider_id,
-        &metric_name,
-        &numerator,
-        &denominator,
-        &reporting_period,
-    );
+    (env, client)
 }
+
+// ========================
+// record_metric tests
+// ========================
 
 #[test]
-#[should_panic(expected = "Denominator cannot be zero")]
-fn test_record_quality_metric_zero_denominator() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-
-    let provider_id = Address::generate(&env);
-    let metric_name = String::from_str(&env, "Test Metric");
-
-    env.mock_all_auths();
-
-    client.record_quality_metric(&provider_id, &metric_name, &10, &0, &202401);
-}
-
-#[test]
-fn test_calculate_provider_scorecard() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-
-    let provider_id = Address::generate(&env);
-    let metric_name = String::from_str(&env, "Patient Safety");
-
-    env.mock_all_auths();
-
-    client.record_quality_metric(&provider_id, &metric_name, &90, &100, &202401);
-
-    let mut metrics: Vec<String> = Vec::new(&env);
-    metrics.push_back(metric_name.clone());
-
-    let scorecard = client.calculate_provider_scorecard(&provider_id, &metrics, &202401, &202401);
-
-    assert_eq!(scorecard.provider_id, provider_id);
-    assert_eq!(scorecard.quality_metrics.len(), 1);
-}
-
-#[test]
-fn test_get_population_statistics() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-
-    env.mock_all_auths();
-
-    let condition = String::from_str(&env, "Diabetes");
-
-    client.record_anonymized_outcome(
-        &symbol_short!("chronic"),
-        &condition,
-        &String::from_str(&env, "Insulin"),
-        &symbol_short!("stable"),
-        &symbol_short!("age51_65"),
-        &symbol_short!("male"),
-        &1640000000,
-    );
-
-    client.record_anonymized_outcome(
-        &symbol_short!("chronic"),
-        &condition,
-        &String::from_str(&env, "Metformin"),
-        &symbol_short!("stable"),
-        &symbol_short!("age36_50"),
-        &symbol_short!("female"),
-        &1640100000,
-    );
-
-    let stats = client.get_population_statistics(&condition, &None, &0);
-
-    assert_eq!(stats.total_cases, 2);
-    assert_eq!(stats.condition, condition);
-    assert_eq!(stats.gender_distribution.male, 1);
-    assert_eq!(stats.gender_distribution.female, 1);
-    assert!(stats.average_age > 0);
-}
-
-#[test]
-fn test_get_population_statistics_with_age_filter() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-
-    env.mock_all_auths();
-
-    let condition = String::from_str(&env, "Hypertension");
-    let age_filter = symbol_short!("age51_65");
-
-    client.record_anonymized_outcome(
-        &symbol_short!("chronic"),
-        &condition,
-        &String::from_str(&env, "ACE Inhibitor"),
-        &symbol_short!("improved"),
-        &age_filter,
-        &symbol_short!("male"),
-        &1640000000,
-    );
-
-    client.record_anonymized_outcome(
-        &symbol_short!("chronic"),
-        &condition,
-        &String::from_str(&env, "Beta Blocker"),
-        &symbol_short!("stable"),
-        &symbol_short!("age19_35"),
-        &symbol_short!("female"),
-        &1640100000,
-    );
-
-    let stats = client.get_population_statistics(&condition, &Some(age_filter), &0);
-
-    assert_eq!(stats.total_cases, 1);
-    assert_eq!(stats.gender_distribution.male, 1);
-    assert_eq!(stats.gender_distribution.female, 0);
-}
-
-#[test]
-fn test_get_population_statistics_with_time_filter() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-
-    env.mock_all_auths();
-
-    let condition = String::from_str(&env, "COVID-19");
-
-    env.ledger().with_mut(|li| {
-        li.timestamp = 1640200000;
-    });
-
-    client.record_anonymized_outcome(
-        &symbol_short!("acute"),
-        &condition,
-        &String::from_str(&env, "Antiviral"),
-        &symbol_short!("recovered"),
-        &symbol_short!("age36_50"),
-        &symbol_short!("male"),
-        &1640150000,
-    );
-
-    client.record_anonymized_outcome(
-        &symbol_short!("acute"),
-        &condition,
-        &String::from_str(&env, "Supportive"),
-        &symbol_short!("recovered"),
-        &symbol_short!("age19_35"),
-        &symbol_short!("female"),
-        &1639000000,
-    );
-
-    let stats = client.get_population_statistics(&condition, &None, &100000);
-
-    assert_eq!(stats.total_cases, 1);
-}
-
-#[test]
-fn test_track_readmission_rate() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-
-    let facility_id = Address::generate(&env);
-    let condition = String::from_str(&env, "Heart Failure");
-    let days = 30;
-    let reporting_period = 202401;
-
-    env.mock_all_auths();
-
-    client.update_readmission_data(
-        &facility_id,
-        &condition,
-        &100,
-        &15,
-        &days,
-        &reporting_period,
-    );
-
-    let stats = client.track_readmission_rate(&facility_id, &condition, &days, &reporting_period);
-
-    assert_eq!(stats.facility_id, facility_id);
-    assert_eq!(stats.total_admissions, 100);
-    assert_eq!(stats.readmissions, 15);
-    assert_eq!(stats.readmission_rate, 1500);
-    assert_eq!(stats.days, 30);
-}
-
-#[test]
-fn test_track_readmission_rate_no_data() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-
-    let facility_id = Address::generate(&env);
-    let condition = String::from_str(&env, "Pneumonia");
-
-    env.mock_all_auths();
-
-    let stats = client.track_readmission_rate(&facility_id, &condition, &30, &202401);
-
-    assert_eq!(stats.total_admissions, 0);
-    assert_eq!(stats.readmissions, 0);
-    assert_eq!(stats.readmission_rate, 0);
-}
-
-#[test]
-fn test_record_patient_satisfaction() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-
-    let patient_id = Address::generate(&env);
-    let visit_id = 12345;
-    let satisfaction_score = 85;
-
-    env.mock_all_auths();
-
-    client.record_patient_satisfaction(&visit_id, &patient_id, &satisfaction_score, &None);
-}
-
-#[test]
-fn test_record_patient_satisfaction_with_feedback() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-
-    let patient_id = Address::generate(&env);
-    let visit_id = 12346;
-    let satisfaction_score = 95;
-    let feedback_hash: BytesN<32> = BytesN::from_array(&env, &[1; 32]);
-
-    env.mock_all_auths();
-
-    client.record_patient_satisfaction(
-        &visit_id,
-        &patient_id,
-        &satisfaction_score,
-        &Some(feedback_hash),
-    );
-}
-
-#[test]
-#[should_panic(expected = "Satisfaction score must be 0-100")]
-fn test_record_patient_satisfaction_invalid_score() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-
-    let patient_id = Address::generate(&env);
-
-    env.mock_all_auths();
-
-    client.record_patient_satisfaction(&12347, &patient_id, &150, &None);
-}
-
-#[test]
-fn test_generate_compliance_report() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-
-    let provider_id = Address::generate(&env);
-    let compliance_type = symbol_short!("HIPAA");
-    let period = 202401;
-
-    env.mock_all_auths();
-
-    client.update_compliance_data(&provider_id, &compliance_type, &period, &95, &100);
-
-    let report = client.generate_compliance_report(&provider_id, &compliance_type, &period);
-
-    assert_eq!(report.provider_id, provider_id);
-    assert_eq!(report.compliance_type, compliance_type);
-    assert_eq!(report.compliant_cases, 95);
-    assert_eq!(report.total_cases, 100);
-    assert_eq!(report.compliance_rate, 9500);
-}
-
-#[test]
-fn test_generate_compliance_report_no_data() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-
-    let provider_id = Address::generate(&env);
-    let compliance_type = symbol_short!("quality");
-
-    env.mock_all_auths();
-
-    let report = client.generate_compliance_report(&provider_id, &compliance_type, &202401);
-
-    assert_eq!(report.compliant_cases, 0);
-    assert_eq!(report.total_cases, 0);
-    assert_eq!(report.compliance_rate, 0);
-}
-
-#[test]
-fn test_benchmark_performance() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-
-    let provider_id = Address::generate(&env);
-    let metric = String::from_str(&env, "Patient Safety");
-    let peer_group = symbol_short!("hospital");
-
-    env.mock_all_auths();
-
-    let period = env.ledger().timestamp() / 86400;
-    client.record_quality_metric(&provider_id, &metric, &95, &100, &period);
-
-    client.update_benchmark_data(&peer_group, &metric, &8000, &8200);
-
-    let benchmark = client.benchmark_performance(&provider_id, &metric, &peer_group);
-
-    assert_eq!(benchmark.provider_id, provider_id);
-    assert_eq!(benchmark.peer_group, peer_group);
-    assert_eq!(benchmark.peer_average, 8000);
-    assert_eq!(benchmark.peer_median, 8200);
-    assert!(benchmark.percentile > 0);
-}
-
-#[test]
-fn test_benchmark_performance_no_provider_data() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-
-    let provider_id = Address::generate(&env);
-    let metric = String::from_str(&env, "Quality Measure");
-    let peer_group = symbol_short!("clinic");
-
-    env.mock_all_auths();
-
-    let benchmark = client.benchmark_performance(&provider_id, &metric, &peer_group);
-
-    assert_eq!(benchmark.provider_value, 0);
-}
-
-#[test]
-fn test_link_satisfaction_to_provider() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-
-    let patient_id = Address::generate(&env);
-    let provider_id = Address::generate(&env);
-    let visit_id = 99999;
-    let satisfaction_score = 90;
-
-    env.mock_all_auths();
-
-    client.record_patient_satisfaction(&visit_id, &patient_id, &satisfaction_score, &None);
-    client.link_satisfaction_to_provider(&provider_id, &visit_id);
-}
-
-#[test]
-#[should_panic(expected = "Satisfaction record not found")]
-fn test_link_satisfaction_to_provider_no_record() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-
-    let provider_id = Address::generate(&env);
-
-    env.mock_all_auths();
-
-    client.link_satisfaction_to_provider(&provider_id, &99998);
-}
-
-#[test]
-fn test_calculate_provider_scorecard_with_satisfaction() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-
-    let provider_id = Address::generate(&env);
-    let patient_id = Address::generate(&env);
-    let metric_name = String::from_str(&env, "Care Quality");
-
-    env.mock_all_auths();
-
-    client.record_quality_metric(&provider_id, &metric_name, &85, &100, &202401);
-
-    client.record_patient_satisfaction(&10001, &patient_id, &90, &None);
-    client.link_satisfaction_to_provider(&provider_id, &10001);
-
-    client.record_patient_satisfaction(&10002, &patient_id, &80, &None);
-    client.link_satisfaction_to_provider(&provider_id, &10002);
-
-    let mut metrics: Vec<String> = Vec::new(&env);
-    metrics.push_back(metric_name);
-
-    let scorecard = client.calculate_provider_scorecard(&provider_id, &metrics, &202401, &202401);
-
-    assert_eq!(scorecard.provider_id, provider_id);
-    assert_eq!(scorecard.patient_satisfaction, 85);
-}
-
-#[test]
-fn test_multiple_anonymized_outcomes() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-
-    env.mock_all_auths();
-
-    let condition = String::from_str(&env, "Stroke");
-
-    for i in 0..5 {
-        client.record_anonymized_outcome(
-            &symbol_short!("acute"),
-            &condition,
-            &String::from_str(&env, "Thrombolysis"),
-            &symbol_short!("improved"),
-            &symbol_short!("age51_65"),
-            &symbol_short!("male"),
-            &(1640000000 + i * 1000),
-        );
-    }
-
-    let stats = client.get_population_statistics(&condition, &None, &0);
-    assert_eq!(stats.total_cases, 5);
-}
-
-#[test]
-fn test_multiple_quality_metrics_for_provider() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-
-    let provider_id = Address::generate(&env);
-
-    env.mock_all_auths();
-
-    let mut metric_vec: Vec<String> = Vec::new(&env);
-    metric_vec.push_back(String::from_str(&env, "Mortality Rate"));
-    metric_vec.push_back(String::from_str(&env, "Complication Rate"));
-    metric_vec.push_back(String::from_str(&env, "Patient Safety"));
-
-    for i in 0..metric_vec.len() {
-        let metric = metric_vec.get(i).unwrap();
-        client.record_quality_metric(&provider_id, &metric, &92, &100, &202401);
-    }
-
-    let scorecard =
-        client.calculate_provider_scorecard(&provider_id, &metric_vec, &202401, &202401);
-    assert_eq!(scorecard.quality_metrics.len(), 3);
-}
-
-#[test]
-fn test_outcome_distribution_tracking() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-
-    env.mock_all_auths();
-
-    let condition = String::from_str(&env, "Surgery");
-
-    client.record_anonymized_outcome(
-        &symbol_short!("elective"),
-        &condition,
-        &String::from_str(&env, "Procedure A"),
-        &symbol_short!("success"),
-        &symbol_short!("age36_50"),
-        &symbol_short!("female"),
-        &1640000000,
-    );
-
-    client.record_anonymized_outcome(
-        &symbol_short!("elective"),
-        &condition,
-        &String::from_str(&env, "Procedure A"),
-        &symbol_short!("success"),
-        &symbol_short!("age36_50"),
-        &symbol_short!("male"),
-        &1640001000,
-    );
-
-    client.record_anonymized_outcome(
-        &symbol_short!("elective"),
-        &condition,
-        &String::from_str(&env, "Procedure A"),
-        &symbol_short!("complica"),
-        &symbol_short!("age51_65"),
-        &symbol_short!("male"),
-        &1640002000,
-    );
-
-    let stats = client.get_population_statistics(&condition, &None, &0);
-
-    assert_eq!(stats.total_cases, 3);
-    assert_eq!(stats.outcome_distribution.len(), 2);
-}
-
-#[test]
-fn test_treatment_tracking() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-
-    env.mock_all_auths();
-
-    let condition = String::from_str(&env, "Infection");
-
-    let mut treatments: Vec<String> = Vec::new(&env);
-    treatments.push_back(String::from_str(&env, "Antibiotic A"));
-    treatments.push_back(String::from_str(&env, "Antibiotic B"));
-    treatments.push_back(String::from_str(&env, "Antibiotic A"));
-    treatments.push_back(String::from_str(&env, "Antibiotic C"));
-
-    for i in 0..treatments.len() {
-        let treatment = treatments.get(i).unwrap();
-        client.record_anonymized_outcome(
-            &symbol_short!("acute"),
-            &condition,
-            &treatment,
-            &symbol_short!("cured"),
-            &symbol_short!("age19_35"),
-            &symbol_short!("female"),
-            &(1640000000 + i as u64 * 1000),
-        );
-    }
-
-    let stats = client.get_population_statistics(&condition, &None, &0);
-
-    assert_eq!(stats.total_cases, 4);
-    assert_eq!(stats.common_treatments.len(), 3);
-}
-
-#[test]
-fn test_empty_population_statistics() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-
-    let condition = String::from_str(&env, "Rare Disease");
-
-    let stats = client.get_population_statistics(&condition, &None, &0);
-
-    assert_eq!(stats.total_cases, 0);
-    assert_eq!(stats.average_age, 0);
-    assert_eq!(stats.gender_distribution.male, 0);
-    assert_eq!(stats.gender_distribution.female, 0);
-    assert_eq!(stats.gender_distribution.other, 0);
-}
-
-// --- Referral workflow tests ---
-
-fn setup_referral_parties(env: &Env) -> (Address, Address, Address) {
-    let referring = Address::generate(env);
-    let receiving = Address::generate(env);
-    let patient = Address::generate(env);
-    (referring, receiving, patient)
-}
-
-#[test]
-fn test_create_referral() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-    let (referring, receiving, patient) = setup_referral_parties(&env);
-
-    env.mock_all_auths();
-
-    let specialty = symbol_short!("cardio");
-    let reason = String::from_str(&env, "Cardiac evaluation needed");
-    let priority = symbol_short!("urgent");
-    let clinical_hash: BytesN<32> = BytesN::from_array(&env, &[1u8; 32]);
-    let mut services: Vec<Symbol> = Vec::new(&env);
-    services.push_back(symbol_short!("echo"));
-    services.push_back(symbol_short!("stress"));
-
-    let id = client.create_referral(
-        &referring,
-        &patient,
-        &receiving,
-        &specialty,
-        &reason,
-        &priority,
-        &clinical_hash,
-        &services,
-    );
-
-    assert_eq!(id, 1);
-
-    let r = client.get_referral(&id);
-    assert_eq!(r.referral_id, 1);
-    assert_eq!(r.referring_provider, referring);
-    assert_eq!(r.receiving_provider, receiving);
-    assert_eq!(r.patient_id, patient);
-    assert_eq!(r.specialty, specialty);
-    assert_eq!(r.reason, reason);
-    assert_eq!(r.priority, priority);
-    assert_eq!(r.status, ReferralStatus::Pending);
-    assert!(r.accepted_at.is_none());
-    assert!(r.completed_at.is_none());
-}
-
-#[test]
-fn test_accept_referral() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-    let (referring, receiving, patient) = setup_referral_parties(&env);
-
-    env.mock_all_auths();
-
-    let id = client.create_referral(
-        &referring,
-        &patient,
-        &receiving,
-        &symbol_short!("cardio"),
-        &String::from_str(&env, "Evaluation"),
-        &symbol_short!("routine"),
-        &BytesN::from_array(&env, &[2u8; 32]),
-        &Vec::new(&env),
-    );
-
-    client.accept_referral(&id, &receiving, &Some(1700000000));
-
-    let r = client.get_referral(&id);
-    assert_eq!(r.status, ReferralStatus::Accepted);
-    assert!(r.accepted_at.is_some());
-}
-
-#[test]
-fn test_accept_referral_unauthorized() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-    let (referring, receiving, patient) = setup_referral_parties(&env);
-    let other = Address::generate(&env);
-
-    env.mock_all_auths();
-
-    let id = client.create_referral(
-        &referring,
-        &patient,
-        &receiving,
-        &symbol_short!("cardio"),
-        &String::from_str(&env, "Eval"),
-        &symbol_short!("routine"),
-        &BytesN::from_array(&env, &[0u8; 32]),
-        &Vec::new(&env),
-    );
-
-    let res = client.try_accept_referral(&id, &other, &None);
-    assert!(res.is_err());
-}
-
-#[test]
-fn test_decline_referral() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-    let (referring, receiving, patient) = setup_referral_parties(&env);
-
-    env.mock_all_auths();
-
-    let id = client.create_referral(
-        &referring,
-        &patient,
-        &receiving,
-        &symbol_short!("neuro"),
-        &String::from_str(&env, "Consult"),
-        &symbol_short!("routine"),
-        &BytesN::from_array(&env, &[0u8; 32]),
-        &Vec::new(&env),
-    );
-
-    client.decline_referral(
-        &id,
-        &receiving,
-        &String::from_str(&env, "Full capacity"),
+fn test_record_metric_basic() {
+    let (_env, client) = setup();
+
+    let result = client.record_metric(
+        &symbol_short!("bp"),
+        &120,
+        &symbol_short!("vitals"),
+        &1700000000,
         &None,
     );
 
-    let r = client.get_referral(&id);
-    assert_eq!(r.status, ReferralStatus::Declined);
+    assert_eq!(result, ());
+
+    let stats = client.get_statistics(
+        &symbol_short!("bp"),
+        &1699999999,
+        &1700000001,
+        &None,
+    );
+    assert_eq!(stats.count, 1);
+    assert_eq!(stats.sum, 120);
+    assert_eq!(stats.average, 120);
+    assert_eq!(stats.min, 120);
+    assert_eq!(stats.max, 120);
 }
 
 #[test]
-fn test_decline_referral_with_alternative() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-    let (referring, receiving, patient) = setup_referral_parties(&env);
-    let alternative = Address::generate(&env);
+fn test_record_metric_with_metadata_hash() {
+    let (env, client) = setup();
 
-    env.mock_all_auths();
+    let hash: BytesN<32> = BytesN::from_array(&env, &[1u8; 32]);
 
-    let id = client.create_referral(
-        &referring,
-        &patient,
-        &receiving,
-        &symbol_short!("neuro"),
-        &String::from_str(&env, "Consult"),
-        &symbol_short!("routine"),
-        &BytesN::from_array(&env, &[0u8; 32]),
-        &Vec::new(&env),
+    client.record_metric(
+        &symbol_short!("bp"),
+        &130,
+        &symbol_short!("vitals"),
+        &1700000000,
+        &Some(hash),
     );
 
-    client.decline_referral(
-        &id,
-        &receiving,
-        &String::from_str(&env, "Redirect"),
-        &Some(alternative),
+    let stats = client.get_statistics(
+        &symbol_short!("bp"),
+        &1699999999,
+        &1700000001,
+        &None,
     );
-
-    let r = client.get_referral(&id);
-    assert_eq!(r.status, ReferralStatus::Declined);
+    assert_eq!(stats.count, 1);
+    assert_eq!(stats.sum, 130);
 }
 
 #[test]
-fn test_update_referral_status() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-    let (referring, receiving, patient) = setup_referral_parties(&env);
+fn test_record_multiple_metrics_same_type() {
+    let (_env, client) = setup();
 
-    env.mock_all_auths();
+    client.record_metric(
+        &symbol_short!("bp"),
+        &120,
+        &symbol_short!("vitals"),
+        &1700000000,
+        &None,
+    );
+    client.record_metric(
+        &symbol_short!("bp"),
+        &130,
+        &symbol_short!("vitals"),
+        &1700001000,
+        &None,
+    );
+    client.record_metric(
+        &symbol_short!("bp"),
+        &110,
+        &symbol_short!("vitals"),
+        &1700002000,
+        &None,
+    );
 
-    let id = client.create_referral(
-        &referring,
-        &patient,
-        &receiving,
+    let stats = client.get_statistics(
+        &symbol_short!("bp"),
+        &1699999999,
+        &1700002001,
+        &None,
+    );
+    assert_eq!(stats.count, 3);
+    assert_eq!(stats.sum, 360);
+    assert_eq!(stats.average, 120);
+    assert_eq!(stats.min, 110);
+    assert_eq!(stats.max, 130);
+}
+
+#[test]
+fn test_record_metrics_different_types() {
+    let (_env, client) = setup();
+
+    client.record_metric(
+        &symbol_short!("bp"),
+        &120,
+        &symbol_short!("vitals"),
+        &1700000000,
+        &None,
+    );
+    client.record_metric(
+        &symbol_short!("hr"),
+        &72,
+        &symbol_short!("vitals"),
+        &1700000000,
+        &None,
+    );
+
+    let bp_stats = client.get_statistics(
+        &symbol_short!("bp"),
+        &1699999999,
+        &1700000001,
+        &None,
+    );
+    assert_eq!(bp_stats.count, 1);
+    assert_eq!(bp_stats.sum, 120);
+    assert_eq!(bp_stats.metric_type, symbol_short!("bp"));
+
+    let hr_stats = client.get_statistics(
+        &symbol_short!("hr"),
+        &1699999999,
+        &1700000001,
+        &None,
+    );
+    assert_eq!(hr_stats.count, 1);
+    assert_eq!(hr_stats.sum, 72);
+    assert_eq!(hr_stats.metric_type, symbol_short!("hr"));
+}
+
+#[test]
+fn test_record_metric_negative_values() {
+    let (_env, client) = setup();
+
+    client.record_metric(
+        &symbol_short!("temp"),
+        &-5,
+        &symbol_short!("lab"),
+        &1700000000,
+        &None,
+    );
+    client.record_metric(
+        &symbol_short!("temp"),
+        &10,
+        &symbol_short!("lab"),
+        &1700001000,
+        &None,
+    );
+
+    let stats = client.get_statistics(
+        &symbol_short!("temp"),
+        &1699999999,
+        &1700001001,
+        &None,
+    );
+    assert_eq!(stats.count, 2);
+    assert_eq!(stats.sum, 5);
+    assert_eq!(stats.average, 2);
+    assert_eq!(stats.min, -5);
+    assert_eq!(stats.max, 10);
+}
+
+// ========================
+// get_statistics tests
+// ========================
+
+#[test]
+fn test_get_statistics_time_range_filter() {
+    let (_env, client) = setup();
+
+    client.record_metric(
+        &symbol_short!("bp"),
+        &120,
+        &symbol_short!("vitals"),
+        &1700000000,
+        &None,
+    );
+    client.record_metric(
+        &symbol_short!("bp"),
+        &140,
+        &symbol_short!("vitals"),
+        &1700050000,
+        &None,
+    );
+    client.record_metric(
+        &symbol_short!("bp"),
+        &100,
+        &symbol_short!("vitals"),
+        &1700100000,
+        &None,
+    );
+
+    // Only the first two should match
+    let stats = client.get_statistics(
+        &symbol_short!("bp"),
+        &1699999999,
+        &1700050001,
+        &None,
+    );
+    assert_eq!(stats.count, 2);
+    assert_eq!(stats.sum, 260);
+    assert_eq!(stats.min, 120);
+    assert_eq!(stats.max, 140);
+    assert_eq!(stats.period_start, 1699999999);
+    assert_eq!(stats.period_end, 1700050001);
+}
+
+#[test]
+fn test_get_statistics_category_filter() {
+    let (_env, client) = setup();
+
+    client.record_metric(
+        &symbol_short!("bp"),
+        &120,
+        &symbol_short!("vitals"),
+        &1700000000,
+        &None,
+    );
+    client.record_metric(
+        &symbol_short!("bp"),
+        &200,
+        &symbol_short!("emer"),
+        &1700001000,
+        &None,
+    );
+    client.record_metric(
+        &symbol_short!("bp"),
+        &130,
+        &symbol_short!("vitals"),
+        &1700002000,
+        &None,
+    );
+
+    // Only "vitals" category
+    let stats = client.get_statistics(
+        &symbol_short!("bp"),
+        &1699999999,
+        &1700002001,
+        &Some(symbol_short!("vitals")),
+    );
+    assert_eq!(stats.count, 2);
+    assert_eq!(stats.sum, 250);
+    assert_eq!(stats.min, 120);
+    assert_eq!(stats.max, 130);
+}
+
+#[test]
+fn test_get_statistics_time_and_category_filter() {
+    let (_env, client) = setup();
+
+    client.record_metric(
+        &symbol_short!("bp"),
+        &120,
+        &symbol_short!("vitals"),
+        &1700000000,
+        &None,
+    );
+    client.record_metric(
+        &symbol_short!("bp"),
+        &200,
+        &symbol_short!("emer"),
+        &1700001000,
+        &None,
+    );
+    client.record_metric(
+        &symbol_short!("bp"),
+        &130,
+        &symbol_short!("vitals"),
+        &1700050000,
+        &None,
+    );
+
+    // Vitals category + only first time window
+    let stats = client.get_statistics(
+        &symbol_short!("bp"),
+        &1699999999,
+        &1700001001,
+        &Some(symbol_short!("vitals")),
+    );
+    assert_eq!(stats.count, 1);
+    assert_eq!(stats.sum, 120);
+}
+
+#[test]
+fn test_get_statistics_invalid_time_range() {
+    let (_env, client) = setup();
+
+    let result = client.try_get_statistics(
+        &symbol_short!("bp"),
+        &1700001000,
+        &1700000000,
+        &None,
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_get_statistics_no_data() {
+    let (_env, client) = setup();
+
+    let result = client.try_get_statistics(
+        &symbol_short!("bp"),
+        &1700000000,
+        &1700001000,
+        &None,
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_get_statistics_no_data_in_range() {
+    let (_env, client) = setup();
+
+    client.record_metric(
+        &symbol_short!("bp"),
+        &120,
+        &symbol_short!("vitals"),
+        &1700000000,
+        &None,
+    );
+
+    // Query a time range that doesn't include the recorded metric
+    let result = client.try_get_statistics(
+        &symbol_short!("bp"),
+        &1700100000,
+        &1700200000,
+        &None,
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_get_statistics_single_record() {
+    let (_env, client) = setup();
+
+    client.record_metric(
+        &symbol_short!("hr"),
+        &72,
+        &symbol_short!("vitals"),
+        &1700000000,
+        &None,
+    );
+
+    let stats = client.get_statistics(
+        &symbol_short!("hr"),
+        &1699999999,
+        &1700000001,
+        &None,
+    );
+    assert_eq!(stats.count, 1);
+    assert_eq!(stats.sum, 72);
+    assert_eq!(stats.average, 72);
+    assert_eq!(stats.min, 72);
+    assert_eq!(stats.max, 72);
+}
+
+#[test]
+fn test_get_statistics_exact_boundary_timestamps() {
+    let (_env, client) = setup();
+
+    client.record_metric(
+        &symbol_short!("bp"),
+        &120,
+        &symbol_short!("vitals"),
+        &1700000000,
+        &None,
+    );
+
+    // Query where start_time == timestamp == end_time
+    let stats = client.get_statistics(
+        &symbol_short!("bp"),
+        &1700000000,
+        &1700000000,
+        &None,
+    );
+    assert_eq!(stats.count, 1);
+    assert_eq!(stats.sum, 120);
+}
+
+// ========================
+// record_quality_metric tests
+// ========================
+
+#[test]
+fn test_record_quality_metric_basic() {
+    let (env, client) = setup();
+
+    let provider = Address::generate(&env);
+
+    client.record_quality_metric(
+        &provider,
+        &String::from_str(&env, "Infection Rate"),
+        &500,
+        &202401,
+    );
+
+    let metrics = client.get_quality_metrics(&provider, &202401);
+    assert_eq!(metrics.len(), 1);
+    assert_eq!(metrics.get(0).unwrap().value, 500);
+    assert_eq!(
+        metrics.get(0).unwrap().metric_name,
+        String::from_str(&env, "Infection Rate")
+    );
+}
+
+#[test]
+fn test_record_multiple_quality_metrics_same_provider() {
+    let (env, client) = setup();
+
+    let provider = Address::generate(&env);
+
+    client.record_quality_metric(
+        &provider,
+        &String::from_str(&env, "Infection Rate"),
+        &500,
+        &202401,
+    );
+    client.record_quality_metric(
+        &provider,
+        &String::from_str(&env, "Readmission Rate"),
+        &300,
+        &202401,
+    );
+    client.record_quality_metric(
+        &provider,
+        &String::from_str(&env, "Mortality Rate"),
+        &100,
+        &202401,
+    );
+
+    let metrics = client.get_quality_metrics(&provider, &202401);
+    assert_eq!(metrics.len(), 3);
+}
+
+#[test]
+fn test_record_quality_metric_different_periods() {
+    let (env, client) = setup();
+
+    let provider = Address::generate(&env);
+
+    client.record_quality_metric(
+        &provider,
+        &String::from_str(&env, "Infection Rate"),
+        &500,
+        &202401,
+    );
+    client.record_quality_metric(
+        &provider,
+        &String::from_str(&env, "Infection Rate"),
+        &450,
+        &202402,
+    );
+
+    let jan_metrics = client.get_quality_metrics(&provider, &202401);
+    assert_eq!(jan_metrics.len(), 1);
+    assert_eq!(jan_metrics.get(0).unwrap().value, 500);
+
+    let feb_metrics = client.get_quality_metrics(&provider, &202402);
+    assert_eq!(feb_metrics.len(), 1);
+    assert_eq!(feb_metrics.get(0).unwrap().value, 450);
+}
+
+#[test]
+fn test_record_quality_metric_different_providers() {
+    let (env, client) = setup();
+
+    let provider_a = Address::generate(&env);
+    let provider_b = Address::generate(&env);
+
+    client.record_quality_metric(
+        &provider_a,
+        &String::from_str(&env, "Safety Score"),
+        &900,
+        &202401,
+    );
+    client.record_quality_metric(
+        &provider_b,
+        &String::from_str(&env, "Safety Score"),
+        &850,
+        &202401,
+    );
+
+    let metrics_a = client.get_quality_metrics(&provider_a, &202401);
+    assert_eq!(metrics_a.len(), 1);
+    assert_eq!(metrics_a.get(0).unwrap().value, 900);
+
+    let metrics_b = client.get_quality_metrics(&provider_b, &202401);
+    assert_eq!(metrics_b.len(), 1);
+    assert_eq!(metrics_b.get(0).unwrap().value, 850);
+}
+
+// ========================
+// get_quality_metrics tests
+// ========================
+
+#[test]
+fn test_get_quality_metrics_no_data() {
+    let (env, client) = setup();
+
+    let provider = Address::generate(&env);
+
+    let result = client.try_get_quality_metrics(&provider, &202401);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_get_quality_metrics_wrong_period() {
+    let (env, client) = setup();
+
+    let provider = Address::generate(&env);
+
+    client.record_quality_metric(
+        &provider,
+        &String::from_str(&env, "Infection Rate"),
+        &500,
+        &202401,
+    );
+
+    let result = client.try_get_quality_metrics(&provider, &202412);
+    assert!(result.is_err());
+}
+
+// ========================
+// Privacy and aggregation tests
+// ========================
+
+#[test]
+fn test_privacy_preserving_aggregation() {
+    let (_env, client) = setup();
+
+    // Record metrics from different categories (simulating different sources)
+    // without any patient-identifying information
+    for i in 0..10 {
+        client.record_metric(
+            &symbol_short!("bmi"),
+            &(20 + i as i128),
+            &symbol_short!("pop"),
+            &(1700000000 + i * 1000),
+            &None,
+        );
+    }
+
+    let stats = client.get_statistics(
+        &symbol_short!("bmi"),
+        &1699999999,
+        &1700010000,
+        &None,
+    );
+
+    // Verify aggregation works without individual identification
+    assert_eq!(stats.count, 10);
+    assert_eq!(stats.min, 20);
+    assert_eq!(stats.max, 29);
+    assert_eq!(stats.sum, 245);
+    assert_eq!(stats.average, 24);
+}
+
+#[test]
+fn test_multiple_metric_types_aggregation() {
+    let (_env, client) = setup();
+
+    // Blood pressure metrics
+    client.record_metric(
+        &symbol_short!("bp_sys"),
+        &120,
         &symbol_short!("cardio"),
-        &String::from_str(&env, "Eval"),
-        &symbol_short!("routine"),
-        &BytesN::from_array(&env, &[0u8; 32]),
-        &Vec::new(&env),
+        &1700000000,
+        &None,
     );
-
-    client.accept_referral(&id, &receiving, &None);
-
-    client.update_referral_status(
-        &id,
-        &receiving,
-        &symbol_short!("sched"),
-        &Some(String::from_str(&env, "Appt set")),
-    );
-
-    let r = client.get_referral(&id);
-    assert_eq!(r.status, ReferralStatus::Scheduled);
-
-    client.update_referral_status(&id, &receiving, &symbol_short!("in_prog"), &None);
-
-    let r = client.get_referral(&id);
-    assert_eq!(r.status, ReferralStatus::InProgress);
-}
-
-#[test]
-fn test_complete_referral() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-    let (referring, receiving, patient) = setup_referral_parties(&env);
-
-    env.mock_all_auths();
-
-    let id = client.create_referral(
-        &referring,
-        &patient,
-        &receiving,
+    client.record_metric(
+        &symbol_short!("bp_sys"),
+        &140,
         &symbol_short!("cardio"),
-        &String::from_str(&env, "Eval"),
-        &symbol_short!("urgent"),
-        &BytesN::from_array(&env, &[0u8; 32]),
-        &Vec::new(&env),
+        &1700001000,
+        &None,
     );
 
-    client.accept_referral(&id, &receiving, &None);
-
-    client.complete_referral(
-        &id,
-        &receiving,
-        &BytesN::from_array(&env, &[5u8; 32]),
-        &String::from_str(&env, "Continue meds, follow up in 6 months"),
-        &true,
-    );
-
-    let r = client.get_referral(&id);
-    assert_eq!(r.status, ReferralStatus::Completed);
-    assert!(r.completed_at.is_some());
-}
-
-#[test]
-fn test_complete_referral_unauthorized() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-    let (referring, receiving, patient) = setup_referral_parties(&env);
-
-    env.mock_all_auths();
-
-    let id = client.create_referral(
-        &referring,
-        &patient,
-        &receiving,
+    // Heart rate metrics
+    client.record_metric(
+        &symbol_short!("hr"),
+        &72,
         &symbol_short!("cardio"),
-        &String::from_str(&env, "Eval"),
-        &symbol_short!("routine"),
-        &BytesN::from_array(&env, &[0u8; 32]),
-        &Vec::new(&env),
+        &1700000000,
+        &None,
     );
-
-    client.accept_referral(&id, &receiving, &None);
-
-    let res = client.try_complete_referral(
-        &id,
-        &referring,
-        &BytesN::from_array(&env, &[0u8; 32]),
-        &String::from_str(&env, "N/A"),
-        &false,
-    );
-    assert!(res.is_err());
-}
-
-#[test]
-fn test_share_care_summary() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-    let (referring, receiving, patient) = setup_referral_parties(&env);
-
-    env.mock_all_auths();
-
-    let id = client.create_referral(
-        &referring,
-        &patient,
-        &receiving,
+    client.record_metric(
+        &symbol_short!("hr"),
+        &80,
         &symbol_short!("cardio"),
-        &String::from_str(&env, "Eval"),
-        &symbol_short!("routine"),
-        &BytesN::from_array(&env, &[0u8; 32]),
-        &Vec::new(&env),
+        &1700001000,
+        &None,
     );
 
-    client.share_care_summary(
-        &id,
-        &receiving,
-        &symbol_short!("consult"),
-        &BytesN::from_array(&env, &[10u8; 32]),
+    // Lab result metrics
+    client.record_metric(
+        &symbol_short!("glucose"),
+        &95,
+        &symbol_short!("lab"),
+        &1700000000,
+        &None,
     );
 
-    client.share_care_summary(
-        &id,
-        &referring,
-        &symbol_short!("progress"),
-        &BytesN::from_array(&env, &[11u8; 32]),
+    let bp_stats = client.get_statistics(
+        &symbol_short!("bp_sys"),
+        &1699999999,
+        &1700001001,
+        &None,
     );
+    assert_eq!(bp_stats.count, 2);
+    assert_eq!(bp_stats.average, 130);
+
+    let hr_stats = client.get_statistics(
+        &symbol_short!("hr"),
+        &1699999999,
+        &1700001001,
+        &None,
+    );
+    assert_eq!(hr_stats.count, 2);
+    assert_eq!(hr_stats.average, 76);
+
+    let glucose_stats = client.get_statistics(
+        &symbol_short!("glucose"),
+        &1699999999,
+        &1700001001,
+        &None,
+    );
+    assert_eq!(glucose_stats.count, 1);
+    assert_eq!(glucose_stats.average, 95);
 }
 
 #[test]
-fn test_request_care_summary() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-    let (referring, receiving, patient) = setup_referral_parties(&env);
+fn test_time_series_support() {
+    let (_env, client) = setup();
 
-    env.mock_all_auths();
+    // Record metrics across multiple time periods
+    let base_time: u64 = 1700000000;
+    let day: u64 = 86400;
 
-    let id = client.create_referral(
-        &referring,
-        &patient,
-        &receiving,
-        &symbol_short!("cardio"),
-        &String::from_str(&env, "Eval"),
-        &symbol_short!("routine"),
-        &BytesN::from_array(&env, &[0u8; 32]),
-        &Vec::new(&env),
+    // Week 1 metrics
+    client.record_metric(
+        &symbol_short!("bp"),
+        &120,
+        &symbol_short!("vitals"),
+        &base_time,
+        &None,
+    );
+    client.record_metric(
+        &symbol_short!("bp"),
+        &125,
+        &symbol_short!("vitals"),
+        &(base_time + day),
+        &None,
     );
 
-    let mut info: Vec<Symbol> = Vec::new(&env);
-    info.push_back(symbol_short!("labs"));
-    info.push_back(symbol_short!("imaging"));
-
-    client.request_care_summary(&id, &receiving, &info);
-}
-
-#[test]
-fn test_get_referral_not_found() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-
-    let res = client.try_get_referral(&999);
-    assert!(res.is_err());
-}
-
-#[test]
-fn test_referral_full_lifecycle() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-    let (referring, receiving, patient) = setup_referral_parties(&env);
-
-    env.mock_all_auths();
-
-    let id = client.create_referral(
-        &referring,
-        &patient,
-        &receiving,
-        &symbol_short!("cardio"),
-        &String::from_str(&env, "Full cardiac workup"),
-        &symbol_short!("urgent"),
-        &BytesN::from_array(&env, &[1u8; 32]),
-        &Vec::new(&env),
+    // Week 2 metrics
+    client.record_metric(
+        &symbol_short!("bp"),
+        &130,
+        &symbol_short!("vitals"),
+        &(base_time + 7 * day),
+        &None,
+    );
+    client.record_metric(
+        &symbol_short!("bp"),
+        &135,
+        &symbol_short!("vitals"),
+        &(base_time + 8 * day),
+        &None,
     );
 
-    assert_eq!(client.get_referral(&id).status, ReferralStatus::Pending);
-
-    client.accept_referral(&id, &receiving, &Some(1700000000));
-    assert_eq!(client.get_referral(&id).status, ReferralStatus::Accepted);
-
-    client.update_referral_status(&id, &receiving, &symbol_short!("sched"), &None);
-    client.update_referral_status(&id, &receiving, &symbol_short!("in_prog"), &None);
-
-    client.complete_referral(
-        &id,
-        &receiving,
-        &BytesN::from_array(&env, &[2u8; 32]),
-        &String::from_str(&env, "Stable. Annual follow-up."),
-        &true,
+    // Query week 1 only
+    let week1 = client.get_statistics(
+        &symbol_short!("bp"),
+        &base_time,
+        &(base_time + 2 * day),
+        &None,
     );
+    assert_eq!(week1.count, 2);
+    assert_eq!(week1.average, 122);
 
-    let r = client.get_referral(&id);
-    assert_eq!(r.status, ReferralStatus::Completed);
-    assert!(r.accepted_at.is_some());
-    assert!(r.completed_at.is_some());
-}
-
-#[test]
-fn test_accept_after_decline_invalid_state() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-    let (referring, receiving, patient) = setup_referral_parties(&env);
-
-    env.mock_all_auths();
-
-    let id = client.create_referral(
-        &referring,
-        &patient,
-        &receiving,
-        &symbol_short!("neuro"),
-        &String::from_str(&env, "Consult"),
-        &symbol_short!("routine"),
-        &BytesN::from_array(&env, &[0u8; 32]),
-        &Vec::new(&env),
+    // Query week 2 only
+    let week2 = client.get_statistics(
+        &symbol_short!("bp"),
+        &(base_time + 7 * day),
+        &(base_time + 9 * day),
+        &None,
     );
+    assert_eq!(week2.count, 2);
+    assert_eq!(week2.average, 132);
 
-    client.decline_referral(&id, &receiving, &String::from_str(&env, "No"), &None);
-
-    let res = client.try_accept_referral(&id, &receiving, &None);
-    assert!(res.is_err());
-}
-
-#[test]
-fn test_update_status_cancelled() {
-    let env = Env::default();
-    let contract_id = env.register(HealthcareAnalytics, ());
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-    let (referring, receiving, patient) = setup_referral_parties(&env);
-
-    env.mock_all_auths();
-
-    let id = client.create_referral(
-        &referring,
-        &patient,
-        &receiving,
-        &symbol_short!("cardio"),
-        &String::from_str(&env, "Eval"),
-        &symbol_short!("routine"),
-        &BytesN::from_array(&env, &[0u8; 32]),
-        &Vec::new(&env),
+    // Query all
+    let all = client.get_statistics(
+        &symbol_short!("bp"),
+        &base_time,
+        &(base_time + 9 * day),
+        &None,
     );
-
-    client.update_referral_status(&id, &referring, &symbol_short!("cancelled"), &None);
-
-    let r = client.get_referral(&id);
-    assert_eq!(r.status, ReferralStatus::Cancelled);
-
-    let res = client.try_update_referral_status(&id, &referring, &symbol_short!("sched"), &None);
-    assert!(res.is_err());
+    assert_eq!(all.count, 4);
+    assert_eq!(all.average, 127);
 }
