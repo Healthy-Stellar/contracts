@@ -25,6 +25,9 @@ members = [
   "contracts/care-plan",
   "contracts/pacs-integration",
   "contracts/dental-records",
+  "contracts/mental-health",
+  "contracts/rehabilitation-services",
+  "contracts/prenatal-pediatric",
 ]
 
 [workspace.dependencies]
