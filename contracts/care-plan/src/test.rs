@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String, Symbol, Vec};
+use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, BytesN, Env, String, Symbol, Vec};
 
 // -----------------------------------------------------------------------
 // Helpers
@@ -35,7 +35,6 @@ fn create_plan(env: &Env, patient: &Address, provider: &Address) -> u64 {
             &1_000_000u64,
             &30u32,
         )
-        .unwrap()
 }
 
 fn register_and_create_plan(env: &Env) -> (Address, CarePlanContractClient, u64) {
@@ -61,7 +60,7 @@ fn register_and_create_plan(env: &Env) -> (Address, CarePlanContractClient, u64)
             &1_000_000u64,
             &30u32,
         )
-        .unwrap();
+        ;
 
     (provider, client, plan_id)
 }
@@ -92,7 +91,7 @@ fn test_create_care_plan_success() {
             &2_000_000u64,
             &90u32,
         )
-        .unwrap();
+        ;
 
     assert_eq!(plan_id, 1);
 }
@@ -118,7 +117,7 @@ fn test_create_care_plan_increments_ids() {
             &1_000_000u64,
             &30u32,
         )
-        .unwrap();
+        ;
 
     let id2 = client
         .create_care_plan(
@@ -130,7 +129,7 @@ fn test_create_care_plan_increments_ids() {
             &1_000_000u64,
             &30u32,
         )
-        .unwrap();
+        ;
 
     assert_eq!(id1, 1);
     assert_eq!(id2, 2);
@@ -157,9 +156,9 @@ fn test_create_care_plan_next_review_date_calculated() {
             &1_000_000u64,
             &30u32,
         )
-        .unwrap();
+        ;
 
-    let summary = client.get_care_plan_summary(&1, &provider).unwrap();
+    let summary = client.get_care_plan_summary(&1, &provider);
     // 1_000_000 + 30 * 86_400 = 3_592_000
     assert_eq!(summary.next_review_date, 1_000_000 + 30 * 86_400);
 }
@@ -190,7 +189,7 @@ fn test_add_care_goal_success() {
                 &1_000_000u64,
                 &30u32,
             )
-            .unwrap();
+            ;
 
         (env, provider, client, plan_id)
     };
@@ -204,7 +203,7 @@ fn test_add_care_goal_success() {
             &2_000_000u64,
             &Symbol::new(&env, "high"),
         )
-        .unwrap();
+        ;
 
     assert_eq!(goal_id, 1);
 }
@@ -253,7 +252,7 @@ fn test_add_intervention_success() {
                 &1_000_000u64,
                 &30u32,
             )
-            .unwrap();
+            ;
 
         (env, provider, client, plan_id)
     };
@@ -267,7 +266,7 @@ fn test_add_intervention_success() {
             &String::from_str(&env, "Twice daily"),
             &Symbol::new(&env, "patient"),
         )
-        .unwrap();
+        ;
 
     assert_eq!(intervention_id, 1);
 }
@@ -315,7 +314,7 @@ fn test_record_goal_progress_success() {
             &1_000_000u64,
             &30u32,
         )
-        .unwrap();
+        ;
 
     let goal_id = client
         .add_care_goal(
@@ -326,7 +325,7 @@ fn test_record_goal_progress_success() {
             &2_000_000u64,
             &Symbol::new(&env, "high"),
         )
-        .unwrap();
+        ;
 
     client
         .record_goal_progress(
@@ -336,7 +335,7 @@ fn test_record_goal_progress_success() {
             &String::from_str(&env, "Progress noted"),
             &1_100_000u64,
         )
-        .unwrap();
+        ;
 }
 
 #[test]
@@ -377,7 +376,7 @@ fn test_record_goal_progress_on_achieved_goal_fails() {
             &1_000_000u64,
             &30u32,
         )
-        .unwrap();
+        ;
 
     let goal_id = client
         .add_care_goal(
@@ -388,7 +387,7 @@ fn test_record_goal_progress_on_achieved_goal_fails() {
             &2_000_000u64,
             &Symbol::new(&env, "high"),
         )
-        .unwrap();
+        ;
 
     client
         .mark_goal_achieved(
@@ -397,7 +396,7 @@ fn test_record_goal_progress_on_achieved_goal_fails() {
             &1_500_000u64,
             &String::from_str(&env, "Target met"),
         )
-        .unwrap();
+        ;
 
     let result = client.try_record_goal_progress(
         &goal_id,
@@ -435,7 +434,7 @@ fn test_mark_goal_achieved_success() {
             &1_000_000u64,
             &30u32,
         )
-        .unwrap();
+        ;
 
     let goal_id = client
         .add_care_goal(
@@ -446,7 +445,7 @@ fn test_mark_goal_achieved_success() {
             &2_000_000u64,
             &Symbol::new(&env, "high"),
         )
-        .unwrap();
+        ;
 
     client
         .mark_goal_achieved(
@@ -455,7 +454,7 @@ fn test_mark_goal_achieved_success() {
             &1_500_000u64,
             &String::from_str(&env, "Patient reached target"),
         )
-        .unwrap();
+        ;
 }
 
 #[test]
@@ -479,7 +478,7 @@ fn test_mark_goal_achieved_twice_fails() {
             &1_000_000u64,
             &30u32,
         )
-        .unwrap();
+        ;
 
     let goal_id = client
         .add_care_goal(
@@ -490,7 +489,7 @@ fn test_mark_goal_achieved_twice_fails() {
             &2_000_000u64,
             &Symbol::new(&env, "high"),
         )
-        .unwrap();
+        ;
 
     client
         .mark_goal_achieved(
@@ -499,7 +498,7 @@ fn test_mark_goal_achieved_twice_fails() {
             &1_500_000u64,
             &String::from_str(&env, "Done"),
         )
-        .unwrap();
+        ;
 
     let result = client.try_mark_goal_achieved(
         &goal_id,
@@ -536,7 +535,7 @@ fn test_add_barrier_success() {
             &1_000_000u64,
             &30u32,
         )
-        .unwrap();
+        ;
 
     let barrier_id = client
         .add_barrier(
@@ -546,7 +545,7 @@ fn test_add_barrier_success() {
             &String::from_str(&env, "Cannot afford medication"),
             &1_050_000u64,
         )
-        .unwrap();
+        ;
 
     assert_eq!(barrier_id, 1);
 }
@@ -572,7 +571,7 @@ fn test_resolve_barrier_success() {
             &1_000_000u64,
             &30u32,
         )
-        .unwrap();
+        ;
 
     let barrier_id = client
         .add_barrier(
@@ -582,7 +581,7 @@ fn test_resolve_barrier_success() {
             &String::from_str(&env, "Cannot afford medication"),
             &1_050_000u64,
         )
-        .unwrap();
+        ;
 
     client
         .resolve_barrier(
@@ -591,7 +590,7 @@ fn test_resolve_barrier_success() {
             &String::from_str(&env, "Enrolled in assistance program"),
             &1_100_000u64,
         )
-        .unwrap();
+        ;
 }
 
 #[test]
@@ -615,7 +614,7 @@ fn test_resolve_barrier_twice_fails() {
             &1_000_000u64,
             &30u32,
         )
-        .unwrap();
+        ;
 
     let barrier_id = client
         .add_barrier(
@@ -625,7 +624,7 @@ fn test_resolve_barrier_twice_fails() {
             &String::from_str(&env, "Cannot afford medication"),
             &1_050_000u64,
         )
-        .unwrap();
+        ;
 
     client
         .resolve_barrier(
@@ -634,7 +633,7 @@ fn test_resolve_barrier_twice_fails() {
             &String::from_str(&env, "Resolved"),
             &1_100_000u64,
         )
-        .unwrap();
+        ;
 
     let result = client.try_resolve_barrier(
         &barrier_id,
@@ -688,7 +687,7 @@ fn test_schedule_review_success() {
             &1_000_000u64,
             &30u32,
         )
-        .unwrap();
+        ;
 
     let review_id = client
         .schedule_care_plan_review(
@@ -697,7 +696,7 @@ fn test_schedule_review_success() {
             &3_600_000u64,
             &Symbol::new(&env, "routine"),
         )
-        .unwrap();
+        ;
 
     assert_eq!(review_id, 1);
 }
@@ -723,7 +722,7 @@ fn test_conduct_review_success() {
             &1_000_000u64,
             &30u32,
         )
-        .unwrap();
+        ;
 
     let review_id = client
         .schedule_care_plan_review(
@@ -732,7 +731,7 @@ fn test_conduct_review_success() {
             &3_600_000u64,
             &Symbol::new(&env, "routine"),
         )
-        .unwrap();
+        ;
 
     let hash = BytesN::from_array(&env, &[1u8; 32]);
     let mut mods = Vec::new(&env);
@@ -740,7 +739,7 @@ fn test_conduct_review_success() {
 
     client
         .conduct_care_plan_review(&review_id, &provider, &hash, &mods, &true)
-        .unwrap();
+        ;
 }
 
 #[test]
@@ -764,7 +763,7 @@ fn test_conduct_review_twice_fails() {
             &1_000_000u64,
             &30u32,
         )
-        .unwrap();
+        ;
 
     let review_id = client
         .schedule_care_plan_review(
@@ -773,14 +772,14 @@ fn test_conduct_review_twice_fails() {
             &3_600_000u64,
             &Symbol::new(&env, "routine"),
         )
-        .unwrap();
+        ;
 
     let hash = BytesN::from_array(&env, &[1u8; 32]);
     let mods = Vec::new(&env);
 
     client
         .conduct_care_plan_review(&review_id, &provider, &hash, &mods, &true)
-        .unwrap();
+        ;
 
     let result =
         client.try_conduct_care_plan_review(&review_id, &provider, &hash, &mods, &true);
@@ -811,7 +810,7 @@ fn test_conduct_review_updates_plan_dates() {
             &1_000_000u64,
             &30u32,
         )
-        .unwrap();
+        ;
 
     let review_id = client
         .schedule_care_plan_review(
@@ -820,16 +819,16 @@ fn test_conduct_review_updates_plan_dates() {
             &5_000_000u64,
             &Symbol::new(&env, "routine"),
         )
-        .unwrap();
+        ;
 
     let hash = BytesN::from_array(&env, &[2u8; 32]);
     let mods = Vec::new(&env);
 
     client
         .conduct_care_plan_review(&review_id, &provider, &hash, &mods, &true)
-        .unwrap();
+        ;
 
-    let summary = client.get_care_plan_summary(&plan_id, &provider).unwrap();
+    let summary = client.get_care_plan_summary(&plan_id, &provider);
     assert_eq!(summary.last_review_date, Some(5_000_000));
     // next = 5_000_000 + 30 * 86_400
     assert_eq!(summary.next_review_date, 5_000_000 + 30 * 86_400);
@@ -860,7 +859,7 @@ fn test_assign_care_team_member_success() {
             &1_000_000u64,
             &30u32,
         )
-        .unwrap();
+        ;
 
     let specialist = Address::generate(&env);
     let mut responsibilities = Vec::new(&env);
@@ -874,9 +873,9 @@ fn test_assign_care_team_member_success() {
             &Symbol::new(&env, "specialist"),
             &responsibilities,
         )
-        .unwrap();
+        ;
 
-    let summary = client.get_care_plan_summary(&plan_id, &provider).unwrap();
+    let summary = client.get_care_plan_summary(&plan_id, &provider);
     assert_eq!(summary.care_team.len(), 1);
     assert_eq!(summary.care_team.get(0).unwrap().team_member, specialist);
 }
@@ -902,7 +901,7 @@ fn test_assign_multiple_team_members() {
             &1_000_000u64,
             &30u32,
         )
-        .unwrap();
+        ;
 
     let nurse = Address::generate(&env);
     let dietitian = Address::generate(&env);
@@ -920,7 +919,7 @@ fn test_assign_multiple_team_members() {
             &Symbol::new(&env, "nurse"),
             &r1,
         )
-        .unwrap();
+        ;
 
     client
         .assign_care_team_member(
@@ -930,9 +929,9 @@ fn test_assign_multiple_team_members() {
             &Symbol::new(&env, "dietitian"),
             &r2,
         )
-        .unwrap();
+        ;
 
-    let summary = client.get_care_plan_summary(&plan_id, &provider).unwrap();
+    let summary = client.get_care_plan_summary(&plan_id, &provider);
     assert_eq!(summary.care_team.len(), 2);
 }
 
@@ -971,7 +970,7 @@ fn test_get_care_plan_summary_excludes_achieved_goals() {
             &1_000_000u64,
             &30u32,
         )
-        .unwrap();
+        ;
 
     let goal_id = client
         .add_care_goal(
@@ -982,7 +981,7 @@ fn test_get_care_plan_summary_excludes_achieved_goals() {
             &2_000_000u64,
             &Symbol::new(&env, "high"),
         )
-        .unwrap();
+        ;
 
     let achieved_goal_id = client
         .add_care_goal(
@@ -993,7 +992,7 @@ fn test_get_care_plan_summary_excludes_achieved_goals() {
             &2_000_000u64,
             &Symbol::new(&env, "low"),
         )
-        .unwrap();
+        ;
 
     client
         .mark_goal_achieved(
@@ -1002,9 +1001,9 @@ fn test_get_care_plan_summary_excludes_achieved_goals() {
             &1_500_000u64,
             &String::from_str(&env, "Done"),
         )
-        .unwrap();
+        ;
 
-    let summary = client.get_care_plan_summary(&plan_id, &provider).unwrap();
+    let summary = client.get_care_plan_summary(&plan_id, &provider);
     assert_eq!(summary.active_goals.len(), 1);
     assert_eq!(summary.active_goals.get(0).unwrap().goal_id, goal_id);
 }
@@ -1037,7 +1036,7 @@ fn test_full_care_plan_workflow() {
             &1_000_000u64,
             &30u32,
         )
-        .unwrap();
+        ;
 
     // 2. Add goals
     let goal_id = client
@@ -1049,7 +1048,7 @@ fn test_full_care_plan_workflow() {
             &3_000_000u64,
             &Symbol::new(&env, "high"),
         )
-        .unwrap();
+        ;
 
     // 3. Add intervention
     client
@@ -1061,7 +1060,7 @@ fn test_full_care_plan_workflow() {
             &String::from_str(&env, "Twice daily"),
             &Symbol::new(&env, "patient"),
         )
-        .unwrap();
+        ;
 
     // 4. Add barrier
     let barrier_id = client
@@ -1072,7 +1071,7 @@ fn test_full_care_plan_workflow() {
             &String::from_str(&env, "Cannot afford test strips"),
             &1_100_000u64,
         )
-        .unwrap();
+        ;
 
     // 5. Record progress
     client
@@ -1083,7 +1082,7 @@ fn test_full_care_plan_workflow() {
             &String::from_str(&env, "Improving"),
             &1_200_000u64,
         )
-        .unwrap();
+        ;
 
     // 6. Assign team member
     let nurse = Address::generate(&env);
@@ -1098,7 +1097,7 @@ fn test_full_care_plan_workflow() {
             &Symbol::new(&env, "nurse"),
             &responsibilities,
         )
-        .unwrap();
+        ;
 
     // 7. Resolve barrier
     client
@@ -1108,7 +1107,7 @@ fn test_full_care_plan_workflow() {
             &String::from_str(&env, "Patient enrolled in assistance program"),
             &1_300_000u64,
         )
-        .unwrap();
+        ;
 
     // 8. Schedule review
     let review_id = client
@@ -1118,7 +1117,7 @@ fn test_full_care_plan_workflow() {
             &3_592_000u64,
             &Symbol::new(&env, "routine"),
         )
-        .unwrap();
+        ;
 
     // 9. Conduct review
     let hash = BytesN::from_array(&env, &[9u8; 32]);
@@ -1127,7 +1126,7 @@ fn test_full_care_plan_workflow() {
 
     client
         .conduct_care_plan_review(&review_id, &provider, &hash, &mods, &true)
-        .unwrap();
+        ;
 
     // 10. Mark goal achieved
     client
@@ -1137,10 +1136,10 @@ fn test_full_care_plan_workflow() {
             &2_500_000u64,
             &String::from_str(&env, "Patient reached HbA1c target"),
         )
-        .unwrap();
+        ;
 
     // 11. Verify summary
-    let summary = client.get_care_plan_summary(&plan_id, &provider).unwrap();
+    let summary = client.get_care_plan_summary(&plan_id, &provider);
     assert_eq!(summary.care_plan_id, plan_id);
     assert_eq!(summary.active_goals.len(), 0); // achieved goal excluded
     assert_eq!(summary.interventions.len(), 1);

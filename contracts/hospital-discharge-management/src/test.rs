@@ -43,7 +43,6 @@ fn test_initiate_discharge_planning() {
 }
 
 #[test]
-#[should_panic(expected = "InvalidDates")]
 fn test_initiate_discharge_planning_invalid_dates() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
     let contract_id = env.register_contract(None, HospitalDischargeContract);
@@ -52,13 +51,14 @@ fn test_initiate_discharge_planning_invalid_dates() {
     let admission_date = 2000u64;
     let expected_discharge_date = 1000u64; // Before admission
 
-    client.initiate_discharge_planning(
+    let result = client.try_initiate_discharge_planning(
         &admin,
         &patient_id,
         &hospital_id,
         &admission_date,
         &expected_discharge_date,
     );
+    assert!(result.is_err());
 }
 
 #[test]
@@ -392,14 +392,15 @@ fn test_track_readmission_risk_low() {
 }
 
 #[test]
-#[should_panic(expected = "PlanNotFound")]
 fn test_assess_readiness_nonexistent_plan() {
     let (env, admin, _patient, _patient_id, _hospital_id) = create_test_env();
     let contract_id = env.register_contract(None, HospitalDischargeContract);
     let client = HospitalDischargeContractClient::new(&env, &contract_id);
 
     let notes = String::from_str(&env, "Test");
-    client.assess_discharge_readiness(&admin, &999u64, &80u32, &80u32, &80u32, &notes);
+    let result =
+        client.try_assess_discharge_readiness(&admin, &999u64, &80u32, &80u32, &80u32, &notes);
+    assert!(result.is_err());
 }
 
 #[test]

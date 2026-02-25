@@ -1088,6 +1088,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "prenatal-pediatric"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "prescription-management"
 version = "0.1.0"
 dependencies = [
