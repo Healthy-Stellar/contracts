@@ -37,12 +37,28 @@ pub struct DosageRecommendation {
     pub monitoring_required: Vec<String>,
 }
 
-// Placeholder for logic-heavy structures
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RiskScore {
+    pub calculator: Symbol,
+    pub score: i32,
+    pub interpretation: String,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CarePathway {
     pub condition: String,
     pub steps: Vec<String>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GuidelineMetadata {
+    pub condition: String,
+    pub criteria_hash: BytesN<32>,
+    pub recommendation_hash: BytesN<32>,
+    pub evidence_level: Symbol,
 }
 
 #[contract]
@@ -54,16 +70,21 @@ impl ClinicalGuidelineContract {
         env: Env,
         admin: Address,
         guideline_id: String,
-        _condition: String,
+        condition: String,
         criteria_hash: BytesN<32>,
-        _recommendation_hash: BytesN<32>,
-        _evidence_level: Symbol,
+        recommendation_hash: BytesN<32>,
+        evidence_level: Symbol,
     ) -> Result<(), Error> {
         admin.require_auth();
-        // Use guideline_id as the storage key
-        env.storage()
-            .persistent()
-            .set(&guideline_id, &criteria_hash);
+
+        let metadata = GuidelineMetadata {
+            condition,
+            criteria_hash,
+            recommendation_hash,
+            evidence_level,
+        };
+
+        env.storage().persistent().set(&guideline_id, &metadata);
         Ok(())
     }
 
@@ -74,21 +95,20 @@ impl ClinicalGuidelineContract {
         guideline_id: String,
         patient_data_hash: BytesN<32>,
     ) -> Result<GuidelineRecommendation, Error> {
-        // Retrieve stored criteria
-        let stored_hash: BytesN<32> = env
+        let metadata: GuidelineMetadata = env
             .storage()
             .persistent()
             .get(&guideline_id)
             .ok_or(Error::GuidelineNotFound)?;
 
-        let is_applicable = stored_hash == patient_data_hash;
+        let is_applicable = metadata.criteria_hash == patient_data_hash;
 
         Ok(GuidelineRecommendation {
             guideline_id,
             applicable: is_applicable,
-            recommendation: String::from_str(&env, "Follow Standard Protocol"),
-            strength: Symbol::new(&env, "High"),
-            evidence_level: Symbol::new(&env, "Level_A"),
+            recommendation: String::from_str(&env, "Follow evidence-based recommendation"),
+            strength: Symbol::new(&env, "Strong"),
+            evidence_level: metadata.evidence_level,
             alternative_options: Vec::new(&env),
         })
     }
@@ -97,20 +117,22 @@ impl ClinicalGuidelineContract {
         env: Env,
         _patient_id: Address,
         medication: String,
-        weight_grams: u64, // Used u64 for fixed-point math instead of f32
+        weight_dg: u32, // Decigrams (0.1g) to avoid f32
         _age: u32,
         renal_function: Option<u32>,
     ) -> Result<DosageRecommendation, Error> {
-        // Simple example: 5mg per kg (1000g)
-        let _dose_mg = (weight_grams * 5) / 1000;
         let is_renal_impaired = renal_function.unwrap_or(100) < 60;
+
+        // Example: 5mg per kg (1000g = 10000dg)
+        // dosage = (weight_dg / 10000) * 5
+        let dose_mg = (weight_dg as u64 * 5) / 10000;
 
         Ok(DosageRecommendation {
             medication,
-            recommended_dose: String::from_str(&env, "5mg/kg"),
-            frequency: String::from_str(&env, "QD"),
+            recommended_dose: String::from_str(&env, "Dosage calculated based on weight"),
+            frequency: String::from_str(&env, "TID"),
             route: Symbol::new(&env, "Oral"),
-            duration: Some(10),
+            duration: Some(dose_mg), // Simplified
             renal_adjustment: is_renal_impaired,
             monitoring_required: Vec::new(&env),
         })
@@ -119,14 +141,18 @@ impl ClinicalGuidelineContract {
     pub fn assess_risk_score(
         env: Env,
         _patient_id: Address,
-        _risk_calculator: Symbol,
+        risk_calculator: Symbol,
         input_parameters: Vec<i32>,
-    ) -> Result<i32, Error> {
+    ) -> Result<RiskScore, Error> {
         let mut total_score: i32 = 0;
         for val in input_parameters.iter() {
             total_score += val;
         }
-        Ok(total_score)
+        Ok(RiskScore {
+            calculator: risk_calculator,
+            score: total_score,
+            interpretation: String::from_str(&env, "Risk assessment complete"),
+        })
     }
 
     pub fn suggest_care_pathway(
@@ -136,8 +162,9 @@ impl ClinicalGuidelineContract {
         _current_treatment: Vec<String>,
     ) -> Result<CarePathway, Error> {
         let mut steps = Vec::new(&env);
-        steps.push_back(String::from_str(&env, "Initial Assessment"));
-        steps.push_back(String::from_str(&env, "Lab Tests"));
+        steps.push_back(String::from_str(&env, "Initial Diagnosis"));
+        steps.push_back(String::from_str(&env, "Standard Treatment"));
+        steps.push_back(String::from_str(&env, "Follow-up"));
 
         Ok(CarePathway { condition, steps })
     }
@@ -150,7 +177,6 @@ impl ClinicalGuidelineContract {
         due_date: u64,
         _priority: Symbol,
     ) -> Result<u64, Error> {
-        // Use ledger timestamp + patient address hash as a simple ID
         let reminder_id = env.ledger().timestamp();
         env.storage().temporary().set(&patient_id, &due_date);
         Ok(reminder_id)
@@ -165,11 +191,11 @@ impl ClinicalGuidelineContract {
     ) -> Result<Vec<Symbol>, Error> {
         let mut alerts = Vec::new(&env);
 
-        if age > 45 {
-            alerts.push_back(Symbol::new(&env, "Cardiac_Screening"));
+        if age > 50 {
+            alerts.push_back(Symbol::new(&env, "Screening_A"));
         }
-        if age > 18 {
-            alerts.push_back(Symbol::new(&env, "Blood_Pressure_Check"));
+        if age > 20 {
+            alerts.push_back(Symbol::new(&env, "Regular_Checkup"));
         }
 
         Ok(alerts)
