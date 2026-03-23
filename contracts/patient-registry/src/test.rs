@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, Address, Bytes, Env, String};
+use soroban_sdk::{testutils::Address as _, Address, Bytes, BytesN, Env, String};
 
 /// ------------------------------------------------
 /// PATIENT TESTS
@@ -157,14 +157,19 @@ fn test_grant_access_and_add_medical_record() {
     let contract_id = env.register(MedicalRegistry, ());
     let client = MedicalRegistryClient::new(&env, &contract_id);
 
+    let admin = Address::generate(&env);
     let patient = Address::generate(&env);
     let doctor = Address::generate(&env);
 
     let hash = Bytes::from_array(&env, &[1, 2, 3]);
     let desc = String::from_str(&env, "Blood test results");
+    let v1 = BytesN::from_array(&env, &[1u8; 32]);
 
     env.mock_all_auths();
 
+    client.initialize(&admin);
+    client.publish_consent_version(&v1);
+    client.acknowledge_consent(&patient, &v1);
     client.grant_access(&patient, &doctor);
     client.add_medical_record(&patient, &doctor, &hash, &desc);
 
@@ -177,7 +182,7 @@ fn test_grant_access_and_add_medical_record() {
 }
 
 #[test]
-#[should_panic(expected = "Doctor not authorized")]
+#[should_panic(expected = "Patient has not acknowledged current consent version")]
 fn test_unauthorized_doctor_cannot_add_record() {
     let env = Env::default();
     let contract_id = env.register(MedicalRegistry, ());
@@ -210,4 +215,189 @@ fn test_revoke_access() {
 
     let doctors = client.get_authorized_doctors(&patient);
     assert_eq!(doctors.len(), 0);
+}
+
+/// ------------------------------------------------
+/// CONSENT TESTS
+/// ------------------------------------------------
+
+fn make_version(env: &Env, seed: u8) -> BytesN<32> {
+    BytesN::from_array(env, &[seed; 32])
+}
+
+#[test]
+fn test_consent_status_never_signed() {
+    let env = Env::default();
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(&env, &contract_id);
+    let patient = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&Address::generate(&env));
+
+    assert_eq!(client.get_consent_status(&patient), ConsentStatus::NeverSigned);
+}
+
+#[test]
+fn test_consent_status_never_signed_no_ack() {
+    let env = Env::default();
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&admin);
+    client.publish_consent_version(&make_version(&env, 1));
+
+    // Version published but patient never acknowledged
+    assert_eq!(client.get_consent_status(&patient), ConsentStatus::NeverSigned);
+}
+
+#[test]
+fn test_consent_status_acknowledged() {
+    let env = Env::default();
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let patient = Address::generate(&env);
+    let v1 = make_version(&env, 1);
+
+    env.mock_all_auths();
+    client.initialize(&admin);
+    client.publish_consent_version(&v1);
+    client.acknowledge_consent(&patient, &v1);
+
+    assert_eq!(client.get_consent_status(&patient), ConsentStatus::Acknowledged);
+}
+
+#[test]
+fn test_consent_status_pending_after_new_version() {
+    let env = Env::default();
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let patient = Address::generate(&env);
+    let v1 = make_version(&env, 1);
+    let v2 = make_version(&env, 2);
+
+    env.mock_all_auths();
+    client.initialize(&admin);
+    client.publish_consent_version(&v1);
+    client.acknowledge_consent(&patient, &v1);
+
+    // Admin publishes new version — patient is now Pending
+    client.publish_consent_version(&v2);
+    assert_eq!(client.get_consent_status(&patient), ConsentStatus::Pending);
+}
+
+#[test]
+fn test_consent_re_acknowledge_restores_acknowledged() {
+    let env = Env::default();
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let patient = Address::generate(&env);
+    let v1 = make_version(&env, 1);
+    let v2 = make_version(&env, 2);
+
+    env.mock_all_auths();
+    client.initialize(&admin);
+    client.publish_consent_version(&v1);
+    client.acknowledge_consent(&patient, &v1);
+    client.publish_consent_version(&v2);
+    client.acknowledge_consent(&patient, &v2);
+
+    assert_eq!(client.get_consent_status(&patient), ConsentStatus::Acknowledged);
+}
+
+#[test]
+#[should_panic(expected = "Version mismatch")]
+fn test_acknowledge_wrong_version_panics() {
+    let env = Env::default();
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&admin);
+    client.publish_consent_version(&make_version(&env, 1));
+    client.acknowledge_consent(&patient, &make_version(&env, 99));
+}
+
+#[test]
+#[should_panic(expected = "Patient has not acknowledged current consent version")]
+fn test_add_record_blocked_without_consent() {
+    let env = Env::default();
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let patient = Address::generate(&env);
+    let doctor = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&admin);
+    client.publish_consent_version(&make_version(&env, 1));
+    // Patient never acknowledges
+    client.grant_access(&patient, &doctor);
+    client.add_medical_record(
+        &patient,
+        &doctor,
+        &Bytes::from_array(&env, &[1, 2, 3]),
+        &String::from_str(&env, "test"),
+    );
+}
+
+#[test]
+fn test_add_record_allowed_after_consent() {
+    let env = Env::default();
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let patient = Address::generate(&env);
+    let doctor = Address::generate(&env);
+    let v1 = make_version(&env, 1);
+
+    env.mock_all_auths();
+    client.initialize(&admin);
+    client.publish_consent_version(&v1);
+    client.acknowledge_consent(&patient, &v1);
+    client.grant_access(&patient, &doctor);
+    client.add_medical_record(
+        &patient,
+        &doctor,
+        &Bytes::from_array(&env, &[1, 2, 3]),
+        &String::from_str(&env, "Blood test"),
+    );
+
+    assert_eq!(client.get_medical_records(&patient).len(), 1);
+}
+
+#[test]
+#[should_panic(expected = "Patient has not acknowledged current consent version")]
+fn test_add_record_blocked_after_new_version() {
+    let env = Env::default();
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let patient = Address::generate(&env);
+    let doctor = Address::generate(&env);
+    let v1 = make_version(&env, 1);
+    let v2 = make_version(&env, 2);
+
+    env.mock_all_auths();
+    client.initialize(&admin);
+    client.publish_consent_version(&v1);
+    client.acknowledge_consent(&patient, &v1);
+    client.grant_access(&patient, &doctor);
+
+    // Admin bumps version — patient must re-acknowledge
+    client.publish_consent_version(&v2);
+    client.add_medical_record(
+        &patient,
+        &doctor,
+        &Bytes::from_array(&env, &[1, 2, 3]),
+        &String::from_str(&env, "Post-update record"),
+    );
 }
