@@ -1,4 +1,5 @@
 #![cfg(test)]
+#![allow(deprecated)]
 
 use super::*;
 use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String, Symbol};

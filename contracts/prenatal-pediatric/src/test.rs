@@ -100,7 +100,7 @@ fn test_prenatal_visit_screening_and_ultrasound() {
     let visit = client.get_prenatal_visit(&1);
     assert_eq!(visit.gestational_age_weeks, 12);
     let screening = client.get_prenatal_screening(&1);
-    assert_eq!(screening.abnormal, false);
+    assert!(!screening.abnormal);
     let ultrasound = client.get_ultrasound(&1);
     assert_eq!(ultrasound.gestational_age, 20);
 }

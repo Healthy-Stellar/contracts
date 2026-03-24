@@ -1,11 +1,8 @@
 #![cfg(test)]
+#![allow(deprecated)]
 
 use crate::contract::{ReferralContract, ReferralContractClient};
-use crate::types::Error;
-use soroban_sdk::{
-    testutils::{Address as _, Events},
-    Address, BytesN, Env, String, Symbol, Vec,
-};
+use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String, Symbol, Vec};
 
 #[test]
 fn test_referral_lifecycle() {

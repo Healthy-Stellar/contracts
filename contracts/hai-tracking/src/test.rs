@@ -136,7 +136,7 @@ fn test_record_organism_and_mdr_detection() {
 
     let case = client.get_infection_case(&infection_id);
     let org = case.organisms.get(0).unwrap();
-    assert_eq!(org.is_multidrug_resistant, true);
+    assert!(org.is_multidrug_resistant);
     assert_eq!(org.susceptibilities.len(), 3);
 }
 
@@ -366,13 +366,12 @@ fn test_reporting_stewardship_and_alert_priority_validation() {
         &202601,
     );
 
-    let ok = client.alert_infection_control_team(
+    client.alert_infection_control_team(
         &Symbol::new(&env, "outbreak"),
         &facility,
         &String::from_str(&env, "Cluster threshold exceeded"),
         &Symbol::new(&env, "high"),
     );
-    assert_eq!(ok, ());
 
     let bad_priority = client.try_alert_infection_control_team(
         &Symbol::new(&env, "outbreak"),

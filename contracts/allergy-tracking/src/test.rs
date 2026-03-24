@@ -48,7 +48,7 @@ fn test_record_allergy_success() {
     let allergy = client.get_allergy(&allergy_id);
     assert_eq!(allergy.allergen, String::from_str(&env, "Penicillin"));
     assert_eq!(allergy.severity, Severity::Moderate);
-    assert_eq!(allergy.verified, true);
+    assert!(allergy.verified);
     assert_eq!(allergy.status, AllergyStatus::Active);
 }
 
@@ -781,5 +781,5 @@ fn test_include_deleted_requires_admin() {
 
     let admin_view = client.get_all_records(&patient, &admin, &true);
     assert_eq!(admin_view.len(), 1);
-    assert_eq!(admin_view.get(0).unwrap().is_deleted, true);
+    assert!(admin_view.get(0).unwrap().is_deleted);
 }

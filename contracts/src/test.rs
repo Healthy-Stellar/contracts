@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod test {
+mod tests {
     use crate::{
         AppointmentScheduling, AppointmentSchedulingClient, AppointmentStatus, DataKey,
         HealthcareRegistry, HealthcareRegistryClient,
@@ -98,7 +98,7 @@ mod test {
         client.verify_institution(&admin, &inst_addr);
 
         let data = client.get_institution(&inst_addr);
-        assert_eq!(data.is_verified, true);
+        assert!(data.is_verified);
     }
 
     #[test]
@@ -360,9 +360,9 @@ mod test {
         for appt in patient_appointments.iter() {
             appointment_ids.push_back(appt.id);
         }
-        assert!(appointment_ids.contains(&appointment_id1));
-        assert!(appointment_ids.contains(&appointment_id2));
-        assert!(!appointment_ids.contains(&appointment_id3));
+        assert!(appointment_ids.contains(appointment_id1));
+        assert!(appointment_ids.contains(appointment_id2));
+        assert!(!appointment_ids.contains(appointment_id3));
 
         // Check doctor's appointments
         let doctor_appointments = client.get_appointments(&doctor);
@@ -372,9 +372,9 @@ mod test {
         for appt in doctor_appointments.iter() {
             doctor_appointment_ids.push_back(appt.id);
         }
-        assert!(doctor_appointment_ids.contains(&appointment_id1));
-        assert!(doctor_appointment_ids.contains(&appointment_id2));
-        assert!(doctor_appointment_ids.contains(&appointment_id3));
+        assert!(doctor_appointment_ids.contains(appointment_id1));
+        assert!(doctor_appointment_ids.contains(appointment_id2));
+        assert!(doctor_appointment_ids.contains(appointment_id3));
     }
 
     #[test]

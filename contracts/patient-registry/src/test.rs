@@ -805,9 +805,9 @@ fn test_duplicate_active_hold_is_rejected() {
     assert!(result.is_err());
 }
 
-/// ------------------------------------------------
-/// CONSENT TESTS
-/// ------------------------------------------------
+// ------------------------------------------------
+// CONSENT TESTS
+// ------------------------------------------------
 
 fn make_version(env: &Env, seed: u8) -> BytesN<32> {
     BytesN::from_array(env, &[seed; 32])
@@ -1023,9 +1023,9 @@ fn test_add_record_blocked_after_new_version() {
     );
 }
 
-/// ------------------------------------------------
-/// GUARDIAN TESTS
-/// ------------------------------------------------
+// ------------------------------------------------
+// GUARDIAN TESTS
+// ------------------------------------------------
 
 fn setup_with_consent(env: &Env) -> (MedicalRegistryClient<'_>, Address) {
     let contract_id = env.register(MedicalRegistry, ());
@@ -1187,9 +1187,9 @@ fn test_guardian_cannot_act_for_different_patient() {
     client.acknowledge_consent(&patient_b, &guardian, &v1);
 }
 
-/// ------------------------------------------------
-/// SNAPSHOT TESTS
-/// ------------------------------------------------
+// ------------------------------------------------
+// SNAPSHOT TESTS
+// ------------------------------------------------
 
 fn register_patient_with_consent(
     client: &MedicalRegistryClient,
@@ -1350,9 +1350,9 @@ fn test_snapshot_includes_registered_patients_and_doctors() {
     );
 }
 
-/// ------------------------------------------------
-/// FEE TESTS
-/// ------------------------------------------------
+// ------------------------------------------------
+// FEE TESTS
+// ------------------------------------------------
 
 fn setup_with_fee(
     env: &Env,
@@ -1493,9 +1493,9 @@ fn test_fee_can_be_reset_to_zero() {
     assert_eq!(token.balance(&treasury), 0);
 }
 
-/// ------------------------------------------------
-/// GET_RECORDS_BY_TYPE TESTS
-/// ------------------------------------------------
+// ------------------------------------------------
+// GET_RECORDS_BY_TYPE TESTS
+// ------------------------------------------------
 
 fn setup_for_filter(env: &Env) -> (MedicalRegistryClient<'_>, Address, Address) {
     let contract_id = env.register(MedicalRegistry, ());

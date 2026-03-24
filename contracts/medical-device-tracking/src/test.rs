@@ -1,4 +1,5 @@
 #![cfg(test)]
+#![allow(deprecated)]
 
 use super::*;
 use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String, Symbol, Vec};
@@ -280,8 +281,8 @@ fn test_notify_affected_patients() {
 
     let affected = client.notify_affected_patients(&recall_id, &1750100000u64);
     assert_eq!(affected.len(), 2);
-    assert!(affected.contains(&patient1));
-    assert!(affected.contains(&patient2));
+    assert!(affected.contains(patient1));
+    assert!(affected.contains(patient2));
 }
 
 #[test]
@@ -339,7 +340,7 @@ fn test_notify_affected_patients_excludes_removed() {
 
     let affected = client.notify_affected_patients(&recall_id, &1750100000u64);
     assert_eq!(affected.len(), 1);
-    assert!(affected.contains(&patient2));
+    assert!(affected.contains(patient2));
 }
 
 #[test]

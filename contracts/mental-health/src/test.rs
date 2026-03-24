@@ -133,7 +133,7 @@ fn test_privacy_and_screening() {
         &1690000000,
     );
 
-    assert_eq!(result.is_err(), true);
+    assert!(result.is_err());
 
     // Remove privacy flag
     client.set_enhanced_privacy_flag(&patient_id, &Symbol::new(&env, "substance_abuse"), &false);

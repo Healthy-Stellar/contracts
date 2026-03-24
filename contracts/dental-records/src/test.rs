@@ -1,4 +1,5 @@
 #![cfg(test)]
+#![allow(deprecated)]
 
 use crate::types::*;
 use crate::{DentalRecordsContract, DentalRecordsContractClient};

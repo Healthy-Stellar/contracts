@@ -37,7 +37,7 @@ fn payload(env: &Env) -> Bytes {
 #[test]
 #[should_panic(expected = "Already initialized")]
 fn test_double_initialize() {
-    let (env, signers, client) = setup(3, 2);
+    let (_env, signers, client) = setup(3, 2);
     client.initialize(&signers, &2u32, &3600u64);
 }
 

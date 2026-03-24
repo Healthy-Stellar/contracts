@@ -1,4 +1,5 @@
 #![cfg(test)]
+#![allow(deprecated)]
 
 use super::*;
 use soroban_sdk::{testutils::Address as _, Env};
@@ -63,7 +64,7 @@ fn test_set_emergency_profile() {
     assert_eq!(profile.active_conditions.len(), 2);
     assert_eq!(profile.current_medications.len(), 2);
     assert_eq!(profile.emergency_contacts.len(), 2);
-    assert_eq!(profile.dnr_status, false);
+    assert!(!profile.dnr_status);
 }
 
 #[test]
@@ -246,7 +247,7 @@ fn test_record_dnr_order() {
 
     // Verify profile DNR status updated
     let profile = client.get_emergency_info(&patient, &patient);
-    assert_eq!(profile.dnr_status, true);
+    assert!(profile.dnr_status);
 }
 
 #[test]

@@ -7,7 +7,7 @@ use crate::{PacsContract, PacsContractClient};
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
-fn setup(env: &Env) -> (PacsContractClient, Address, Address) {
+fn setup(env: &Env) -> (PacsContractClient<'_>, Address, Address) {
     let id = env.register(PacsContract, ());
     let client = PacsContractClient::new(env, &id);
     let patient = Address::generate(env);
@@ -174,8 +174,8 @@ fn comparison_study_returns_prior_match() {
     };
 
     let matches = client.request_comparison_study(&current, &rad, &criteria);
-    assert!(matches.contains(&prior));
-    assert!(!matches.contains(&current));
+    assert!(matches.contains(prior));
+    assert!(!matches.contains(current));
 }
 
 #[test]
@@ -276,7 +276,7 @@ fn anonymize_study_returns_uid() {
         &Symbol::new(&env, "full"),
         &String::from_str(&env, "cancer study"),
     );
-    assert!(uid.len() > 0);
+    assert!(!uid.is_empty());
 }
 
 #[test]
