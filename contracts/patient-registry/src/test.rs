@@ -2,8 +2,8 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger as _, MockAuth, MockAuthInvoke},
-    Address, Bytes, BytesN, Env, IntoVal, String,
+    testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke},
+    Address, Bytes, BytesN, Env, IntoVal, String, Symbol,
 };
 
 /// ------------------------------------------------
@@ -78,6 +78,68 @@ fn test_is_patient_registered() {
     assert!(!client.is_patient_registered(&unregistered_wallet));
 }
 
+#[test]
+fn test_total_patients_increments_on_register() {
+    let env = Env::default();
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(&env, &contract_id);
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let fee_token = Address::generate(&env);
+    client.initialize(&admin, &treasury, &fee_token);
+
+    assert_eq!(client.get_total_patients(), 0);
+
+    client.register_patient(
+        &Address::generate(&env),
+        &String::from_str(&env, "P1"),
+        &631152000,
+        &String::from_str(&env, "ipfs://p1"),
+    );
+    assert_eq!(client.get_total_patients(), 1);
+
+    client.register_patient(
+        &Address::generate(&env),
+        &String::from_str(&env, "P2"),
+        &631152001,
+        &String::from_str(&env, "ipfs://p2"),
+    );
+    assert_eq!(client.get_total_patients(), 2);
+}
+
+#[test]
+fn test_total_patients_not_incremented_on_failed_register() {
+    let env = Env::default();
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(&env, &contract_id);
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let fee_token = Address::generate(&env);
+    client.initialize(&admin, &treasury, &fee_token);
+
+    let patient_wallet = Address::generate(&env);
+    client.register_patient(
+        &patient_wallet,
+        &String::from_str(&env, "P1"),
+        &631152000,
+        &String::from_str(&env, "ipfs://p1"),
+    );
+    assert_eq!(client.get_total_patients(), 1);
+
+    let duplicate_attempt = client.try_register_patient(
+        &patient_wallet,
+        &String::from_str(&env, "P1"),
+        &631152000,
+        &String::from_str(&env, "ipfs://p1"),
+    );
+    assert!(duplicate_attempt.is_err());
+    assert_eq!(client.get_total_patients(), 1);
+}
+
 /// ------------------------------------------------
 /// DOCTOR + INSTITUTION TESTS
 /// ------------------------------------------------
@@ -119,13 +181,8 @@ fn test_register_institution_and_verify_doctor() {
 
     env.mock_all_auths();
 
-    // Register doctor
     client.register_doctor(&doctor_wallet, &name, &specialization, &cert_hash);
-
-    // Register institution
     client.register_institution(&institution_wallet);
-
-    // Verify doctor
     client.verify_doctor(&doctor_wallet, &institution_wallet);
 
     let doctor = client.get_doctor(&doctor_wallet);
@@ -149,8 +206,6 @@ fn test_verify_doctor_by_unregistered_institution_should_fail() {
     env.mock_all_auths();
 
     client.register_doctor(&doctor_wallet, &name, &specialization, &cert_hash);
-
-    // This should panic
     client.verify_doctor(&doctor_wallet, &fake_institution);
 }
 
@@ -176,7 +231,13 @@ fn test_grant_access_and_add_medical_record() {
     client.publish_consent_version(&v1);
     client.acknowledge_consent(&patient, &patient, &v1);
     client.grant_access(&patient, &patient, &doctor);
-    client.add_medical_record(&patient, &doctor, &hash, &desc);
+    client.add_medical_record(
+        &patient,
+        &doctor,
+        &hash,
+        &desc,
+        &Symbol::new(&env, "LAB"),
+    );
 
     let records = client.get_medical_records(&patient);
     assert_eq!(records.len(), 1);
@@ -184,6 +245,7 @@ fn test_grant_access_and_add_medical_record() {
     let record = records.get(0).unwrap();
     assert_eq!(record.record_hash, hash);
     assert_eq!(record.description, desc);
+    assert_eq!(record.record_type, Symbol::new(&env, "LAB"));
 }
 
 #[test]
@@ -201,7 +263,13 @@ fn test_unauthorized_doctor_cannot_add_record() {
 
     env.mock_all_auths();
 
-    client.add_medical_record(&patient, &doctor, &hash, &desc);
+    client.add_medical_record(
+        &patient,
+        &doctor,
+        &hash,
+        &desc,
+        &Symbol::new(&env, "IMAGING"),
+    );
 }
 
 #[test]
@@ -237,8 +305,10 @@ fn test_admin_can_place_hold() {
     let admin = Address::generate(&env);
     let patient = Address::generate(&env);
     let reason_hash = BytesN::from_array(&env, &[7u8; 32]);
+    let treasury = Address::generate(&env);
+    let fee_token = Address::generate(&env);
 
-    client.initialize(&admin);
+    client.initialize(&admin, &treasury, &fee_token);
     client.register_patient(
         &patient,
         &String::from_str(&env, "Jane Doe"),
@@ -269,6 +339,8 @@ fn test_non_admin_cannot_place_hold() {
     let name = String::from_str(&env, "Jane Doe");
     let metadata = String::from_str(&env, "ipfs://patient");
     let dob = 631152000u64;
+    let treasury = Address::generate(&env);
+    let fee_token = Address::generate(&env);
 
     client
         .mock_auths(&[MockAuth {
@@ -276,11 +348,11 @@ fn test_non_admin_cannot_place_hold() {
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
                 fn_name: "initialize",
-                args: (&admin,).into_val(&env),
+                args: (&admin, &treasury, &fee_token).into_val(&env),
                 sub_invokes: &[],
             },
         }])
-        .initialize(&admin);
+        .initialize(&admin, &treasury, &fee_token);
 
     client
         .mock_auths(&[MockAuth {
@@ -320,8 +392,10 @@ fn test_admin_can_lift_hold() {
     let admin = Address::generate(&env);
     let patient = Address::generate(&env);
     let reason_hash = BytesN::from_array(&env, &[8u8; 32]);
+    let treasury = Address::generate(&env);
+    let fee_token = Address::generate(&env);
 
-    client.initialize(&admin);
+    client.initialize(&admin, &treasury, &fee_token);
     client.register_patient(
         &patient,
         &String::from_str(&env, "Jane Doe"),
@@ -351,6 +425,8 @@ fn test_non_admin_cannot_lift_hold() {
     let name = String::from_str(&env, "Jane Doe");
     let metadata = String::from_str(&env, "ipfs://patient");
     let dob = 631152000u64;
+    let treasury = Address::generate(&env);
+    let fee_token = Address::generate(&env);
 
     client
         .mock_auths(&[MockAuth {
@@ -358,11 +434,11 @@ fn test_non_admin_cannot_lift_hold() {
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
                 fn_name: "initialize",
-                args: (&admin,).into_val(&env),
+                args: (&admin, &treasury, &fee_token).into_val(&env),
                 sub_invokes: &[],
             },
         }])
-        .initialize(&admin);
+        .initialize(&admin, &treasury, &fee_token);
 
     client
         .mock_auths(&[MockAuth {
@@ -414,17 +490,24 @@ fn test_hold_blocks_patient_update() {
     let admin = Address::generate(&env);
     let patient = Address::generate(&env);
     let reason_hash = BytesN::from_array(&env, &[9u8; 32]);
+    let treasury = Address::generate(&env);
+    let fee_token = Address::generate(&env);
 
-    client.initialize(&admin);
+    client.initialize(&admin, &treasury, &fee_token);
     client.register_patient(
         &patient,
         &String::from_str(&env, "Jane Doe"),
         &631152000,
         &String::from_str(&env, "ipfs://initial"),
     );
+    env.ledger().set_timestamp(50);
     client.place_hold(&patient, &reason_hash, &250);
 
-    let result = client.try_update_patient(&patient, &String::from_str(&env, "ipfs://blocked"));
+    let result = client.try_update_patient(
+        &patient,
+        &patient,
+        &String::from_str(&env, "ipfs://blocked"),
+    );
     assert!(result.is_err());
 }
 
@@ -440,8 +523,10 @@ fn test_hold_blocks_grant_and_revoke_access() {
     let patient = Address::generate(&env);
     let doctor = Address::generate(&env);
     let reason_hash = BytesN::from_array(&env, &[10u8; 32]);
+    let treasury = Address::generate(&env);
+    let fee_token = Address::generate(&env);
 
-    client.initialize(&admin);
+    client.initialize(&admin, &treasury, &fee_token);
     client.register_patient(
         &patient,
         &String::from_str(&env, "Jane Doe"),
@@ -449,13 +534,14 @@ fn test_hold_blocks_grant_and_revoke_access() {
         &String::from_str(&env, "ipfs://initial"),
     );
 
-    client.grant_access(&patient, &doctor);
+    client.grant_access(&patient, &patient, &doctor);
+    env.ledger().set_timestamp(50);
     client.place_hold(&patient, &reason_hash, &250);
 
-    let grant_result = client.try_grant_access(&patient, &Address::generate(&env));
+    let grant_result = client.try_grant_access(&patient, &patient, &Address::generate(&env));
     assert!(grant_result.is_err());
 
-    let revoke_result = client.try_revoke_access(&patient, &doctor);
+    let revoke_result = client.try_revoke_access(&patient, &patient, &doctor);
     assert!(revoke_result.is_err());
 }
 
@@ -471,8 +557,10 @@ fn test_write_succeeds_after_hold_expiry() {
     let patient = Address::generate(&env);
     let reason_hash = BytesN::from_array(&env, &[11u8; 32]);
     let updated_metadata = String::from_str(&env, "ipfs://updated");
+    let treasury = Address::generate(&env);
+    let fee_token = Address::generate(&env);
 
-    client.initialize(&admin);
+    client.initialize(&admin, &treasury, &fee_token);
     client.register_patient(
         &patient,
         &String::from_str(&env, "Jane Doe"),
@@ -487,7 +575,7 @@ fn test_write_succeeds_after_hold_expiry() {
     env.ledger().set_timestamp(151);
     assert!(!client.is_hold_active(&patient));
 
-    client.update_patient(&patient, &updated_metadata);
+    client.update_patient(&patient, &patient, &updated_metadata);
     let patient_data = client.get_patient(&patient);
     assert_eq!(patient_data.metadata, updated_metadata);
 }
@@ -503,8 +591,10 @@ fn test_hold_exposes_only_reason_hash_in_state() {
     let admin = Address::generate(&env);
     let patient = Address::generate(&env);
     let reason_hash = BytesN::from_array(&env, &[12u8; 32]);
+    let treasury = Address::generate(&env);
+    let fee_token = Address::generate(&env);
 
-    client.initialize(&admin);
+    client.initialize(&admin, &treasury, &fee_token);
     client.register_patient(
         &patient,
         &String::from_str(&env, "Jane Doe"),
@@ -533,8 +623,10 @@ fn test_lifting_hold_restores_normal_write_ability() {
     let patient = Address::generate(&env);
     let reason_hash = BytesN::from_array(&env, &[13u8; 32]);
     let updated_metadata = String::from_str(&env, "ipfs://restored");
+    let treasury = Address::generate(&env);
+    let fee_token = Address::generate(&env);
 
-    client.initialize(&admin);
+    client.initialize(&admin, &treasury, &fee_token);
     client.register_patient(
         &patient,
         &String::from_str(&env, "Jane Doe"),
@@ -542,9 +634,10 @@ fn test_lifting_hold_restores_normal_write_ability() {
         &String::from_str(&env, "ipfs://initial"),
     );
 
+    env.ledger().set_timestamp(50);
     client.place_hold(&patient, &reason_hash, &300);
     client.lift_hold(&patient);
-    client.update_patient(&patient, &updated_metadata);
+    client.update_patient(&patient, &patient, &updated_metadata);
 
     let patient_data = client.get_patient(&patient);
     assert_eq!(patient_data.metadata, updated_metadata);
@@ -561,8 +654,10 @@ fn test_invalid_hold_expiry_is_rejected() {
     let admin = Address::generate(&env);
     let patient = Address::generate(&env);
     let reason_hash = BytesN::from_array(&env, &[14u8; 32]);
+    let treasury = Address::generate(&env);
+    let fee_token = Address::generate(&env);
 
-    client.initialize(&admin);
+    client.initialize(&admin, &treasury, &fee_token);
     client.register_patient(
         &patient,
         &String::from_str(&env, "Jane Doe"),
@@ -587,8 +682,10 @@ fn test_duplicate_active_hold_is_rejected() {
     let patient = Address::generate(&env);
     let reason_hash = BytesN::from_array(&env, &[15u8; 32]);
     let second_reason_hash = BytesN::from_array(&env, &[16u8; 32]);
+    let treasury = Address::generate(&env);
+    let fee_token = Address::generate(&env);
 
-    client.initialize(&admin);
+    client.initialize(&admin, &treasury, &fee_token);
     client.register_patient(
         &patient,
         &String::from_str(&env, "Jane Doe"),
@@ -601,6 +698,8 @@ fn test_duplicate_active_hold_is_rejected() {
 
     let result = client.try_place_hold(&patient, &second_reason_hash, &300u64);
     assert!(result.is_err());
+}
+
 /// ------------------------------------------------
 /// CONSENT TESTS
 /// ------------------------------------------------
@@ -617,7 +716,11 @@ fn test_consent_status_never_signed() {
     let patient = Address::generate(&env);
 
     env.mock_all_auths();
-    client.initialize(&Address::generate(&env), &Address::generate(&env), &Address::generate(&env));
+    client.initialize(
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+    );
 
     assert_eq!(client.get_consent_status(&patient), ConsentStatus::NeverSigned);
 }
@@ -636,7 +739,6 @@ fn test_consent_status_never_signed_no_ack() {
     client.initialize(&admin, &treasury, &fee_token);
     client.publish_consent_version(&make_version(&env, 1));
 
-    // Version published but patient never acknowledged
     assert_eq!(client.get_consent_status(&patient), ConsentStatus::NeverSigned);
 }
 
@@ -676,7 +778,6 @@ fn test_consent_status_pending_after_new_version() {
     client.publish_consent_version(&v1);
     client.acknowledge_consent(&patient, &patient, &v1);
 
-    // Admin publishes new version — patient is now Pending
     client.publish_consent_version(&v2);
     assert_eq!(client.get_consent_status(&patient), ConsentStatus::Pending);
 }
@@ -742,6 +843,7 @@ fn test_add_record_blocked_without_consent() {
         &doctor,
         &Bytes::from_array(&env, &[1, 2, 3]),
         &String::from_str(&env, "test"),
+        &Symbol::new(&env, "LAB"),
     );
 }
 
@@ -767,6 +869,7 @@ fn test_add_record_allowed_after_consent() {
         &doctor,
         &Bytes::from_array(&env, &[1, 2, 3]),
         &String::from_str(&env, "Blood test"),
+        &Symbol::new(&env, "LAB"),
     );
 
     assert_eq!(client.get_medical_records(&patient).len(), 1);
@@ -799,6 +902,7 @@ fn test_add_record_blocked_after_new_version() {
         &doctor,
         &Bytes::from_array(&env, &[1, 2, 3]),
         &String::from_str(&env, "Post-update record"),
+        &Symbol::new(&env, "LAB"),
     );
 }
 
@@ -811,8 +915,8 @@ fn setup_with_consent(env: &Env) -> (MedicalRegistryClient, Address) {
     let client = MedicalRegistryClient::new(env, &contract_id);
     let admin = Address::generate(env);
     env.mock_all_auths();
-    let treasury = Address::generate(&env);
-    let fee_token = Address::generate(&env);
+    let treasury = Address::generate(env);
+    let fee_token = Address::generate(env);
     client.initialize(&admin, &treasury, &fee_token);
     client.publish_consent_version(&make_version(env, 1));
     (client, admin)
@@ -913,6 +1017,7 @@ fn test_guardian_enables_record_write() {
         &doctor,
         &Bytes::from_array(&env, &[5, 6, 7]),
         &String::from_str(&env, "Guardian-approved record"),
+        &Symbol::new(&env, "PRESCRIPTION"),
     );
 
     assert_eq!(client.get_medical_records(&patient).len(), 1);
@@ -941,7 +1046,6 @@ fn test_revoked_guardian_rejected() {
 
     client.assign_guardian(&patient, &guardian);
     client.revoke_guardian(&patient);
-    // Guardian no longer valid
     client.acknowledge_consent(&patient, &guardian, &v1);
 }
 
@@ -955,9 +1059,7 @@ fn test_guardian_cannot_act_for_different_patient() {
     let patient_b = Address::generate(&env);
     let guardian = Address::generate(&env);
 
-    // Guardian assigned only to patient_a
     client.assign_guardian(&patient_a, &guardian);
-    // Attempt to act on behalf of patient_b
     client.acknowledge_consent(&patient_b, &guardian, &v1);
 }
 
@@ -994,7 +1096,6 @@ fn test_first_snapshot_always_allowed() {
     client.initialize(&admin, &treasury, &fee_token);
     client.publish_consent_version(&v1);
 
-    // No prior snapshot — should succeed at any ledger
     client.emit_state_snapshot();
     assert_eq!(client.get_last_snapshot_ledger(), Some(env.ledger().sequence()));
 }
@@ -1045,7 +1146,6 @@ fn test_snapshot_rate_limit_enforced() {
     client.initialize(&admin, &treasury, &fee_token);
     client.emit_state_snapshot();
 
-    // Advance ledger by less than 100,000
     env.ledger().set(soroban_sdk::testutils::LedgerInfo {
         sequence_number: env.ledger().sequence() + 99_999,
         timestamp: env.ledger().timestamp() + 99_999,
@@ -1116,7 +1216,6 @@ fn test_snapshot_includes_registered_patients_and_doctors() {
         &Bytes::from_array(&env, &[1, 2, 3]),
     );
 
-    // Snapshot should succeed — lists are populated
     client.emit_state_snapshot();
     assert_eq!(client.get_last_snapshot_ledger(), Some(env.ledger().sequence()));
 }
@@ -1131,7 +1230,6 @@ fn setup_with_fee(
     let contract_id = env.register(MedicalRegistry, ());
     let client = MedicalRegistryClient::new(env, &contract_id);
 
-    // Deploy a real SAC token for cross-contract call testing
     let token_admin = Address::generate(env);
     let token_contract = env.register_stellar_asset_contract_v2(token_admin.clone());
     let token_id = token_contract.address();
@@ -1150,7 +1248,6 @@ fn setup_with_fee(
     client.acknowledge_consent(&patient, &patient, &v1);
     client.grant_access(&patient, &patient, &doctor);
 
-    // Mint tokens to doctor so they can pay fees
     token_client.mint(&doctor, &10_000);
 
     (client, admin, treasury, token_id, doctor, patient, v1)
@@ -1179,12 +1276,12 @@ fn test_add_record_zero_fee_no_transfer() {
     let (client, _admin, treasury, token_id, doctor, patient, _v1) =
         setup_with_fee(&env);
 
-    // Fee is 0 — no transfer should occur
     client.add_medical_record(
         &patient,
         &doctor,
         &Bytes::from_array(&env, &[1, 2, 3]),
         &String::from_str(&env, "Zero fee record"),
+        &Symbol::new(&env, "LAB"),
     );
 
     let token = soroban_sdk::token::TokenClient::new(&env, &token_id);
@@ -1204,6 +1301,7 @@ fn test_add_record_transfers_fee_to_treasury() {
         &doctor,
         &Bytes::from_array(&env, &[4, 5, 6]),
         &String::from_str(&env, "Paid record"),
+        &Symbol::new(&env, "LAB"),
     );
 
     let token = soroban_sdk::token::TokenClient::new(&env, &token_id);
@@ -1225,6 +1323,7 @@ fn test_fee_deducted_per_record() {
             &doctor,
             &Bytes::from_array(&env, &[i, i, i]),
             &String::from_str(&env, "Record"),
+            &Symbol::new(&env, "LAB"),
         );
     }
 
@@ -1256,6 +1355,7 @@ fn test_fee_can_be_reset_to_zero() {
         &doctor,
         &Bytes::from_array(&env, &[7, 8, 9]),
         &String::from_str(&env, "Free after reset"),
+        &Symbol::new(&env, "LAB"),
     );
 
     let token = soroban_sdk::token::TokenClient::new(&env, &token_id);
@@ -1286,6 +1386,14 @@ fn setup_for_ttl(
     let contract_id = env.register(MedicalRegistry, ());
     let client = MedicalRegistryClient::new(env, &contract_id);
 
+/// GET_RECORDS_BY_TYPE TESTS
+/// ------------------------------------------------
+
+fn setup_for_filter(
+    env: &Env,
+) -> (MedicalRegistryClient, Address, Address) {
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(env, &contract_id);
     let admin = Address::generate(env);
     let treasury = Address::generate(env);
     let fee_token = Address::generate(env);
@@ -1323,6 +1431,16 @@ fn test_add_record_extends_patient_ttl() {
     env.ledger().set(make_ledger_info(100, 1_000_000));
 
     let (client, _admin, patient, doctor, _v1) = setup_for_ttl(&env);
+    client.acknowledge_consent(&patient, &patient, &v1);
+    client.grant_access(&patient, &patient, &doctor);
+
+    (client, patient, doctor)
+}
+
+#[test]
+fn test_get_records_by_type_returns_matching_records() {
+    let env = Env::default();
+    let (client, patient, doctor) = setup_for_filter(&env);
 
     client.add_medical_record(
         &patient,
@@ -1344,6 +1462,39 @@ fn test_get_records_extends_ttl() {
     env.ledger().set(make_ledger_info(100, 1_000_000));
 
     let (client, _admin, patient, doctor, _v1) = setup_for_ttl(&env);
+        &Bytes::from_array(&env, &[1, 1, 1]),
+        &String::from_str(&env, "CBC panel"),
+        &Symbol::new(&env, "LAB"),
+    );
+    client.add_medical_record(
+        &patient,
+        &doctor,
+        &Bytes::from_array(&env, &[2, 2, 2]),
+        &String::from_str(&env, "Amoxicillin"),
+        &Symbol::new(&env, "PRESCRIPTION"),
+    );
+    client.add_medical_record(
+        &patient,
+        &doctor,
+        &Bytes::from_array(&env, &[3, 3, 3]),
+        &String::from_str(&env, "Lipid panel"),
+        &Symbol::new(&env, "LAB"),
+    );
+
+    let lab_records = client.get_records_by_type(&patient, &patient, &Symbol::new(&env, "LAB"));
+    assert_eq!(lab_records.len(), 2);
+    assert_eq!(lab_records.get(0).unwrap().description, String::from_str(&env, "CBC panel"));
+    assert_eq!(lab_records.get(1).unwrap().description, String::from_str(&env, "Lipid panel"));
+
+    let rx_records = client.get_records_by_type(&patient, &patient, &Symbol::new(&env, "PRESCRIPTION"));
+    assert_eq!(rx_records.len(), 1);
+    assert_eq!(rx_records.get(0).unwrap().description, String::from_str(&env, "Amoxicillin"));
+}
+
+#[test]
+fn test_get_records_by_type_returns_empty_when_no_match() {
+    let env = Env::default();
+    let (client, patient, doctor) = setup_for_filter(&env);
 
     client.add_medical_record(
         &patient,
@@ -1425,4 +1576,108 @@ fn test_ttl_constants_are_defined() {
     assert_eq!(LEDGER_BUMP_AMOUNT, 535_680);
     assert_eq!(LEDGER_THRESHOLD, 518_400);
     assert!(LEDGER_BUMP_AMOUNT > LEDGER_THRESHOLD);
+        &String::from_str(&env, "X-ray"),
+        &Symbol::new(&env, "IMAGING"),
+    );
+
+    // No PRESCRIPTION records exist — should return empty vec, not error
+    let result = client.get_records_by_type(&patient, &patient, &Symbol::new(&env, "PRESCRIPTION"));
+    assert_eq!(result.len(), 0);
+}
+
+#[test]
+fn test_get_records_by_type_returns_empty_when_no_records_at_all() {
+    let env = Env::default();
+    let (client, patient, _doctor) = setup_for_filter(&env);
+
+    let result = client.get_records_by_type(&patient, &patient, &Symbol::new(&env, "LAB"));
+    assert_eq!(result.len(), 0);
+}
+
+#[test]
+fn test_get_records_by_type_authorized_doctor_can_read() {
+    let env = Env::default();
+    let (client, patient, doctor) = setup_for_filter(&env);
+
+    client.add_medical_record(
+        &patient,
+        &doctor,
+        &Bytes::from_array(&env, &[9, 8, 7]),
+        &String::from_str(&env, "Flu shot"),
+        &Symbol::new(&env, "IMMUNIZATION"),
+    );
+
+    // Doctor (authorized) can query records
+    let records = client.get_records_by_type(&patient, &doctor, &Symbol::new(&env, "IMMUNIZATION"));
+    assert_eq!(records.len(), 1);
+}
+
+#[test]
+fn test_get_records_by_type_guardian_can_read() {
+    let env = Env::default();
+    let (client, patient, doctor) = setup_for_filter(&env);
+    let guardian = Address::generate(&env);
+
+    client.assign_guardian(&patient, &guardian);
+    client.add_medical_record(
+        &patient,
+        &doctor,
+        &Bytes::from_array(&env, &[4, 5, 6]),
+        &String::from_str(&env, "Child checkup"),
+        &Symbol::new(&env, "VISIT"),
+    );
+
+    let records = client.get_records_by_type(&patient, &guardian, &Symbol::new(&env, "VISIT"));
+    assert_eq!(records.len(), 1);
+}
+
+#[test]
+#[should_panic(expected = "Caller not authorized to view records")]
+fn test_get_records_by_type_unauthorized_caller_is_rejected() {
+    let env = Env::default();
+    let (client, patient, _doctor) = setup_for_filter(&env);
+    let stranger = Address::generate(&env);
+
+    client.get_records_by_type(&patient, &stranger, &Symbol::new(&env, "LAB"));
+}
+
+#[test]
+fn test_get_records_by_type_multiple_types_isolation() {
+    let env = Env::default();
+    let (client, patient, doctor) = setup_for_filter(&env);
+
+    let types = [
+        ("LAB", "Blood work"),
+        ("PRESCRIPTION", "Metformin"),
+        ("IMAGING", "Chest X-ray"),
+        ("LAB", "Urinalysis"),
+        ("PRESCRIPTION", "Lisinopril"),
+    ];
+
+    for (i, (rtype, desc)) in types.iter().enumerate() {
+        client.add_medical_record(
+            &patient,
+            &doctor,
+            &Bytes::from_array(&env, &[i as u8, i as u8, i as u8]),
+            &String::from_str(&env, desc),
+            &Symbol::new(&env, rtype),
+        );
+    }
+
+    assert_eq!(
+        client.get_records_by_type(&patient, &patient, &Symbol::new(&env, "LAB")).len(),
+        2
+    );
+    assert_eq!(
+        client.get_records_by_type(&patient, &patient, &Symbol::new(&env, "PRESCRIPTION")).len(),
+        2
+    );
+    assert_eq!(
+        client.get_records_by_type(&patient, &patient, &Symbol::new(&env, "IMAGING")).len(),
+        1
+    );
+    assert_eq!(
+        client.get_records_by_type(&patient, &patient, &Symbol::new(&env, "VISIT")).len(),
+        0
+    );
 }

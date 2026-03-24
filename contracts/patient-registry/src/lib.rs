@@ -3,7 +3,7 @@
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short, token, Address, Bytes, BytesN, Env, Map,
-    String, Vec,
+    String, Symbol, Vec,
 };
 
 // =====================================================
@@ -71,6 +71,7 @@ pub enum DataKey {
     RecordFee,
     Treasury,
     FeeToken,
+    TotalPatients,
 }
 
 #[contracttype]
@@ -80,6 +81,7 @@ pub struct MedicalRecord {
     pub record_hash: Bytes,
     pub description: String,
     pub timestamp: u64,
+    pub record_type: Symbol,
 }
 
 #[contracttype]
@@ -102,6 +104,31 @@ fn require_patient_or_guardian(env: &Env, patient: &Address, caller: &Address) {
     }
 }
 
+/// Enforces that `caller` is the patient, their guardian, or an authorized doctor.
+fn require_record_access(env: &Env, patient: &Address, caller: &Address) {
+    if caller == patient {
+        caller.require_auth();
+        return;
+    }
+    let guardian_key = DataKey::Guardian(patient.clone());
+    let guardian_opt: Option<Address> = env.storage().persistent().get(&guardian_key);
+    if guardian_opt.as_ref() == Some(caller) {
+        caller.require_auth();
+        return;
+    }
+    let access_key = DataKey::AuthorizedDoctors(patient.clone());
+    let access_map: Map<Address, bool> = env
+        .storage()
+        .persistent()
+        .get(&access_key)
+        .unwrap_or(Map::new(env));
+    if access_map.contains_key(caller.clone()) {
+        caller.require_auth();
+        return;
+    }
+    panic!("Caller not authorized to view records");
+}
+
 #[contract]
 pub struct MedicalRegistry;
 
@@ -119,7 +146,12 @@ impl MedicalRegistry {
         env.storage().instance().set(&DataKey::Treasury, &treasury);
         env.storage().instance().set(&DataKey::FeeToken, &fee_token);
         env.storage().instance().set(&DataKey::RecordFee, &0i128);
+        env.storage().instance().set(&DataKey::TotalPatients, &0u64);
     }
+
+    // =====================================================
+    //                    ADMIN / CONSENT
+    // =====================================================
 
     pub fn set_record_fee(env: Env, amount: i128) {
         let admin: Address = env
@@ -254,6 +286,14 @@ impl MedicalRegistry {
             metadata,
         };
         env.storage().persistent().set(&key, &patient);
+        let total_patients: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalPatients)
+            .unwrap_or(0u64);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalPatients, &(total_patients + 1));
 
         let mut pat_list: Vec<Address> = env
             .storage()
@@ -540,12 +580,17 @@ impl MedicalRegistry {
         map.keys()
     }
 
+    // =====================================================
+    //                  MEDICAL RECORDS
+    // =====================================================
+
     pub fn add_medical_record(
         env: Env,
         patient: Address,
         doctor: Address,
         record_hash: Bytes,
         description: String,
+        record_type: Symbol,
     ) {
         doctor.require_auth();
 
@@ -595,6 +640,7 @@ impl MedicalRegistry {
             record_hash,
             description,
             timestamp: env.ledger().timestamp(),
+            record_type,
         };
 
         let records_key = DataKey::MedicalRecords(patient.clone());
@@ -639,6 +685,41 @@ impl MedicalRegistry {
             .unwrap_or(Vec::new(&env))
     }
 
+    pub fn get_medical_records(env: Env, patient: Address) -> Vec<MedicalRecord> {
+        let key = DataKey::MedicalRecords(patient);
+        env.storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env))
+    }
+
+    /// Returns all records for `patient` whose `record_type` matches the given symbol.
+    /// Access control: caller must be the patient, their guardian, or an authorized doctor.
+    /// Returns an empty vec (not an error) when no records match.
+    pub fn get_records_by_type(
+        env: Env,
+        patient: Address,
+        caller: Address,
+        record_type: Symbol,
+    ) -> Vec<MedicalRecord> {
+        require_record_access(&env, &patient, &caller);
+
+        let key = DataKey::MedicalRecords(patient);
+        let records: Vec<MedicalRecord> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut filtered = Vec::new(&env);
+        for record in records.iter() {
+            if record.record_type == record_type {
+                filtered.push_back(record.clone());
+            }
+        }
+        filtered
+    }
+
     // =====================================================
     //                  STATE SNAPSHOT
     // =====================================================
@@ -651,22 +732,12 @@ impl MedicalRegistry {
     /// # Emitted events
     /// 1. `snap_meta` — topics: `("snap_meta", ledger_sequence)`,
     ///    data: `(patient_count, doctor_count, consent_version)`
-    ///    Verify completeness of the other two events against these counts.
     ///
     /// 2. `snap_pats` — topics: `("snap_pats", ledger_sequence)`,
     ///    data: `Vec<Address>` of all registered patient addresses.
     ///
     /// 3. `snap_docs` — topics: `("snap_docs", ledger_sequence)`,
     ///    data: `Vec<Address>` of all registered doctor addresses.
-    ///
-    /// # Off-chain reconstruction steps
-    /// 1. Subscribe to the Horizon/RPC event stream filtered by this contract ID.
-    /// 2. On `snap_meta`, record `ledger_sequence` and expected counts.
-    /// 3. Collect `snap_pats` and `snap_docs` at the same ledger sequence.
-    /// 4. Assert address list lengths match the counts in `snap_meta`.
-    /// 5. For each address call `get_patient` / `get_doctor` via RPC at that
-    ///    exact ledger (requires an archive node: `--ledger <seq>`).
-    /// 6. Persist the reconstructed structs to your off-chain store.
     pub fn emit_state_snapshot(env: Env) {
         let admin: Address = env
             .storage()

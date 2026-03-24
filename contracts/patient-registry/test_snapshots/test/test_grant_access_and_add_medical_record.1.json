@@ -96,6 +96,9 @@
                 },
                 {
                   "string": "Blood test results"
+                },
+                {
+                  "symbol": "LAB"
                 }
               ]
             }
@@ -319,6 +322,14 @@
                         },
                         {
                           "key": {
+                            "symbol": "record_type"
+                          },
+                          "val": {
+                            "symbol": "LAB"
+                          }
+                        },
+                        {
+                          "key": {
                             "symbol": "timestamp"
                           },
                           "val": {
@@ -393,6 +404,18 @@
                         },
                         "val": {
                           "i128": "0"
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "TotalPatients"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u64": "0"
                         }
                       },
                       {

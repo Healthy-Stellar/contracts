@@ -21,6 +21,7 @@ pub enum Error {
     AllergenTooLong = 9,
     InvalidTimestamp = 10,
     ReasonTooLong = 11,
+    AlreadyDeleted = 12,
 }
 
 /// Allergen types supported by the system
@@ -70,6 +71,7 @@ pub struct AllergyRecord {
     pub last_updated: u64,
     pub resolution_date: Option<u64>,
     pub resolution_reason: Option<String>,
+    pub is_deleted: bool,
 }
 
 /// Severity update record for audit trail
@@ -97,6 +99,7 @@ pub struct InteractionWarning {
 /// Storage keys for the contract
 #[contracttype]
 pub enum DataKey {
+    Admin,
     AllergyCounter,
     Allergy(u64),
     PatientAllergies(Address),
@@ -115,6 +118,12 @@ pub struct AllergyTrackingContract;
 
 #[contractimpl]
 impl AllergyTrackingContract {
+    /// Configure contract admin used for privileged read options.
+    pub fn initialize(env: Env, admin: Address) {
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &admin);
+    }
+
     /// Record a new allergy for a patient
     pub fn record_allergy(
         env: Env,
@@ -156,7 +165,10 @@ impl AllergyTrackingContract {
                 .persistent()
                 .get(&DataKey::Allergy(allergy_id))
                 .unwrap();
-            if allergy.allergen == allergen && allergy.status != AllergyStatus::Resolved {
+            if !allergy.is_deleted
+                && allergy.allergen == allergen
+                && allergy.status != AllergyStatus::Resolved
+            {
                 return Err(Error::DuplicateAllergy);
             }
         }
@@ -190,6 +202,7 @@ impl AllergyTrackingContract {
             last_updated: current_time,
             resolution_date: None,
             resolution_reason: None,
+            is_deleted: false,
         };
 
         // Store allergy record
@@ -244,6 +257,9 @@ impl AllergyTrackingContract {
 
         if allergy.status == AllergyStatus::Resolved {
             return Err(Error::AlreadyResolved);
+        }
+        if allergy.is_deleted {
+            return Err(Error::AlreadyDeleted);
         }
 
         let new_severity_enum = Self::symbol_to_severity(&env, &new_severity)?;
@@ -311,6 +327,9 @@ impl AllergyTrackingContract {
         if allergy.status == AllergyStatus::Resolved {
             return Err(Error::AlreadyResolved);
         }
+        if allergy.is_deleted {
+            return Err(Error::AlreadyDeleted);
+        }
 
         allergy.status = AllergyStatus::Resolved;
         allergy.resolution_date = Some(resolution_date);
@@ -351,7 +370,7 @@ impl AllergyTrackingContract {
                 .unwrap();
 
             // Only check active allergies
-            if allergy.status != AllergyStatus::Active {
+            if allergy.is_deleted || allergy.status != AllergyStatus::Active {
                 continue;
             }
 
@@ -409,7 +428,7 @@ impl AllergyTrackingContract {
                 .get(&DataKey::Allergy(allergy_id))
                 .unwrap();
 
-            if allergy.status == AllergyStatus::Active {
+            if !allergy.is_deleted && allergy.status == AllergyStatus::Active {
                 active_allergies.push_back(allergy);
             }
         }
@@ -417,12 +436,88 @@ impl AllergyTrackingContract {
         Ok(active_allergies)
     }
 
+    /// Soft-delete a record by ID. Only the record's provider or patient can delete it.
+    pub fn delete_record(env: Env, record_id: u64, caller: Address) -> Result<(), Error> {
+        caller.require_auth();
+
+        let key = DataKey::Allergy(record_id);
+        let mut allergy: AllergyRecord = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::AllergyNotFound)?;
+
+        if caller != allergy.provider_id && caller != allergy.patient_id {
+            return Err(Error::Unauthorized);
+        }
+        if allergy.is_deleted {
+            return Err(Error::AlreadyDeleted);
+        }
+
+        allergy.is_deleted = true;
+        allergy.last_updated = env.ledger().timestamp();
+        env.storage().persistent().set(&key, &allergy);
+
+        Ok(())
+    }
+
+    /// Get a specific record by ID. Soft-deleted records are treated as not found.
+    pub fn get_record(env: Env, record_id: u64) -> Result<AllergyRecord, Error> {
+        let allergy: AllergyRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Allergy(record_id))
+            .ok_or(Error::AllergyNotFound)?;
+
+        if allergy.is_deleted {
+            return Err(Error::AllergyNotFound);
+        }
+
+        Ok(allergy)
+    }
+
+    /// Get all records for a patient.
+    /// By default soft-deleted records are excluded.
+    /// include_deleted=true is allowed only for admin.
+    pub fn get_all_records(
+        env: Env,
+        patient_id: Address,
+        requester: Address,
+        include_deleted: bool,
+    ) -> Result<Vec<AllergyRecord>, Error> {
+        requester.require_auth();
+
+        if include_deleted && !Self::is_admin(&env, &requester) {
+            return Err(Error::Unauthorized);
+        }
+
+        let patient_key = DataKey::PatientAllergies(patient_id);
+        let patient_allergies: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&patient_key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut records = Vec::new(&env);
+        for allergy_id in patient_allergies.iter() {
+            if let Some(allergy) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, AllergyRecord>(&DataKey::Allergy(allergy_id))
+            {
+                if !include_deleted && allergy.is_deleted {
+                    continue;
+                }
+                records.push_back(allergy);
+            }
+        }
+
+        Ok(records)
+    }
+
     /// Get a specific allergy record
     pub fn get_allergy(env: Env, allergy_id: u64) -> Result<AllergyRecord, Error> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Allergy(allergy_id))
-            .ok_or(Error::AllergyNotFound)
+        Self::get_record(env, allergy_id)
     }
 
     /// Get severity update history for an allergy
@@ -556,6 +651,14 @@ impl AllergyTrackingContract {
             }
         }
         false
+    }
+
+    fn is_admin(env: &Env, caller: &Address) -> bool {
+        let admin: Option<Address> = env.storage().instance().get(&DataKey::Admin);
+        match admin {
+            Some(stored_admin) => stored_admin == *caller,
+            None => false,
+        }
     }
 }
 

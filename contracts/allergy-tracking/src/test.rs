@@ -692,3 +692,95 @@ fn test_valid_allergen_length_accepted() {
     );
     assert_eq!(allergy_id2, 1);
 }
+
+#[test]
+fn test_delete_record_soft_deletes_and_blocks_get_record() {
+    let (env, contract_id, patient, provider, _) = create_test_env();
+    let client = AllergyTrackingContractClient::new(&env, &contract_id);
+
+    let mut reactions = Vec::new(&env);
+    reactions.push_back(String::from_str(&env, "rash"));
+
+    let record_id = client.record_allergy(
+        &patient,
+        &provider,
+        &String::from_str(&env, "SoftDeleteDrug"),
+        &Symbol::new(&env, "medication"),
+        &reactions,
+        &Symbol::new(&env, "mild"),
+        &None,
+        &true,
+    );
+
+    client.delete_record(&record_id, &provider);
+
+    let deleted = client.try_get_record(&record_id);
+    assert!(matches!(deleted, Err(Ok(Error::AllergyNotFound))));
+}
+
+#[test]
+fn test_get_all_records_excludes_deleted_by_default() {
+    let (env, contract_id, patient, provider, _) = create_test_env();
+    let client = AllergyTrackingContractClient::new(&env, &contract_id);
+
+    let mut reactions = Vec::new(&env);
+    reactions.push_back(String::from_str(&env, "reaction"));
+
+    let id1 = client.record_allergy(
+        &patient,
+        &provider,
+        &String::from_str(&env, "KeepMe"),
+        &Symbol::new(&env, "food"),
+        &reactions,
+        &Symbol::new(&env, "mild"),
+        &None,
+        &true,
+    );
+
+    client.record_allergy(
+        &patient,
+        &provider,
+        &String::from_str(&env, "DeleteMe"),
+        &Symbol::new(&env, "food"),
+        &reactions,
+        &Symbol::new(&env, "moderate"),
+        &None,
+        &true,
+    );
+
+    client.delete_record(&1u64, &patient);
+
+    let visible = client.get_all_records(&patient, &provider, &false);
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible.get(0).unwrap().allergy_id, id1);
+}
+
+#[test]
+fn test_include_deleted_requires_admin() {
+    let (env, contract_id, patient, provider, admin) = create_test_env();
+    let client = AllergyTrackingContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let mut reactions = Vec::new(&env);
+    reactions.push_back(String::from_str(&env, "reaction"));
+
+    let id = client.record_allergy(
+        &patient,
+        &provider,
+        &String::from_str(&env, "AdminView"),
+        &Symbol::new(&env, "other"),
+        &reactions,
+        &Symbol::new(&env, "mild"),
+        &None,
+        &true,
+    );
+    client.delete_record(&id, &provider);
+
+    let non_admin_attempt = client.try_get_all_records(&patient, &provider, &true);
+    assert_eq!(non_admin_attempt, Err(Ok(Error::Unauthorized)));
+
+    let admin_view = client.get_all_records(&patient, &admin, &true);
+    assert_eq!(admin_view.len(), 1);
+    assert_eq!(admin_view.get(0).unwrap().is_deleted, true);
+}
