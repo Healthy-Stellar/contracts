@@ -6,6 +6,16 @@ use soroban_sdk::{
     String, Symbol, Vec,
 };
 
+// =====================================================
+//                    TTL CONSTANTS
+// =====================================================
+
+/// Bump persistent entries by ~31 days (535,680 ledgers at ~5s/ledger).
+pub const LEDGER_BUMP_AMOUNT: u32 = 535_680;
+
+/// Extend TTL when fewer than ~30 days remain (518,400 ledgers).
+pub const LEDGER_THRESHOLD: u32 = 518_400;
+
 /// --------------------
 /// Patient Structures
 /// --------------------
@@ -328,6 +338,70 @@ impl MedicalRegistry {
         env.storage().persistent().has(&key)
     }
 
+    /// Extend the TTL of all persistent storage entries for a patient.
+    /// Callable by the patient themselves or the contract admin.
+    pub fn extend_patient_ttl(env: Env, patient: Address) {
+        // Authorize: patient or admin
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+
+        let is_admin = admin == patient;
+        if is_admin {
+            patient.require_auth();
+        } else {
+            // Check if caller is the patient itself or a guardian
+            let guardian_key = DataKey::Guardian(patient.clone());
+            let guardian_opt: Option<Address> = env.storage().persistent().get(&guardian_key);
+            // We allow the patient or the admin — require patient auth here
+            // (admin path handled above, so this must be the patient)
+            let _ = guardian_opt; // not used here; only patient or admin may call
+            patient.require_auth();
+        }
+
+        // Extend Patient record TTL
+        let patient_key = DataKey::Patient(patient.clone());
+        if env.storage().persistent().has(&patient_key) {
+            env.storage().persistent().extend_ttl(
+                &patient_key,
+                LEDGER_THRESHOLD,
+                LEDGER_BUMP_AMOUNT,
+            );
+        }
+
+        // Extend MedicalRecords TTL
+        let records_key = DataKey::MedicalRecords(patient.clone());
+        if env.storage().persistent().has(&records_key) {
+            env.storage().persistent().extend_ttl(
+                &records_key,
+                LEDGER_THRESHOLD,
+                LEDGER_BUMP_AMOUNT,
+            );
+        }
+
+        // Extend AuthorizedDoctors TTL
+        let access_key = DataKey::AuthorizedDoctors(patient.clone());
+        if env.storage().persistent().has(&access_key) {
+            env.storage().persistent().extend_ttl(
+                &access_key,
+                LEDGER_THRESHOLD,
+                LEDGER_BUMP_AMOUNT,
+            );
+        }
+
+        // Extend ConsentAck TTL
+        let consent_key = DataKey::ConsentAck(patient.clone());
+        if env.storage().persistent().has(&consent_key) {
+            env.storage().persistent().extend_ttl(
+                &consent_key,
+                LEDGER_THRESHOLD,
+                LEDGER_BUMP_AMOUNT,
+            );
+        }
+    }
+
     pub fn place_hold(env: Env, patient: Address, reason_hash: BytesN<32>, expires_at: u64) {
         Self::require_admin(&env);
         Self::require_patient_exists(&env, &patient);
@@ -578,6 +652,37 @@ impl MedicalRegistry {
 
         records.push_back(record);
         env.storage().persistent().set(&records_key, &records);
+
+        // Extend TTL for all patient persistent entries after writing a record
+        Self::bump_patient_keys(&env, &patient);
+    }
+
+    pub fn get_medical_records(env: Env, patient: Address) -> Vec<MedicalRecord> {
+        let key = DataKey::MedicalRecords(patient.clone());
+
+        // Extend TTL on read to keep active records accessible
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(
+                &key,
+                LEDGER_THRESHOLD,
+                LEDGER_BUMP_AMOUNT,
+            );
+        }
+
+        // Also bump the patient record itself
+        let patient_key = DataKey::Patient(patient.clone());
+        if env.storage().persistent().has(&patient_key) {
+            env.storage().persistent().extend_ttl(
+                &patient_key,
+                LEDGER_THRESHOLD,
+                LEDGER_BUMP_AMOUNT,
+            );
+        }
+
+        env.storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env))
     }
 
     pub fn get_medical_records(env: Env, patient: Address) -> Vec<MedicalRecord> {
@@ -737,6 +842,25 @@ impl MedicalRegistry {
                 None
             }
             None => None,
+        }
+    }
+
+    /// Bump TTL for all critical persistent keys belonging to a patient.
+    fn bump_patient_keys(env: &Env, patient: &Address) {
+        let keys: [DataKey; 4] = [
+            DataKey::Patient(patient.clone()),
+            DataKey::MedicalRecords(patient.clone()),
+            DataKey::AuthorizedDoctors(patient.clone()),
+            DataKey::ConsentAck(patient.clone()),
+        ];
+        for key in keys.iter() {
+            if env.storage().persistent().has(key) {
+                env.storage().persistent().extend_ttl(
+                    key,
+                    LEDGER_THRESHOLD,
+                    LEDGER_BUMP_AMOUNT,
+                );
+            }
         }
     }
 }
