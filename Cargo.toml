@@ -36,6 +36,7 @@ members = [
   "contracts/prenatal-pediatric",
   "contracts/hai-tracking",
   "contracts/medical-device-tracking",
+  "contracts/provider-registry",
 ]
 
 [workspace.dependencies]
