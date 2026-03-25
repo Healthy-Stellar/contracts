@@ -252,3 +252,60 @@ fn test_rate_limit_disabled_with_zero_max() {
         );
     }
 }
+
+#[test]
+fn test_rate_provider_success() {
+    let (env, admin, client) = setup();
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    client.register_provider(&admin, &provider);
+    client.rate_provider(&patient, &provider, &5);
+
+    let (total_ratings, average_score) = client.get_provider_reputation(&provider);
+    assert_eq!(total_ratings, 1);
+    assert_eq!(average_score, 500);
+}
+
+#[test]
+fn test_rate_provider_prevents_double_rating() {
+    let (env, admin, client) = setup();
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    client.register_provider(&admin, &provider);
+    client.rate_provider(&patient, &provider, &4);
+
+    let second = client.try_rate_provider(&patient, &provider, &5);
+    assert!(matches!(second, Err(Ok(ContractError::AlreadyRated))));
+}
+
+#[test]
+fn test_rate_provider_invalid_score() {
+    let (env, admin, client) = setup();
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    client.register_provider(&admin, &provider);
+    let result = client.try_rate_provider(&patient, &provider, &0);
+    assert!(matches!(result, Err(Ok(ContractError::InvalidScore))));
+}
+
+#[test]
+fn test_get_provider_reputation_average_scaled() {
+    let (env, admin, client) = setup();
+    let provider = Address::generate(&env);
+    let patient_a = Address::generate(&env);
+    let patient_b = Address::generate(&env);
+    let patient_c = Address::generate(&env);
+
+    client.register_provider(&admin, &provider);
+    client.rate_provider(&patient_a, &provider, &5);
+    client.rate_provider(&patient_b, &provider, &4);
+    client.rate_provider(&patient_c, &provider, &3);
+
+    let (total_ratings, average_score) = client.get_provider_reputation(&provider);
+    assert_eq!(total_ratings, 3);
+    // (5 + 4 + 3) / 3 = 4.00 => 400 scaled
+    assert_eq!(average_score, 400);
+}
