@@ -18,7 +18,7 @@ fn setup() -> (Env, Address, Address, Address) {
     (env, patient, dietitian, provider)
 }
 
-fn register(env: &Env) -> NutritionCareContractClient {
+fn register(env: &Env) -> NutritionCareContractClient<'_> {
     let id = env.register(NutritionCareContract, ());
     NutritionCareContractClient::new(env, &id)
 }

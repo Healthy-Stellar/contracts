@@ -50,7 +50,7 @@ fn test_initialize() {
     let (env, _admin, _, _, _client) = create_test_env();
 
     // Verify initialization succeeded (no panic)
-    assert!(env.auths().len() > 0);
+    assert!(!env.auths().is_empty());
 }
 
 #[test]

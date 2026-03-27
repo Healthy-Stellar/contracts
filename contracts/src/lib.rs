@@ -2,7 +2,8 @@
 #![allow(non_snake_case)]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String,
+    Symbol, Vec,
 };
 
 #[contracttype]
@@ -36,7 +37,12 @@ pub enum AppointmentStatus {
 pub enum DataKey {
     Inst(Address),
     Admin, // To manage the 'verifier' role
+    PendingAdmin,
 }
+
+const ADMIN_PROPOSED: &str = "admin_proposed";
+const ADMIN_ACCEPTED: &str = "admin_accepted";
+const ADMIN_TRANSFER_CANCELLED: &str = "admin_transfer_cancelled";
 
 #[contracttype]
 pub enum AppointmentKey {
@@ -65,6 +71,40 @@ impl HealthcareRegistry {
     // Set an admin/verifier during initialization
     pub fn init(env: Env, admin: Address) {
         env.storage().instance().set(&DataKey::Admin, &admin);
+    }
+
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        env.events()
+            .publish((Symbol::new(&env, ADMIN_PROPOSED),), new_admin);
+    }
+
+    pub fn accept_admin(env: Env) {
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .expect("No pending admin");
+        pending.require_auth();
+
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events()
+            .publish((Symbol::new(&env, ADMIN_ACCEPTED),), pending);
+    }
+
+    pub fn cancel_admin_transfer(env: Env) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events()
+            .publish((Symbol::new(&env, ADMIN_TRANSFER_CANCELLED),), admin);
     }
 
     pub fn register_institution(

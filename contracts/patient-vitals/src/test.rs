@@ -1,8 +1,8 @@
 #![cfg(test)]
+#![allow(deprecated)]
 
-use super::*;
 use crate::contract::{PatientVitalsContract, PatientVitalsContractClient};
-use crate::types::{AlertThresholds, DeviceReading, Range, VitalSigns, VitalStatistics};
+use crate::types::{AlertThresholds, DeviceReading, Range, VitalSigns};
 use soroban_sdk::{testutils::Address as _, Address, Env, String, Symbol, Vec};
 
 #[test]

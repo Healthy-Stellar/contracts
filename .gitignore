@@ -32,7 +32,6 @@ cobertura.xml
 tarpaulin-report.html
 
 # CI/CD
-.github
 requirements.md
 
 # OS files

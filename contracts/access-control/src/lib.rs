@@ -1,9 +1,19 @@
 #![no_std]
 #![allow(deprecated)]
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, String, Vec};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN,
+    Env, String, Vec,
+};
 
 mod test;
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum ContractError {
+    InvalidDidFormat = 1,
+}
 
 /// --------------------
 /// Entity Types
@@ -51,6 +61,7 @@ pub enum DataKey {
     Entity(Address),
     AccessList(Address),    // Entity -> Vec<AccessPermission>
     ResourceAccess(String), // Resource -> Vec<Address> (authorized parties)
+    Did(Address),
 }
 
 #[contract]
@@ -395,5 +406,43 @@ impl AccessControl {
 
         env.events()
             .publish((symbol_short!("deact"), wallet), symbol_short!("success"));
+    }
+
+    /// Register or update a W3C DID for the provided address.
+    /// Self-registration only: `address` must authorize this call.
+    ///
+    /// DID format must start with `did:`.
+    pub fn register_did(env: Env, address: Address, did: Bytes) -> Result<(), ContractError> {
+        address.require_auth();
+        Self::validate_did(&did)?;
+
+        let key = DataKey::Did(address.clone());
+        let old_did: Option<Bytes> = env.storage().persistent().get(&key);
+        let old_hash: Option<BytesN<32>> = old_did.map(|d| env.crypto().sha256(&d).into());
+        let new_hash: BytesN<32> = env.crypto().sha256(&did).into();
+
+        env.storage().persistent().set(&key, &did);
+        env.events()
+            .publish((symbol_short!("did_aud"), address), (old_hash, new_hash));
+        Ok(())
+    }
+
+    /// Returns the DID registered for an address, if present.
+    pub fn get_did(env: Env, address: Address) -> Option<Bytes> {
+        env.storage().persistent().get(&DataKey::Did(address))
+    }
+
+    fn validate_did(did: &Bytes) -> Result<(), ContractError> {
+        if did.len() < 4 {
+            return Err(ContractError::InvalidDidFormat);
+        }
+        let d = did.get(0).unwrap_or_default();
+        let i = did.get(1).unwrap_or_default();
+        let d2 = did.get(2).unwrap_or_default();
+        let colon = did.get(3).unwrap_or_default();
+        if d != b'd' || i != b'i' || d2 != b'd' || colon != b':' {
+            return Err(ContractError::InvalidDidFormat);
+        }
+        Ok(())
     }
 }

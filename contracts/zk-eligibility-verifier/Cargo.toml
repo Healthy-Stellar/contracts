@@ -1,0 +1,16 @@
+[package]
+name = "zk-eligibility-verifier"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Trait and placeholder for future zero-knowledge medical eligibility verification on Soroban."
+
+[lib]
+crate-type = ["lib", "rlib"]
+doctest = false
+
+[dependencies]
+soroban-sdk = { workspace = true }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }

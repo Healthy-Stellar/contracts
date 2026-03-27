@@ -18,6 +18,7 @@ fn setup() -> (Env, Address, Address) {
     (env, provider, patient)
 }
 
+#[allow(dead_code)]
 fn create_plan(env: &Env, patient: &Address, provider: &Address) -> u64 {
     let contract_id = env.register(CarePlanContract, ());
     let client = CarePlanContractClient::new(env, &contract_id);
@@ -39,7 +40,8 @@ fn create_plan(env: &Env, patient: &Address, provider: &Address) -> u64 {
     )
 }
 
-fn register_and_create_plan(env: &Env) -> (Address, CarePlanContractClient, u64) {
+#[allow(dead_code)]
+fn register_and_create_plan(env: &Env) -> (Address, CarePlanContractClient<'_>, u64) {
     let provider = Address::generate(env);
     let patient = Address::generate(env);
 

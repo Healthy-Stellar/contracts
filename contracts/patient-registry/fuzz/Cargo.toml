@@ -1,0 +1,36 @@
+[package]
+name = "patient-registry-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+patient-registry = { path = ".." }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "validate_cid"
+path = "fuzz_targets/validate_cid.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "validate_did"
+path = "fuzz_targets/validate_did.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "validate_score"
+path = "fuzz_targets/validate_score.rs"
+test = false
+doc = false
+bench = false

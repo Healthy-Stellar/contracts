@@ -1,14 +1,18 @@
 #[cfg(test)]
-mod test {
+mod tests {
     use crate::{
-        AppointmentScheduling, AppointmentSchedulingClient, AppointmentStatus, HealthcareRegistry,
-        HealthcareRegistryClient,
+        AppointmentScheduling, AppointmentSchedulingClient, AppointmentStatus, DataKey,
+        HealthcareRegistry, HealthcareRegistryClient,
     };
 
-    use soroban_sdk::{testutils::Address as _, Address, Env, String, Vec};
+    use soroban_sdk::{
+        testutils::{Address as _, MockAuth, MockAuthInvoke},
+        Address, Env, IntoVal, String, Vec,
+    };
 
-    fn setup_test(env: &Env) -> (HealthcareRegistryClient<'static>, Address, Address) {
-        // Updated from register_contract to register
+    fn setup_registry_test(
+        env: &Env,
+    ) -> (Address, HealthcareRegistryClient<'static>, Address, Address) {
         let contract_id = env.register(HealthcareRegistry, ());
         let client = HealthcareRegistryClient::new(env, &contract_id);
 
@@ -17,6 +21,11 @@ mod test {
 
         client.init(&admin);
 
+        (contract_id, client, admin, institution)
+    }
+
+    fn setup_test(env: &Env) -> (HealthcareRegistryClient<'static>, Address, Address) {
+        let (_, client, admin, institution) = setup_registry_test(env);
         (client, admin, institution)
     }
 
@@ -30,6 +39,23 @@ mod test {
         let doctor = Address::generate(env);
 
         (client, patient, doctor)
+    }
+
+    fn stored_admin(env: &Env, contract_id: &Address) -> Address {
+        env.as_contract(contract_id, || {
+            env.storage()
+                .instance()
+                .get::<DataKey, Address>(&DataKey::Admin)
+                .unwrap()
+        })
+    }
+
+    fn stored_pending_admin(env: &Env, contract_id: &Address) -> Option<Address> {
+        env.as_contract(contract_id, || {
+            env.storage()
+                .instance()
+                .get::<DataKey, Address>(&DataKey::PendingAdmin)
+        })
     }
 
     #[test]
@@ -72,7 +98,7 @@ mod test {
         client.verify_institution(&admin, &inst_addr);
 
         let data = client.get_institution(&inst_addr);
-        assert_eq!(data.is_verified, true);
+        assert!(data.is_verified);
     }
 
     #[test]
@@ -87,6 +113,109 @@ mod test {
         client.register_institution(&inst_addr, &name, &name, &name);
 
         client.verify_institution(&fake_admin, &inst_addr);
+    }
+
+    #[test]
+    fn test_propose_and_accept_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _client, _admin, _) = setup_registry_test(&env);
+        let new_admin = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            HealthcareRegistry::propose_admin(env.clone(), new_admin.clone());
+        });
+
+        assert_eq!(
+            stored_pending_admin(&env, &contract_id),
+            Some(new_admin.clone())
+        );
+
+        env.as_contract(&contract_id, || {
+            HealthcareRegistry::accept_admin(env.clone());
+        });
+
+        assert_eq!(stored_admin(&env, &contract_id), new_admin.clone());
+        assert_eq!(stored_pending_admin(&env, &contract_id), None);
+    }
+
+    #[test]
+    fn test_cancel_admin_transfer() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _client, admin, _) = setup_registry_test(&env);
+        let new_admin = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            HealthcareRegistry::propose_admin(env.clone(), new_admin.clone());
+        });
+
+        env.as_contract(&contract_id, || {
+            HealthcareRegistry::cancel_admin_transfer(env.clone());
+        });
+
+        assert_eq!(stored_admin(&env, &contract_id), admin.clone());
+        assert_eq!(stored_pending_admin(&env, &contract_id), None);
+    }
+
+    #[test]
+    fn test_unauthorized_propose_rejected() {
+        let env = Env::default();
+        let (contract_id, client, admin, _) = setup_registry_test(&env);
+        let attacker = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+
+        let result = client
+            .mock_auths(&[MockAuth {
+                address: &attacker,
+                invoke: &MockAuthInvoke {
+                    contract: &contract_id,
+                    fn_name: "propose_admin",
+                    args: (&new_admin,).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_propose_admin(&new_admin);
+
+        assert!(result.is_err());
+        assert_eq!(stored_admin(&env, &contract_id), admin);
+        assert_eq!(stored_pending_admin(&env, &contract_id), None);
+    }
+
+    #[test]
+    fn test_unauthorized_accept_rejected() {
+        let env = Env::default();
+        let (contract_id, client, admin, _) = setup_registry_test(&env);
+        let new_admin = Address::generate(&env);
+        let attacker = Address::generate(&env);
+
+        client
+            .mock_auths(&[MockAuth {
+                address: &admin,
+                invoke: &MockAuthInvoke {
+                    contract: &contract_id,
+                    fn_name: "propose_admin",
+                    args: (&new_admin,).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .propose_admin(&new_admin);
+
+        let result = client
+            .mock_auths(&[MockAuth {
+                address: &attacker,
+                invoke: &MockAuthInvoke {
+                    contract: &contract_id,
+                    fn_name: "accept_admin",
+                    args: ().into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_accept_admin();
+
+        assert!(result.is_err());
+        assert_eq!(stored_admin(&env, &contract_id), admin);
+        assert_eq!(stored_pending_admin(&env, &contract_id), Some(new_admin));
     }
 
     #[test]
@@ -231,9 +360,9 @@ mod test {
         for appt in patient_appointments.iter() {
             appointment_ids.push_back(appt.id);
         }
-        assert!(appointment_ids.contains(&appointment_id1));
-        assert!(appointment_ids.contains(&appointment_id2));
-        assert!(!appointment_ids.contains(&appointment_id3));
+        assert!(appointment_ids.contains(appointment_id1));
+        assert!(appointment_ids.contains(appointment_id2));
+        assert!(!appointment_ids.contains(appointment_id3));
 
         // Check doctor's appointments
         let doctor_appointments = client.get_appointments(&doctor);
@@ -243,9 +372,9 @@ mod test {
         for appt in doctor_appointments.iter() {
             doctor_appointment_ids.push_back(appt.id);
         }
-        assert!(doctor_appointment_ids.contains(&appointment_id1));
-        assert!(doctor_appointment_ids.contains(&appointment_id2));
-        assert!(doctor_appointment_ids.contains(&appointment_id3));
+        assert!(doctor_appointment_ids.contains(appointment_id1));
+        assert!(doctor_appointment_ids.contains(appointment_id2));
+        assert!(doctor_appointment_ids.contains(appointment_id3));
     }
 
     #[test]
@@ -261,7 +390,7 @@ mod test {
 
         let id1 = client.create_appointment(&patient, &doctor, &datetime1);
         let id2 = client.create_appointment(&patient, &doctor, &datetime2);
-        let id3 = client.create_appointment(&patient, &doctor, &datetime3);
+        let _id3 = client.create_appointment(&patient, &doctor, &datetime3);
 
         // Cancel one
         client.cancel_appointment(&patient, &id2);

@@ -1,4 +1,5 @@
 #![cfg(test)]
+#![allow(deprecated)]
 use super::*;
 use soroban_sdk::{
     Address, BytesN, Env, String, Symbol, Vec, testutils::Address as _, testutils::Ledger,
@@ -64,7 +65,7 @@ fn test_drug_dosage_calculation() {
         &Some(50), // Renal impairment < 60
     );
 
-    assert_eq!(result.renal_adjustment, true);
+    assert!(result.renal_adjustment);
     assert_eq!(result.medication, String::from_str(&env, "Amoxicillin"));
     // (700000 * 5) / 10000 = 350
     assert_eq!(result.duration, Some(350));

@@ -1,7 +1,10 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{
+    testutils::{Address as _, MockAuth, MockAuthInvoke},
+    Address, Bytes, Env, IntoVal, String,
+};
 
 #[test]
 fn test_initialize() {
@@ -320,4 +323,96 @@ fn test_update_entity() {
 
     let entity = client.get_entity(&hospital);
     assert_eq!(entity.metadata, new_metadata);
+}
+
+#[test]
+fn test_register_and_get_did() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AccessControl, ());
+    let client = AccessControlClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let patient = Address::generate(&env);
+    client.initialize(&admin);
+
+    let did = Bytes::from_slice(&env, b"did:stellar:patient:abc123");
+    client.register_did(&patient, &did);
+
+    let stored = client.get_did(&patient).unwrap();
+    assert_eq!(stored, did);
+}
+
+#[test]
+fn test_register_did_invalid_format_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AccessControl, ());
+    let client = AccessControlClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let provider = Address::generate(&env);
+    client.initialize(&admin);
+
+    let invalid = Bytes::from_slice(&env, b"stellar:provider:abc123");
+    let result = client.try_register_did(&provider, &invalid);
+    assert!(matches!(result, Err(Ok(ContractError::InvalidDidFormat))));
+}
+
+#[test]
+fn test_register_did_self_registration_only() {
+    let env = Env::default();
+    let contract_id = env.register(AccessControl, ());
+    let client = AccessControlClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let patient = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    client
+        .mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "initialize",
+                args: (&admin,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .initialize(&admin);
+
+    let did = Bytes::from_slice(&env, b"did:stellar:patient:secure1");
+    let unauthorized = client
+        .mock_auths(&[MockAuth {
+            address: &attacker,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "register_did",
+                args: (&patient, &did).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .try_register_did(&patient, &did);
+
+    assert!(unauthorized.is_err());
+}
+
+#[test]
+fn test_register_did_update_replaces_value() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AccessControl, ());
+    let client = AccessControlClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let provider = Address::generate(&env);
+    client.initialize(&admin);
+
+    let did_v1 = Bytes::from_slice(&env, b"did:stellar:provider:old");
+    let did_v2 = Bytes::from_slice(&env, b"did:stellar:provider:new");
+    client.register_did(&provider, &did_v1);
+    client.register_did(&provider, &did_v2);
+
+    let stored = client.get_did(&provider).unwrap();
+    assert_eq!(stored, did_v2);
 }

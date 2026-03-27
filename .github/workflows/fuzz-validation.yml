@@ -1,0 +1,36 @@
+# Fuzz patient-registry input validators (CID, DID, score) for 60s per target on each PR.
+name: Fuzz validation
+
+on:
+  pull_request:
+  push:
+    branches: [main, develop]
+
+concurrency:
+  group: fuzz-validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz-patient-registry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: contracts/patient-registry
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Fuzz validate_cid (60s)
+        run: cargo fuzz run validate_cid fuzz/corpus/validate_cid -- -max_total_time=60 -print_final_stats=1
+
+      - name: Fuzz validate_did (60s)
+        run: cargo fuzz run validate_did fuzz/corpus/validate_did -- -max_total_time=60 -print_final_stats=1
+
+      - name: Fuzz validate_score (60s)
+        run: cargo fuzz run validate_score fuzz/corpus/validate_score -- -max_total_time=60 -print_final_stats=1

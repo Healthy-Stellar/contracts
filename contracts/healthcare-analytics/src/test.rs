@@ -19,15 +19,13 @@ fn setup() -> (Env, HealthcareAnalyticsClient<'static>) {
 fn test_record_metric_basic() {
     let (_env, client) = setup();
 
-    let result = client.record_metric(
+    client.record_metric(
         &symbol_short!("bp"),
         &120,
         &symbol_short!("vitals"),
         &1700000000,
         &None,
     );
-
-    assert_eq!(result, ());
 
     let stats = client.get_statistics(&symbol_short!("bp"), &1699999999, &1700000001, &None);
     assert_eq!(stats.count, 1);

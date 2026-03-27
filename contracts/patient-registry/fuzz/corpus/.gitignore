@@ -1,0 +1,7 @@
+# libFuzzer adds hashed files during local runs; only seed_* inputs are versioned.
+validate_cid/*
+!validate_cid/seed_*
+validate_did/*
+!validate_did/seed_*
+validate_score/*
+!validate_score/seed_*

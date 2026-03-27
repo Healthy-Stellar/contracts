@@ -1,11 +1,9 @@
 #![cfg(test)]
+#![allow(deprecated)]
 
 use crate::contract::{TelemedicineContract, TelemedicineContractClient};
-use crate::types::{EligibilityResult, Error, PrescriptionRequest, VisitStatus};
-use soroban_sdk::{
-    testutils::{Address as _, Events},
-    Address, BytesN, Env, String, Symbol, Vec,
-};
+use crate::types::PrescriptionRequest;
+use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String, Symbol, Vec};
 
 #[test]
 fn test_telemedicine_lifecycle() {

@@ -35,7 +35,7 @@ fn test_order_imaging_study() {
     assert_eq!(order.provider_id, provider);
     assert_eq!(order.patient_id, patient);
     assert_eq!(order.study_type, study_type);
-    assert_eq!(order.contrast_required, true);
+    assert!(order.contrast_required);
     assert_eq!(order.status, Symbol::new(&env, "ORDERED"));
 }
 
@@ -269,7 +269,7 @@ fn test_submit_preliminary_report() {
     // Verify report
     let report = client.get_preliminary_report(&order_id).unwrap();
     assert_eq!(report.radiologist_id, radiologist);
-    assert_eq!(report.urgent_findings, true);
+    assert!(report.urgent_findings);
 }
 
 #[test]
@@ -582,7 +582,7 @@ fn test_complete_imaging_workflow() {
     client.submit_preliminary_report(&order_id, &radiologist, &prelim_hash, &true);
 
     let prelim = client.get_preliminary_report(&order_id).unwrap();
-    assert_eq!(prelim.urgent_findings, true);
+    assert!(prelim.urgent_findings);
 
     // 5. Request peer review
     client.request_peer_review(&order_id, &radiologist, &peer_radiologist);
@@ -717,7 +717,7 @@ fn test_urgent_findings_notification() {
 
     // Verify urgent findings flag
     let prelim = client.get_preliminary_report(&order_id).unwrap();
-    assert_eq!(prelim.urgent_findings, true);
+    assert!(prelim.urgent_findings);
 
     // Verify order priority
     let order = client.get_imaging_order(&order_id).unwrap();
