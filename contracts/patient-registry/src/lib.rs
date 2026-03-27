@@ -108,6 +108,9 @@ pub struct ShareLinkData {
     pub expires_at: u64,
     RecordCounter(Address),
     Frozen,
+    RecordCounter,
+    PatientRecordIds(Address),
+    MedicalRecord(u64),
 }
 
 #[contracttype]
@@ -119,6 +122,25 @@ pub struct MedicalRecord {
     pub description: String,
     pub timestamp: u64,
     pub record_type: Symbol,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecordVersion {
+    pub ipfs_hash: Bytes,
+    pub updated_by: Address,
+    pub updated_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecordData {
+    pub patient: Address,
+    pub record_type: Symbol,
+    pub description: String,
+    pub current_ipfs: Bytes,
+    pub history: Vec<RecordVersion>,
+    pub latest_version: u64,
 }
 
 #[contracttype]
@@ -225,6 +247,7 @@ impl MedicalRegistry {
         env.storage().instance().set(&DataKey::FeeToken, &fee_token);
         env.storage().instance().set(&DataKey::RecordFee, &0i128);
         env.storage().instance().set(&DataKey::TotalPatients, &0u64);
+        env.storage().instance().set(&DataKey::RecordCounter, &0u64);
     }
 
     // =====================================================
@@ -756,8 +779,9 @@ impl MedicalRegistry {
         record_hash: Bytes,
         description: String,
         record_type: Symbol,
-    ) -> Result<(), ContractError> {
+    ) -> Result<u64, ContractError> {
         Self::require_not_frozen(&env);
+        Self::require_patient_exists(&env, &patient);
         doctor.require_auth();
         validate_cid(&record_hash)?;
 
@@ -798,6 +822,36 @@ impl MedicalRegistry {
             panic!("Doctor not authorized");
         }
 
+        let timestamp = env.ledger().timestamp();
+
+        // Get next record ID
+        let mut record_id: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RecordCounter)
+            .unwrap_or(0u64);
+        record_id += 1;
+        env.storage()
+            .instance()
+            .set(&DataKey::RecordCounter, &record_id);
+
+        let initial_version = RecordVersion {
+            ipfs_hash: record_hash.clone(),
+            updated_by: doctor.clone(),
+            updated_at: timestamp,
+        };
+
+        let record_data = RecordData {
+            patient: patient.clone(),
+            record_type,
+            description,
+            current_ipfs: record_hash.clone(),
+            history: {
+                let mut h = Vec::new(&env);
+                h.push_back(initial_version);
+                h
+            },
+            latest_version: 1u64,
         let counter_key = DataKey::RecordCounter(patient.clone());
         let record_id: u64 = env
             .storage()
@@ -818,18 +872,30 @@ impl MedicalRegistry {
             record_type: record_type.clone(),
         };
 
-        let records_key = DataKey::MedicalRecords(patient.clone());
-        let mut records: Vec<MedicalRecord> = env
+        env.storage()
+            .persistent()
+            .set(&DataKey::MedicalRecord(record_id), &record_data);
+
+        // Append to patient's record IDs
+        let ids_key = DataKey::PatientRecordIds(patient.clone());
+        let mut ids: Vec<u64> = env
             .storage()
             .persistent()
-            .get(&records_key)
+            .get(&ids_key)
             .unwrap_or(Vec::new(&env));
+        ids.push_back(record_id);
+        env.storage().persistent().set(&ids_key, &ids);
 
-        records.push_back(record);
-        env.storage().persistent().set(&records_key, &records);
-
-        // Extend TTL for all patient persistent entries after writing a record
+        // TTL bump
         Self::bump_patient_keys(&env, &patient);
+        env.storage().persistent().extend_ttl(
+            &DataKey::MedicalRecord(record_id),
+            LEDGER_THRESHOLD,
+            LEDGER_BUMP_AMOUNT,
+        );
+        env.storage()
+            .persistent()
+            .extend_ttl(&ids_key, LEDGER_THRESHOLD, LEDGER_BUMP_AMOUNT);
         // Emit provider-to-patient record notification
         env.events().publish(
             (
@@ -843,7 +909,12 @@ impl MedicalRegistry {
         // Extend TTL for all patient persistent entries after writing a record
         Self::bump_patient_keys(&env, &patient);
 
-        Ok(())
+        env.events().publish(
+            (symbol_short!("record_added"), record_id),
+            (patient, doctor),
+        );
+
+        Ok(record_id)
     }
 
     pub fn get_medical_records(env: Env, patient: Address, caller: Address) -> Vec<MedicalRecord> {
@@ -891,6 +962,74 @@ impl MedicalRegistry {
     /// Returns all records for `patient` whose `record_type` matches the given symbol.
     /// Access control: caller must be the patient, their guardian, or an authorized doctor.
     /// Returns an empty vec (not an error) when no records match.
+    pub fn update_record(
+        env: Env,
+        record_id: u64,
+        new_ipfs_hash: Bytes,
+    ) -> Result<(), ContractError> {
+        Self::require_not_frozen(&env);
+
+        let record_key = DataKey::MedicalRecord(record_id);
+        let mut record_data: RecordData = env
+            .storage()
+            .persistent()
+            .get(&record_key)
+            .ok_or(Error::NotFound)?;
+
+        let patient = record_data.patient.clone();
+        Self::require_patient_exists(&env, &patient);
+        Self::require_not_on_hold(&env, &patient);
+
+        caller.require_auth();
+        require_record_access(&env, &patient, &caller);
+
+        validate_cid(&new_ipfs_hash)?;
+
+        let timestamp = env.ledger().timestamp();
+
+        // Append old current to history
+        let old_version = RecordVersion {
+            ipfs_hash: record_data.current_ipfs.clone(),
+            updated_by: caller.clone(),
+            updated_at: timestamp,
+        };
+        record_data.history.push_back(old_version);
+        record_data.current_ipfs = new_ipfs_hash;
+        record_data.latest_version += 1;
+
+        env.storage().persistent().set(&record_key, &record_data);
+
+        // TTL bump
+        Self::bump_patient_keys(&env, &patient);
+        env.storage()
+            .persistent()
+            .extend_ttl(&record_key, LEDGER_THRESHOLD, LEDGER_BUMP_AMOUNT);
+
+        env.events()
+            .publish(symbol_short!("rec_updtd")(patient, caller));
+
+        Ok(())
+    }
+
+    pub fn get_record_history(
+        env: Env,
+        record_id: u64,
+    ) -> Result<Vec<RecordVersion>, ContractError> {
+        let record_key = DataKey::MedicalRecord(record_id);
+        let record_data: RecordData = env
+            .storage()
+            .persistent()
+            .get(&record_key)
+            .ok_or(ContractError::InvalidCID)?;
+
+        // TTL bump
+        env.storage()
+            .persistent()
+            .extend_ttl(&record_key, LEDGER_THRESHOLD, LEDGER_BUMP_AMOUNT);
+
+        Ok(record_data.history)
+    }
+
     pub fn get_records_by_type(
         env: Env,
         patient: Address,
@@ -899,17 +1038,35 @@ impl MedicalRegistry {
     ) -> Vec<MedicalRecord> {
         require_record_access(&env, &patient, &caller);
 
-        let key = DataKey::MedicalRecords(patient);
-        let records: Vec<MedicalRecord> = env
+        let ids_key = DataKey::PatientRecordIds(patient);
+        let record_ids: Vec<u64> = env
             .storage()
             .persistent()
-            .get(&key)
+            .get(&ids_key)
             .unwrap_or(Vec::new(&env));
 
         let mut filtered = Vec::new(&env);
-        for record in records.iter() {
-            if record.record_type == record_type {
-                filtered.push_back(record.clone());
+        for id in record_ids.iter() {
+            if let Some(record_data) = env.storage().persistent().get(&DataKey::MedicalRecord(id)) {
+                if record_data.record_type == record_type {
+                    // Map to MedicalRecord for compatibility
+                    let mr = MedicalRecord {
+                        doctor: record_data
+                            .history
+                            .get(0)
+                            .map(|v| v.updated_by.clone())
+                            .unwrap_or(Address::generate(&env)),
+                        record_hash: record_data.current_ipfs.clone(),
+                        description: record_data.description.clone(),
+                        timestamp: record_data
+                            .history
+                            .get(0)
+                            .map(|v| v.updated_at)
+                            .unwrap_or(0),
+                        record_type,
+                    };
+                    filtered.push_back(mr);
+                }
             }
         }
         filtered
@@ -1216,19 +1373,18 @@ impl MedicalRegistry {
 
     /// Bump TTL for all critical persistent keys belonging to a patient.
     fn bump_patient_keys(env: &Env, patient: &Address) {
-        let keys: [DataKey; 4] = [
+        let keys: [DataKey; 5] = [
             DataKey::Patient(patient.clone()),
             DataKey::MedicalRecords(patient.clone()),
             DataKey::AuthorizedDoctors(patient.clone()),
+            DataKey::PatientRecordIds(patient.clone()),
             DataKey::ConsentAck(patient.clone()),
         ];
         for key in keys.iter() {
             if env.storage().persistent().has(key) {
-                env.storage().persistent().extend_ttl(
-                    key,
-                    LEDGER_THRESHOLD,
-                    LEDGER_BUMP_AMOUNT,
-                );
+                env.storage()
+                    .persistent()
+                    .extend_ttl(key, LEDGER_THRESHOLD, LEDGER_BUMP_AMOUNT);
             }
         }
     }
