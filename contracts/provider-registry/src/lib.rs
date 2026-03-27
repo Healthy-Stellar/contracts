@@ -2,7 +2,8 @@
 #![allow(deprecated)]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String,
+    contract, contracterror, contractimpl, contracttype, symbol_short, vec, Address, Env, String,
+    Vec,
 };
 
 mod test;
@@ -28,11 +29,20 @@ pub struct ProviderRateWindow {
     pub window_start: u64,
 }
 
+/// A stored medical record with its creator tracked for ownership transfer.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Record {
+    pub data: String,
+    pub created_by: Address,
+}
+
 #[contracttype]
 pub enum DataKey {
     Admin,
     Provider(Address),
     Record(String),
+    ProviderRecords(Address),
     RateLimitConfig,
     ProviderRate(Address),
 }
@@ -104,9 +114,25 @@ impl ProviderRegistry {
             panic!("Unauthorized: not a whitelisted provider");
         }
         Self::consume_provider_rate_slot(&env, &provider)?;
+
+        let record = Record {
+            data,
+            created_by: provider.clone(),
+        };
         env.storage()
             .persistent()
-            .set(&DataKey::Record(record_id.clone()), &data);
+            .set(&DataKey::Record(record_id.clone()), &record);
+
+        // Track this record_id under the provider's list for batch transfer.
+        let list_key = DataKey::ProviderRecords(provider.clone());
+        let mut ids: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&list_key)
+            .unwrap_or(vec![&env]);
+        ids.push_back(record_id.clone());
+        env.storage().persistent().set(&list_key, &ids);
+
         env.events().publish(
             (symbol_short!("add_rec"), provider, record_id),
             symbol_short!("ok"),
@@ -115,11 +141,67 @@ impl ProviderRegistry {
     }
 
     /// Retrieve a medical record by ID.
-    pub fn get_record(env: Env, record_id: String) -> String {
+    pub fn get_record(env: Env, record_id: String) -> Record {
         env.storage()
             .persistent()
             .get(&DataKey::Record(record_id))
             .expect("Record not found")
+    }
+
+    /// Deactivate a provider: reassign all their records to `successor`,
+    /// remove them from the whitelist, and emit deactivation events. Admin only.
+    pub fn deactivate_provider(env: Env, admin: Address, provider: Address, successor: Address) {
+        Self::assert_admin(&env, &admin);
+
+        // Batch-transfer every record created_by `provider` to `successor`.
+        let list_key = DataKey::ProviderRecords(provider.clone());
+        let ids: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&list_key)
+            .unwrap_or(vec![&env]);
+
+        let count = ids.len();
+        for id in ids.iter() {
+            let rec_key = DataKey::Record(id.clone());
+            if let Some(mut rec) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Record>(&rec_key)
+            {
+                rec.created_by = successor.clone();
+                env.storage().persistent().set(&rec_key, &rec);
+            }
+        }
+
+        // Move the record-id list to the successor's index.
+        if count > 0 {
+            let succ_key = DataKey::ProviderRecords(successor.clone());
+            let mut succ_ids: Vec<String> = env
+                .storage()
+                .persistent()
+                .get(&succ_key)
+                .unwrap_or(vec![&env]);
+            for id in ids.iter() {
+                succ_ids.push_back(id.clone());
+            }
+            env.storage().persistent().set(&succ_key, &succ_ids);
+        }
+        env.storage().persistent().remove(&list_key);
+
+        // Remove provider from whitelist.
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Provider(provider.clone()));
+
+        env.events().publish(
+            (symbol_short!("prov_deac"), provider.clone()),
+            symbol_short!("ok"),
+        );
+        env.events().publish(
+            (symbol_short!("rec_xfer"), provider, successor),
+            count,
+        );
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────

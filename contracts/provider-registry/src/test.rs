@@ -47,10 +47,9 @@ fn test_add_record_by_whitelisted_provider() {
         &String::from_str(&env, "Patient data"),
     );
 
-    assert_eq!(
-        client.get_record(&String::from_str(&env, "REC001")),
-        String::from_str(&env, "Patient data")
-    );
+    let rec = client.get_record(&String::from_str(&env, "REC001"));
+    assert_eq!(rec.data, String::from_str(&env, "Patient data"));
+    assert_eq!(rec.created_by, provider);
 }
 
 #[test]
@@ -225,9 +224,104 @@ fn test_rate_limit_window_reset_allows_again() {
         &String::from_str(&env, "data"),
     );
     assert_eq!(
-        client.get_record(&String::from_str(&env, "REC-AFTER-RESET")),
+        client.get_record(&String::from_str(&env, "REC-AFTER-RESET")).data,
         String::from_str(&env, "data")
     );
+}
+
+// ── deactivate_provider tests ─────────────────────────────────────────────────
+
+#[test]
+fn test_deactivate_provider_transfers_records_and_removes_whitelist() {
+    let (env, admin, client) = setup();
+    let provider = Address::generate(&env);
+    let successor = Address::generate(&env);
+
+    client.register_provider(&admin, &provider);
+    client.register_provider(&admin, &successor);
+
+    client.add_record(
+        &provider,
+        &String::from_str(&env, "R1"),
+        &String::from_str(&env, "data1"),
+    );
+    client.add_record(
+        &provider,
+        &String::from_str(&env, "R2"),
+        &String::from_str(&env, "data2"),
+    );
+
+    // Confirm original ownership.
+    assert_eq!(client.get_record(&String::from_str(&env, "R1")).created_by, provider);
+    assert_eq!(client.get_record(&String::from_str(&env, "R2")).created_by, provider);
+
+    client.deactivate_provider(&admin, &provider, &successor);
+
+    // Provider removed from whitelist.
+    assert!(!client.is_provider(&provider));
+
+    // Both records now owned by successor.
+    assert_eq!(client.get_record(&String::from_str(&env, "R1")).created_by, successor);
+    assert_eq!(client.get_record(&String::from_str(&env, "R2")).created_by, successor);
+}
+
+#[test]
+fn test_deactivate_provider_no_records() {
+    let (env, admin, client) = setup();
+    let provider = Address::generate(&env);
+    let successor = Address::generate(&env);
+
+    client.register_provider(&admin, &provider);
+    // No records added — deactivation should still succeed.
+    client.deactivate_provider(&admin, &provider, &successor);
+    assert!(!client.is_provider(&provider));
+}
+
+#[test]
+#[should_panic(expected = "Unauthorized: admin only")]
+fn test_deactivate_provider_non_admin_rejected() {
+    let (env, admin, client) = setup();
+    let provider = Address::generate(&env);
+    let successor = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+
+    client.register_provider(&admin, &provider);
+    client.deactivate_provider(&non_admin, &provider, &successor);
+}
+
+#[test]
+fn test_deactivate_provider_successor_accumulates_records() {
+    let (env, admin, client) = setup();
+    let provider = Address::generate(&env);
+    let successor = Address::generate(&env);
+
+    client.register_provider(&admin, &provider);
+    client.register_provider(&admin, &successor);
+
+    // Successor already has a record.
+    client.add_record(
+        &successor,
+        &String::from_str(&env, "S1"),
+        &String::from_str(&env, "succ data"),
+    );
+    // Provider has two records.
+    client.add_record(
+        &provider,
+        &String::from_str(&env, "P1"),
+        &String::from_str(&env, "prov data 1"),
+    );
+    client.add_record(
+        &provider,
+        &String::from_str(&env, "P2"),
+        &String::from_str(&env, "prov data 2"),
+    );
+
+    client.deactivate_provider(&admin, &provider, &successor);
+
+    // All three records now belong to successor.
+    assert_eq!(client.get_record(&String::from_str(&env, "S1")).created_by, successor);
+    assert_eq!(client.get_record(&String::from_str(&env, "P1")).created_by, successor);
+    assert_eq!(client.get_record(&String::from_str(&env, "P2")).created_by, successor);
 }
 
 #[test]
