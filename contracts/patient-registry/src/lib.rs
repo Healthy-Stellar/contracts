@@ -6,6 +6,8 @@ use soroban_sdk::{
     Address, Bytes, BytesN, Env, Map, String, Symbol, Vec,
 };
 
+pub const NEW_RECORD_TOPIC: &str = "new_record";
+
 // =====================================================
 //                    TTL CONSTANTS
 // =====================================================
@@ -72,12 +74,14 @@ pub enum DataKey {
     Treasury,
     FeeToken,
     TotalPatients,
+    RecordCounter(Address),
     Frozen,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MedicalRecord {
+    pub record_id: u64,
     pub doctor: Address,
     pub record_hash: Bytes,
     pub description: String,
@@ -718,12 +722,24 @@ impl MedicalRegistry {
             panic!("Doctor not authorized");
         }
 
+        let counter_key = DataKey::RecordCounter(patient.clone());
+        let record_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&counter_key)
+            .unwrap_or(0u64)
+            + 1;
+        env.storage().persistent().set(&counter_key, &record_id);
+
+        let timestamp = env.ledger().timestamp();
+
         let record = MedicalRecord {
-            doctor,
+            record_id,
+            doctor: doctor.clone(),
             record_hash,
             description,
-            timestamp: env.ledger().timestamp(),
-            record_type,
+            timestamp,
+            record_type: record_type.clone(),
         };
 
         let records_key = DataKey::MedicalRecords(patient.clone());
@@ -736,6 +752,16 @@ impl MedicalRegistry {
         records.push_back(record);
         env.storage().persistent().set(&records_key, &records);
 
+        // Emit provider-to-patient record notification
+        env.events().publish(
+            (
+                Symbol::new(&env, NEW_RECORD_TOPIC),
+                patient.clone(),
+                doctor,
+            ),
+            (record_id, record_type, timestamp),
+        );
+
         // Extend TTL for all patient persistent entries after writing a record
         Self::bump_patient_keys(&env, &patient);
 
@@ -745,7 +771,6 @@ impl MedicalRegistry {
     pub fn get_medical_records(env: Env, patient: Address) -> Vec<MedicalRecord> {
         let key = DataKey::MedicalRecords(patient.clone());
 
-        // Extend TTL on read to keep active records accessible
         if env.storage().persistent().has(&key) {
             env.storage().persistent().extend_ttl(
                 &key,
@@ -754,7 +779,6 @@ impl MedicalRegistry {
             );
         }
 
-        // Also bump the patient record itself
         let patient_key = DataKey::Patient(patient.clone());
         if env.storage().persistent().has(&patient_key) {
             env.storage().persistent().extend_ttl(
