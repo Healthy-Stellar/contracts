@@ -3,9 +3,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, xdr::ToXdr, Address,
-    Bytes, BytesN, Env, Map, String, Symbol, Vec,
-    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token,
-    Address, Bytes, BytesN, Env, Map, String, Symbol, Vec,
+    Bytes, BytesN, Env, Map, String, Symbol, Vec, panic_with_error,
 };
 
 pub mod validation;
@@ -94,6 +92,14 @@ pub enum DataKey {
     ShareLink(BytesN<32>),
     /// Marks a patient as deregistered (value: timestamp of deregistration).
     Deregistered(Address),
+    /// Frozen flag
+    Frozen,
+    /// Global record counter
+    RecordCounter,
+    /// Patient's record IDs
+    PatientRecordIds(Address),
+    /// Medical record by ID
+    MedicalRecord(u64),
 }
 
 /// --------------------
@@ -106,11 +112,6 @@ pub struct ShareLinkData {
     pub record_id: u64,
     pub uses_remaining: u32,
     pub expires_at: u64,
-    RecordCounter(Address),
-    Frozen,
-    RecordCounter,
-    PatientRecordIds(Address),
-    MedicalRecord(u64),
 }
 
 #[contracttype]
@@ -159,9 +160,10 @@ pub enum ContractError {
     InvalidCID = 1,
     InvalidToken = 2,
     NotAuthorized = 3,
-    InvalidDID = 2,
-    InvalidScore = 3,
-    ContractFrozen = 2,
+    InvalidDID = 4,
+    InvalidScore = 5,
+    ContractFrozen = 6,
+    NotFound = 7,
 }
 
 pub fn validate_cid(cid: &Bytes) -> Result<(), ContractError> {
@@ -843,8 +845,8 @@ impl MedicalRegistry {
 
         let record_data = RecordData {
             patient: patient.clone(),
-            record_type,
-            description,
+            record_type: record_type.clone(),
+            description: description.clone(),
             current_ipfs: record_hash.clone(),
             history: {
                 let mut h = Vec::new(&env);
@@ -852,26 +854,17 @@ impl MedicalRegistry {
                 h
             },
             latest_version: 1u64,
-        let counter_key = DataKey::RecordCounter(patient.clone());
-        let record_id: u64 = env
-            .storage()
-            .persistent()
-            .get(&counter_key)
-            .unwrap_or(0u64)
-            + 1;
-        env.storage().persistent().set(&counter_key, &record_id);
-
-        let timestamp = env.ledger().timestamp();
-
-        let record = MedicalRecord {
-            record_id,
-            doctor: doctor.clone(),
-            record_hash,
-            description,
-            timestamp,
-            record_type: record_type.clone(),
         };
 
+        let record_id: u64 = env
+            .storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::RecordCounter)
+            .unwrap_or(0u64)
+            + 1;
+        env.storage().instance().set(&DataKey::RecordCounter, &record_id);
+
+        // Store record data (using cloned values)
         env.storage()
             .persistent()
             .set(&DataKey::MedicalRecord(record_id), &record_data);
@@ -901,16 +894,16 @@ impl MedicalRegistry {
             (
                 Symbol::new(&env, NEW_RECORD_TOPIC),
                 patient.clone(),
-                doctor,
+                doctor.clone(),
             ),
-            (record_id, record_type, timestamp),
+            (record_id, record_type.clone(), timestamp),
         );
 
         // Extend TTL for all patient persistent entries after writing a record
         Self::bump_patient_keys(&env, &patient);
 
         env.events().publish(
-            (symbol_short!("record_added"), record_id),
+            (symbol_short!("rec_add"), record_id),
             (patient, doctor),
         );
 
@@ -965,6 +958,7 @@ impl MedicalRegistry {
     pub fn update_record(
         env: Env,
         record_id: u64,
+        caller: Address,
         new_ipfs_hash: Bytes,
     ) -> Result<(), ContractError> {
         Self::require_not_frozen(&env);
@@ -974,7 +968,7 @@ impl MedicalRegistry {
             .storage()
             .persistent()
             .get(&record_key)
-            .ok_or(Error::NotFound)?;
+            .ok_or(ContractError::NotFound)?;
 
         let patient = record_data.patient.clone();
         Self::require_patient_exists(&env, &patient);
@@ -1006,7 +1000,12 @@ impl MedicalRegistry {
             .extend_ttl(&record_key, LEDGER_THRESHOLD, LEDGER_BUMP_AMOUNT);
 
         env.events()
-            .publish(symbol_short!("rec_updtd")(patient, caller));
+            .publish((
+                symbol_short!("rec_upd"),
+                (patient.clone(), caller.clone()),
+            ),
+            record_id,
+        );
 
         Ok(())
     }
@@ -1047,15 +1046,17 @@ impl MedicalRegistry {
 
         let mut filtered = Vec::new(&env);
         for id in record_ids.iter() {
-            if let Some(record_data) = env.storage().persistent().get(&DataKey::MedicalRecord(id)) {
+            let record_id: u64 = id.into();
+            if let Some(record_data) = env.storage().persistent().get::<DataKey, RecordData>(&DataKey::MedicalRecord(record_id)) {
                 if record_data.record_type == record_type {
                     // Map to MedicalRecord for compatibility
                     let mr = MedicalRecord {
+                        record_id,
                         doctor: record_data
                             .history
                             .get(0)
                             .map(|v| v.updated_by.clone())
-                            .unwrap_or(Address::generate(&env)),
+                            .unwrap_or_else(|| Address::from_str(&env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4")),
                         record_hash: record_data.current_ipfs.clone(),
                         description: record_data.description.clone(),
                         timestamp: record_data
@@ -1063,7 +1064,7 @@ impl MedicalRegistry {
                             .get(0)
                             .map(|v| v.updated_at)
                             .unwrap_or(0),
-                        record_type,
+                        record_type: record_type.clone(),
                     };
                     filtered.push_back(mr);
                 }
