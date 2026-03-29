@@ -6,7 +6,7 @@ publish = false
 description = "Trait and placeholder for future zero-knowledge medical eligibility verification on Soroban."
 
 [lib]
-crate-type = ["lib", "rlib"]
+crate-type = ["rlib"]
 doctest = false
 
 [dependencies]
