@@ -69,19 +69,20 @@ pub enum Error {
     VisitNotFound = 15,
     EventNotFound = 16,
     TrialNotActive = 17,
+    AlreadyInitialized = 18,
 }
 
 #[contract]
-pub struct ClinicalTrial;
+pub struct ClinicalTrialContract;
 
 #[contractimpl]
-impl ClinicalTrial {
+impl ClinicalTrialContract {
     /// Initialize the contract with an admin address
-    pub fn initialize(env: Env, admin: Address) {
+    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
         admin.require_auth();
 
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("Contract already initialized");
+            return Err(Error::AlreadyInitialized);
         }
 
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -90,6 +91,8 @@ impl ClinicalTrial {
             .instance()
             .set(&DataKey::EnrollmentCounter, &0u64);
         env.storage().instance().set(&DataKey::EventCounter, &0u64);
+
+        Ok(())
     }
 
     /// Register a new clinical trial
@@ -523,9 +526,9 @@ impl ClinicalTrial {
 
         // Generate a hash representing the exported dataset
         // In production, this would be a hash of the actual de-identified data
-        let export_hash = env.crypto().sha256(&export_count.to_be_bytes().into());
+        let export_hash = env.crypto().sha256(&soroban_sdk::Bytes::from_slice(&env, &export_count.to_be_bytes()));
 
-        Ok(export_hash)
+        Ok(export_hash.into())
     }
 
     /// Get trial information
