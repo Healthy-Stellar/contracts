@@ -37,6 +37,7 @@ members = [
   "contracts/upgrade-governance",
   "contracts/zk-eligibility-verifier",
 ]
+exclude = ["contracts/patient-registry/benches"]
 
 [workspace.dependencies]
 soroban-sdk = "23"

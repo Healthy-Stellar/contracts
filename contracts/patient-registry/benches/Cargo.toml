@@ -1,0 +1,15 @@
+[workspace]
+
+[package]
+name = "patient-registry-bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "instruction_metering"
+path = "instruction_metering.rs"
+
+[dependencies]
+patient-registry = { path = ".." }
+soroban-sdk = { version = "23", features = ["testutils"] }

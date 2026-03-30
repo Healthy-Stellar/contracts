@@ -108,6 +108,7 @@ pub enum DataKey {
     GlobalTypeIndex(Symbol),
     /// Soft-delete tombstone for a record (value: timestamp of deletion).
     DeletedRecord(u64),
+    /// Merkle root for a patient's records.
     /// Merkle root over the patient's ordered record IDs (see `merkle` module).
     MerkleRoot(Address),
 }
@@ -943,6 +944,17 @@ impl MedicalRegistry {
             },
             latest_version: 1u64,
         };
+
+        let counter_key = DataKey::RecordCounter;
+        let record_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&counter_key)
+            .unwrap_or(0u64)
+            + 1;
+        env.storage().persistent().set(&counter_key, &record_id);
+
+        let timestamp = env.ledger().timestamp();
 
         let record = MedicalRecord {
             record_id,
