@@ -1,7 +1,7 @@
-use crate::{ClinicalTrialClient, DataFilters, AdverseEvent, CriteriaRule};
-use soroban_sdk::{symbol_short, testutils::Address as _, vec, Address, BytesN, Env, String, Vec};
+use crate::{ClinicalTrialContractClient, Error};
+use soroban_sdk::{symbol_short, testutils::Address as _, Address, BytesN, Env, String};
 
-fn create_test_env() -> (Env, Address, Address, Address, ClinicalTrialClient<'static>) {
+fn create_test_env() -> (Env, Address, Address, Address, ClinicalTrialContractClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -9,8 +9,8 @@ fn create_test_env() -> (Env, Address, Address, Address, ClinicalTrialClient<'st
     let pi = Address::generate(&env);
     let patient = Address::generate(&env);
 
-    let contract_id = env.register_contract(None, crate::ClinicalTrial);
-    let client = ClinicalTrialClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, crate::ClinicalTrialContract);
+    let client = ClinicalTrialContractClient::new(&env, &contract_id);
 
     client.initialize(&admin);
 
@@ -19,25 +19,15 @@ fn create_test_env() -> (Env, Address, Address, Address, ClinicalTrialClient<'st
 
 fn create_protocol_hash(env: &Env) -> BytesN<32> {
     let data = String::from_str(env, "protocol_v1");
-    env.crypto().sha256(&data.into())
-}
-
-fn create_consent_hash(env: &Env) -> BytesN<32> {
-    let data = String::from_str(env, "informed_consent");
-    env.crypto().sha256(&data.into())
-}
-
-fn create_data_hash(env: &Env) -> BytesN<32> {
-    let data = String::from_str(env, "patient_data");
-    env.crypto().sha256(&data.into())
+    env.crypto().sha256(&data.into()).into()
 }
 
 #[test]
 fn test_initialize() {
     let (env, admin, _, _, client) = create_test_env();
-    
-    // Contract should be initialized successfully
-    let trial_id = client.register_clinical_trial(
+
+    // Successful registration confirms contract is initialized
+    let trial_record_id = client.register_clinical_trial(
         &admin,
         &String::from_str(&env, "TRIAL001"),
         &String::from_str(&env, "Cancer Treatment Study"),
@@ -48,29 +38,31 @@ fn test_initialize() {
         &100,
         &String::from_str(&env, "IRB-2024-001"),
     );
-    
-    assert!(trial_id.is_ok());
+
+    assert_eq!(trial_record_id, 0u64);
 }
 
 #[test]
-#[should_panic(expected = "Contract already initialized")]
 fn test_double_initialize() {
     let env = Env::default();
     env.mock_all_auths();
 
     let admin = Address::generate(&env);
-    let contract_id = env.register_contract(None, crate::ClinicalTrial);
-    let client = ClinicalTrialClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, crate::ClinicalTrialContract);
+    let client = ClinicalTrialContractClient::new(&env, &contract_id);
 
     client.initialize(&admin);
-    client.initialize(&admin); // Should panic
+
+    // Second initialization must return AlreadyInitialized typed error
+    let result = client.try_initialize(&admin);
+    assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
 }
 
 #[test]
 fn test_register_clinical_trial() {
     let (env, _, pi, _, client) = create_test_env();
 
-    let trial_id = client.register_clinical_trial(
+    let trial_record_id = client.register_clinical_trial(
         &pi,
         &String::from_str(&env, "TRIAL001"),
         &String::from_str(&env, "Diabetes Study"),
@@ -82,13 +74,7 @@ fn test_register_clinical_trial() {
         &String::from_str(&env, "IRB-2024-002"),
     );
 
-    assert!(trial_id.is_ok());
-    let trial_record_id = trial_id.unwrap();
-
-    let trial = client.get_trial(&trial_record_id);
-    assert!(trial.is_ok());
-    
-    let trial_data = trial.unwrap();
+    let trial_data = client.get_trial(&trial_record_id);
     assert_eq!(trial_data.trial_record_id, trial_record_id);
     assert_eq!(trial_data.principal_investigator, pi);
     assert_eq!(trial_data.enrollment_target, 200);
@@ -124,4 +110,10 @@ fn test_invalid_date_range() {
         &symbol_short!("phase1"),
         &create_protocol_hash(&env),
         &5000,
-        &1000, 
+        &1000, // end before start
+        &100,
+        &String::from_str(&env, "IRB-2024-004"),
+    );
+
+    assert!(result.is_err());
+}
