@@ -1,7 +1,18 @@
 #![no_std]
 #![allow(deprecated)]
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, String, Vec};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
+};
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum ContractError {
+    HospitalAlreadyRegistered = 1,
+    HospitalNotFound = 2,
+    HospitalConfigNotFound = 3,
+}
 
 /// --------------------
 /// Hospital Structures
@@ -112,11 +123,12 @@ pub struct HospitalRegistry;
 
 #[contractimpl]
 impl HospitalRegistry {
-    fn assert_hospital_exists(env: &Env, wallet: &Address) {
+    fn assert_hospital_exists(env: &Env, wallet: &Address) -> Result<(), ContractError> {
         let key = DataKey::Hospital(wallet.clone());
         if !env.storage().persistent().has(&key) {
-            panic!("Hospital not found");
+            return Err(ContractError::HospitalNotFound);
         }
+        Ok(())
     }
 
     fn default_config(env: &Env) -> HospitalConfig {
@@ -149,12 +161,12 @@ impl HospitalRegistry {
         name: String,
         location: String,
         metadata: String,
-    ) {
+    ) -> Result<(), ContractError> {
         wallet.require_auth();
 
         let key = DataKey::Hospital(wallet.clone());
         if env.storage().persistent().has(&key) {
-            panic!("Hospital already registered");
+            return Err(ContractError::HospitalAlreadyRegistered);
         }
 
         let hospital = HospitalData {
@@ -173,6 +185,7 @@ impl HospitalRegistry {
             (symbol_short!("reg_hosp"), wallet),
             symbol_short!("success"),
         );
+        Ok(())
     }
 
     /// Update hospital metadata
@@ -180,7 +193,7 @@ impl HospitalRegistry {
     /// # Arguments
     /// * `wallet` - The wallet address of the hospital
     /// * `metadata` - Updated metadata information
-    pub fn update_hospital(env: Env, wallet: Address, metadata: String) {
+    pub fn update_hospital(env: Env, wallet: Address, metadata: String) -> Result<(), ContractError> {
         wallet.require_auth();
 
         let key = DataKey::Hospital(wallet.clone());
@@ -188,7 +201,7 @@ impl HospitalRegistry {
             .storage()
             .persistent()
             .get(&key)
-            .expect("Hospital not found");
+            .ok_or(ContractError::HospitalNotFound)?;
 
         hospital.metadata = metadata;
         env.storage().persistent().set(&key, &hospital);
@@ -197,6 +210,7 @@ impl HospitalRegistry {
             (symbol_short!("upd_hosp"), wallet),
             symbol_short!("success"),
         );
+        Ok(())
     }
 
     /// Retrieve hospital data by wallet address
@@ -206,45 +220,45 @@ impl HospitalRegistry {
     ///
     /// # Returns
     /// The HospitalData for the given wallet address
-    pub fn get_hospital(env: Env, wallet: Address) -> HospitalData {
+    pub fn get_hospital(env: Env, wallet: Address) -> Result<HospitalData, ContractError> {
         let key = DataKey::Hospital(wallet);
         env.storage()
             .persistent()
             .get(&key)
-            .expect("Hospital not found")
+            .ok_or(ContractError::HospitalNotFound)
     }
 
     /// Set full hospital configuration in one call
-    pub fn set_hospital_config(env: Env, wallet: Address, config: HospitalConfig) {
+    pub fn set_hospital_config(env: Env, wallet: Address, config: HospitalConfig) -> Result<(), ContractError> {
         wallet.require_auth();
-        Self::assert_hospital_exists(&env, &wallet);
+        Self::assert_hospital_exists(&env, &wallet)?;
 
         let key = DataKey::HospitalConfig(wallet.clone());
         env.storage().persistent().set(&key, &config);
 
         env.events()
             .publish((symbol_short!("cfg_set"), wallet), symbol_short!("success"));
+        Ok(())
     }
 
-    /// Retrieve hospital configuration
-    pub fn get_hospital_config(env: Env, wallet: Address) -> HospitalConfig {
+    pub fn get_hospital_config(env: Env, wallet: Address) -> Result<HospitalConfig, ContractError> {
         let key = DataKey::HospitalConfig(wallet);
         env.storage()
             .persistent()
             .get(&key)
-            .expect("Hospital config not found")
+            .ok_or(ContractError::HospitalConfigNotFound)
     }
 
-    pub fn update_departments(env: Env, wallet: Address, departments: Vec<Department>) {
+    pub fn update_departments(env: Env, wallet: Address, departments: Vec<Department>) -> Result<(), ContractError> {
         wallet.require_auth();
-        Self::assert_hospital_exists(&env, &wallet);
+        Self::assert_hospital_exists(&env, &wallet)?;
 
         let key = DataKey::HospitalConfig(wallet.clone());
         let mut config: HospitalConfig = env
             .storage()
             .persistent()
             .get(&key)
-            .expect("Hospital config not found");
+            .ok_or(ContractError::HospitalConfigNotFound)?;
 
         config.departments = departments;
         env.storage().persistent().set(&key, &config);
@@ -253,72 +267,76 @@ impl HospitalRegistry {
             (symbol_short!("upd_dept"), wallet),
             symbol_short!("success"),
         );
+        Ok(())
     }
 
-    pub fn update_locations(env: Env, wallet: Address, locations: Vec<Location>) {
+    pub fn update_locations(env: Env, wallet: Address, locations: Vec<Location>) -> Result<(), ContractError> {
         wallet.require_auth();
-        Self::assert_hospital_exists(&env, &wallet);
+        Self::assert_hospital_exists(&env, &wallet)?;
 
         let key = DataKey::HospitalConfig(wallet.clone());
         let mut config: HospitalConfig = env
             .storage()
             .persistent()
             .get(&key)
-            .expect("Hospital config not found");
+            .ok_or(ContractError::HospitalConfigNotFound)?;
 
         config.locations = locations;
         env.storage().persistent().set(&key, &config);
 
         env.events()
             .publish((symbol_short!("upd_loc"), wallet), symbol_short!("success"));
+        Ok(())
     }
 
-    pub fn update_equipment(env: Env, wallet: Address, equipment: Vec<EquipmentResource>) {
+    pub fn update_equipment(env: Env, wallet: Address, equipment: Vec<EquipmentResource>) -> Result<(), ContractError> {
         wallet.require_auth();
-        Self::assert_hospital_exists(&env, &wallet);
+        Self::assert_hospital_exists(&env, &wallet)?;
 
         let key = DataKey::HospitalConfig(wallet.clone());
         let mut config: HospitalConfig = env
             .storage()
             .persistent()
             .get(&key)
-            .expect("Hospital config not found");
+            .ok_or(ContractError::HospitalConfigNotFound)?;
 
         config.equipment = equipment;
         env.storage().persistent().set(&key, &config);
 
         env.events()
             .publish((symbol_short!("upd_eq"), wallet), symbol_short!("success"));
+        Ok(())
     }
 
-    pub fn update_policies(env: Env, wallet: Address, policies: Vec<PolicyProcedure>) {
+    pub fn update_policies(env: Env, wallet: Address, policies: Vec<PolicyProcedure>) -> Result<(), ContractError> {
         wallet.require_auth();
-        Self::assert_hospital_exists(&env, &wallet);
+        Self::assert_hospital_exists(&env, &wallet)?;
 
         let key = DataKey::HospitalConfig(wallet.clone());
         let mut config: HospitalConfig = env
             .storage()
             .persistent()
             .get(&key)
-            .expect("Hospital config not found");
+            .ok_or(ContractError::HospitalConfigNotFound)?;
 
         config.policies = policies;
         env.storage().persistent().set(&key, &config);
 
         env.events()
             .publish((symbol_short!("upd_pol"), wallet), symbol_short!("success"));
+        Ok(())
     }
 
-    pub fn update_alerts(env: Env, wallet: Address, alerts: Vec<AlertSetting>) {
+    pub fn update_alerts(env: Env, wallet: Address, alerts: Vec<AlertSetting>) -> Result<(), ContractError> {
         wallet.require_auth();
-        Self::assert_hospital_exists(&env, &wallet);
+        Self::assert_hospital_exists(&env, &wallet)?;
 
         let key = DataKey::HospitalConfig(wallet.clone());
         let mut config: HospitalConfig = env
             .storage()
             .persistent()
             .get(&key)
-            .expect("Hospital config not found");
+            .ok_or(ContractError::HospitalConfigNotFound)?;
 
         config.alerts = alerts;
         env.storage().persistent().set(&key, &config);
@@ -327,40 +345,42 @@ impl HospitalRegistry {
             (symbol_short!("upd_alrt"), wallet),
             symbol_short!("success"),
         );
+        Ok(())
     }
 
     pub fn update_insurance_providers(
         env: Env,
         wallet: Address,
         insurance_providers: Vec<InsuranceProviderConfig>,
-    ) {
+    ) -> Result<(), ContractError> {
         wallet.require_auth();
-        Self::assert_hospital_exists(&env, &wallet);
+        Self::assert_hospital_exists(&env, &wallet)?;
 
         let key = DataKey::HospitalConfig(wallet.clone());
         let mut config: HospitalConfig = env
             .storage()
             .persistent()
             .get(&key)
-            .expect("Hospital config not found");
+            .ok_or(ContractError::HospitalConfigNotFound)?;
 
         config.insurance_providers = insurance_providers;
         env.storage().persistent().set(&key, &config);
 
         env.events()
             .publish((symbol_short!("upd_ins"), wallet), symbol_short!("success"));
+        Ok(())
     }
 
-    pub fn update_billing(env: Env, wallet: Address, billing: BillingConfig) {
+    pub fn update_billing(env: Env, wallet: Address, billing: BillingConfig) -> Result<(), ContractError> {
         wallet.require_auth();
-        Self::assert_hospital_exists(&env, &wallet);
+        Self::assert_hospital_exists(&env, &wallet)?;
 
         let key = DataKey::HospitalConfig(wallet.clone());
         let mut config: HospitalConfig = env
             .storage()
             .persistent()
             .get(&key)
-            .expect("Hospital config not found");
+            .ok_or(ContractError::HospitalConfigNotFound)?;
 
         config.billing = billing;
         env.storage().persistent().set(&key, &config);
@@ -369,28 +389,30 @@ impl HospitalRegistry {
             (symbol_short!("upd_bill"), wallet),
             symbol_short!("success"),
         );
+        Ok(())
     }
 
     pub fn update_emergency_protocols(
         env: Env,
         wallet: Address,
         protocols: Vec<EmergencyProtocol>,
-    ) {
+    ) -> Result<(), ContractError> {
         wallet.require_auth();
-        Self::assert_hospital_exists(&env, &wallet);
+        Self::assert_hospital_exists(&env, &wallet)?;
 
         let key = DataKey::HospitalConfig(wallet.clone());
         let mut config: HospitalConfig = env
             .storage()
             .persistent()
             .get(&key)
-            .expect("Hospital config not found");
+            .ok_or(ContractError::HospitalConfigNotFound)?;
 
         config.emergency_protocols = protocols;
         env.storage().persistent().set(&key, &config);
 
         env.events()
             .publish((symbol_short!("upd_emg"), wallet), symbol_short!("success"));
+        Ok(())
     }
 }
 

@@ -50,6 +50,41 @@ fn test_add_record_by_whitelisted_provider() {
     let rec = client.get_record(&String::from_str(&env, "REC001"));
     assert_eq!(rec.data, String::from_str(&env, "Patient data"));
     assert_eq!(rec.created_by, provider);
+    assert_eq!(client.get_provider_record_count(&provider), 1);
+}
+
+#[test]
+fn test_provider_record_count_starts_at_zero() {
+    let (env, _admin, client) = setup();
+    let provider = Address::generate(&env);
+
+    assert_eq!(client.get_provider_record_count(&provider), 0);
+}
+
+#[test]
+fn test_provider_record_count_persists_across_multiple_records() {
+    let (env, admin, client) = setup();
+    let provider = Address::generate(&env);
+
+    client.register_provider(&admin, &provider);
+
+    client.add_record(
+        &provider,
+        &String::from_str(&env, "REC100"),
+        &String::from_str(&env, "Patient data 1"),
+    );
+    client.add_record(
+        &provider,
+        &String::from_str(&env, "REC101"),
+        &String::from_str(&env, "Patient data 2"),
+    );
+    client.add_record(
+        &provider,
+        &String::from_str(&env, "REC102"),
+        &String::from_str(&env, "Patient data 3"),
+    );
+
+    assert_eq!(client.get_provider_record_count(&provider), 3);
 }
 
 #[test]
@@ -224,7 +259,9 @@ fn test_rate_limit_window_reset_allows_again() {
         &String::from_str(&env, "data"),
     );
     assert_eq!(
-        client.get_record(&String::from_str(&env, "REC-AFTER-RESET")).data,
+        client
+            .get_record(&String::from_str(&env, "REC-AFTER-RESET"))
+            .data,
         String::from_str(&env, "data")
     );
 }
@@ -252,8 +289,14 @@ fn test_deactivate_provider_transfers_records_and_removes_whitelist() {
     );
 
     // Confirm original ownership.
-    assert_eq!(client.get_record(&String::from_str(&env, "R1")).created_by, provider);
-    assert_eq!(client.get_record(&String::from_str(&env, "R2")).created_by, provider);
+    assert_eq!(
+        client.get_record(&String::from_str(&env, "R1")).created_by,
+        provider
+    );
+    assert_eq!(
+        client.get_record(&String::from_str(&env, "R2")).created_by,
+        provider
+    );
 
     client.deactivate_provider(&admin, &provider, &successor);
 
@@ -261,8 +304,14 @@ fn test_deactivate_provider_transfers_records_and_removes_whitelist() {
     assert!(!client.is_provider(&provider));
 
     // Both records now owned by successor.
-    assert_eq!(client.get_record(&String::from_str(&env, "R1")).created_by, successor);
-    assert_eq!(client.get_record(&String::from_str(&env, "R2")).created_by, successor);
+    assert_eq!(
+        client.get_record(&String::from_str(&env, "R1")).created_by,
+        successor
+    );
+    assert_eq!(
+        client.get_record(&String::from_str(&env, "R2")).created_by,
+        successor
+    );
 }
 
 #[test]
@@ -319,9 +368,18 @@ fn test_deactivate_provider_successor_accumulates_records() {
     client.deactivate_provider(&admin, &provider, &successor);
 
     // All three records now belong to successor.
-    assert_eq!(client.get_record(&String::from_str(&env, "S1")).created_by, successor);
-    assert_eq!(client.get_record(&String::from_str(&env, "P1")).created_by, successor);
-    assert_eq!(client.get_record(&String::from_str(&env, "P2")).created_by, successor);
+    assert_eq!(
+        client.get_record(&String::from_str(&env, "S1")).created_by,
+        successor
+    );
+    assert_eq!(
+        client.get_record(&String::from_str(&env, "P1")).created_by,
+        successor
+    );
+    assert_eq!(
+        client.get_record(&String::from_str(&env, "P2")).created_by,
+        successor
+    );
 }
 
 #[test]

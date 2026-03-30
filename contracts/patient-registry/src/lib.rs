@@ -6,8 +6,8 @@ use soroban_sdk::{
     xdr::ToXdr, Address, Bytes, BytesN, Env, Map, String, Symbol, Vec,
 };
 
-pub mod validation;
 pub mod merkle;
+pub mod validation;
 pub const NEW_RECORD_TOPIC: &str = "new_record";
 
 // =====================================================
@@ -92,6 +92,8 @@ pub enum DataKey {
     TotalAccessGrants,
     /// Nonce counter per patient for share-link token generation.
     ShareNonce(Address),
+    /// Nonce counter per patient for data export ticket generation.
+    ExportNonce(Address),
     /// Share link data keyed by token hash.
     ShareLink(BytesN<32>),
     /// Marks a patient as deregistered (value: timestamp of deregistration).
@@ -123,6 +125,16 @@ pub struct ShareLinkData {
     pub record_id: u64,
     pub uses_remaining: u32,
     pub expires_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExportTicket {
+    pub patient: Address,
+    pub issued_at: u64,
+    pub expires_at: u64,
+    pub nonce: BytesN<32>,
+    pub signature: BytesN<32>,
 }
 
 /// One entry in the platform-wide secondary index.
@@ -240,6 +252,35 @@ fn require_patient_or_guardian(env: &Env, patient: &Address, caller: &Address) -
     }
 }
 
+fn next_export_nonce(env: &Env, patient: &Address, issued_at: u64) -> BytesN<32> {
+    let nonce_key = DataKey::ExportNonce(patient.clone());
+    let nonce_counter: u64 = env.storage().persistent().get(&nonce_key).unwrap_or(0u64) + 1;
+    env.storage().persistent().set(&nonce_key, &nonce_counter);
+
+    let mut preimage = Bytes::new(env);
+    preimage.append(&patient.clone().to_xdr(env));
+    preimage.extend_from_array(&issued_at.to_be_bytes());
+    preimage.extend_from_array(&nonce_counter.to_be_bytes());
+
+    env.crypto().sha256(&preimage)
+}
+
+fn sign_export_ticket(
+    env: &Env,
+    patient: &Address,
+    issued_at: u64,
+    expires_at: u64,
+    nonce: &BytesN<32>,
+) -> BytesN<32> {
+    let mut payload = Bytes::new(env);
+    payload.append(&patient.clone().to_xdr(env));
+    payload.extend_from_array(&issued_at.to_be_bytes());
+    payload.extend_from_array(&expires_at.to_be_bytes());
+    payload.append(&Bytes::from(nonce.clone()));
+
+    env.crypto().sha256(&payload)
+}
+
 /// Enforces that `caller` is the patient, their guardian, or an authorized doctor.
 fn require_record_access(env: &Env, patient: &Address, caller: &Address) -> Result<(), ContractError> {
     if caller == patient {
@@ -283,9 +324,15 @@ impl MedicalRegistry {
         env.storage().instance().set(&DataKey::FeeToken, &fee_token);
         env.storage().instance().set(&DataKey::RecordFee, &0i128);
         env.storage().instance().set(&DataKey::TotalPatients, &0u64);
-        env.storage().instance().set(&DataKey::TotalRecordsCreated, &0u64);
-        env.storage().instance().set(&DataKey::TotalProviders, &0u64);
-        env.storage().instance().set(&DataKey::TotalAccessGrants, &0u64);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalRecordsCreated, &0u64);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalProviders, &0u64);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalAccessGrants, &0u64);
         env.storage().instance().set(&DataKey::RecordCounter, &0u64);
         Ok(())
     }
@@ -969,12 +1016,7 @@ impl MedicalRegistry {
         };
 
         let counter_key = DataKey::RecordCounter;
-        let record_id: u64 = env
-            .storage()
-            .persistent()
-            .get(&counter_key)
-            .unwrap_or(0u64)
-            + 1;
+        let record_id: u64 = env.storage().persistent().get(&counter_key).unwrap_or(0u64) + 1;
         env.storage().persistent().set(&counter_key, &record_id);
 
         let timestamp = env.ledger().timestamp();
@@ -1038,11 +1080,9 @@ impl MedicalRegistry {
             record_id,
         });
         env.storage().persistent().set(&idx_key, &type_index);
-        env.storage().persistent().extend_ttl(
-            &idx_key,
-            LEDGER_THRESHOLD,
-            LEDGER_BUMP_AMOUNT,
-        );
+        env.storage()
+            .persistent()
+            .extend_ttl(&idx_key, LEDGER_THRESHOLD, LEDGER_BUMP_AMOUNT);
         // ─────────────────────────────────────────────────────────────────────
 
         // TTL bumps for per-patient and per-record keys.
@@ -1057,7 +1097,11 @@ impl MedicalRegistry {
             .extend_ttl(&ids_key, LEDGER_THRESHOLD, LEDGER_BUMP_AMOUNT);
 
         env.events().publish(
-            (Symbol::new(&env, NEW_RECORD_TOPIC), patient.clone(), doctor.clone()),
+            (
+                Symbol::new(&env, NEW_RECORD_TOPIC),
+                patient.clone(),
+                doctor.clone(),
+            ),
             (record_id, record_type, timestamp),
         );
 
@@ -1093,9 +1137,11 @@ impl MedicalRegistry {
 
         let patient_key = DataKey::Patient(patient.clone());
         if env.storage().persistent().has(&patient_key) {
-            env.storage()
-                .persistent()
-                .extend_ttl(&patient_key, LEDGER_THRESHOLD, LEDGER_BUMP_AMOUNT);
+            env.storage().persistent().extend_ttl(
+                &patient_key,
+                LEDGER_THRESHOLD,
+                LEDGER_BUMP_AMOUNT,
+            );
         }
 
         Ok(env
@@ -1150,9 +1196,11 @@ impl MedicalRegistry {
                 .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP_AMOUNT);
         }
         if env.storage().persistent().has(&patient_key) {
-            env.storage()
-                .persistent()
-                .extend_ttl(&patient_key, LEDGER_THRESHOLD, LEDGER_BUMP_AMOUNT);
+            env.storage().persistent().extend_ttl(
+                &patient_key,
+                LEDGER_THRESHOLD,
+                LEDGER_BUMP_AMOUNT,
+            );
         }
 
         let mut latest = records.get(0).unwrap().clone();
@@ -1169,11 +1217,7 @@ impl MedicalRegistry {
     /// If no root was persisted yet, recomputes from `PatientRecordIds` (or empty sentinel).
     pub fn get_merkle_root(env: Env, patient: Address) -> BytesN<32> {
         let key = DataKey::MerkleRoot(patient.clone());
-        if let Some(root) = env
-            .storage()
-            .persistent()
-            .get::<DataKey, BytesN<32>>(&key)
-        {
+        if let Some(root) = env.storage().persistent().get::<DataKey, BytesN<32>>(&key) {
             root
         } else {
             let ids_key = DataKey::PatientRecordIds(patient);
@@ -1244,11 +1288,8 @@ impl MedicalRegistry {
             .persistent()
             .extend_ttl(&record_key, LEDGER_THRESHOLD, LEDGER_BUMP_AMOUNT);
 
-        env.events()
-            .publish((
-                symbol_short!("rec_upd"),
-                (patient.clone(), caller.clone()),
-            ),
+        env.events().publish(
+            (symbol_short!("rec_upd"), (patient.clone(), caller.clone())),
             record_id,
         );
 
@@ -1292,7 +1333,11 @@ impl MedicalRegistry {
         let mut filtered = Vec::new(&env);
         for id in record_ids.iter() {
             let record_id: u64 = id.into();
-            if let Some(record_data) = env.storage().persistent().get::<DataKey, RecordData>(&DataKey::MedicalRecord(record_id)) {
+            if let Some(record_data) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, RecordData>(&DataKey::MedicalRecord(record_id))
+            {
                 if record_data.record_type == record_type {
                     // Map to MedicalRecord for compatibility
                     let mr = MedicalRecord {
@@ -1301,7 +1346,12 @@ impl MedicalRegistry {
                             .history
                             .get(0)
                             .map(|v| v.updated_by.clone())
-                            .unwrap_or_else(|| Address::from_str(&env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4")),
+                            .unwrap_or_else(|| {
+                                Address::from_str(
+                                    &env,
+                                    "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+                                )
+                            }),
                         record_hash: record_data.current_ipfs.clone(),
                         description: record_data.description.clone(),
                         timestamp: record_data
@@ -1473,11 +1523,7 @@ impl MedicalRegistry {
 
         // Increment per-patient nonce.
         let nonce_key = DataKey::ShareNonce(patient.clone());
-        let nonce: u64 = env
-            .storage()
-            .persistent()
-            .get(&nonce_key)
-            .unwrap_or(0u64);
+        let nonce: u64 = env.storage().persistent().get(&nonce_key).unwrap_or(0u64);
         let next_nonce = nonce + 1;
         env.storage().persistent().set(&nonce_key, &next_nonce);
 
@@ -1514,10 +1560,7 @@ impl MedicalRegistry {
     /// Any address may call this function. The token is validated for expiry
     /// and remaining uses; uses_remaining is decremented on success and the
     /// token is removed when it reaches zero.
-    pub fn use_share_link(
-        env: Env,
-        token: BytesN<32>,
-    ) -> Result<MedicalRecord, ContractError> {
+    pub fn use_share_link(env: Env, token: BytesN<32>) -> Result<MedicalRecord, ContractError> {
         let link_key = DataKey::ShareLink(token.clone());
         let mut link: ShareLinkData = env
             .storage()
@@ -1564,6 +1607,41 @@ impl MedicalRegistry {
         Ok(record)
     }
 
+    /// Create a one-hour export authorization ticket for a patient's data.
+    pub fn request_data_export(env: Env, patient: Address) -> ExportTicket {
+        patient.require_auth();
+
+        let issued_at = env.ledger().timestamp();
+        let expires_at = issued_at.saturating_add(3600);
+        let nonce = next_export_nonce(&env, &patient, issued_at);
+        let signature = sign_export_ticket(&env, &patient, issued_at, expires_at, &nonce);
+
+        ExportTicket {
+            patient,
+            issued_at,
+            expires_at,
+            nonce,
+            signature,
+        }
+    }
+
+    /// Validate a patient data export ticket for expiry and integrity.
+    pub fn validate_export_ticket(env: Env, ticket: ExportTicket) -> bool {
+        if env.ledger().timestamp() > ticket.expires_at {
+            return false;
+        }
+
+        let expected_signature = sign_export_ticket(
+            &env,
+            &ticket.patient,
+            ticket.issued_at,
+            ticket.expires_at,
+            &ticket.nonce,
+        );
+
+        expected_signature == ticket.signature
+    }
+
     // =====================================================
     //           GLOBAL SECONDARY INDEX (ADMIN)
     // =====================================================
@@ -1574,7 +1652,11 @@ impl MedicalRegistry {
     /// Callable by the owning patient, their guardian, or an authorized doctor.
     /// After deletion the record data is retained for audit purposes but will no
     /// longer appear in index queries.
-    pub fn soft_delete_record(env: Env, record_id: u64, caller: Address) -> Result<(), ContractError> {
+    pub fn soft_delete_record(
+        env: Env,
+        record_id: u64,
+        caller: Address,
+    ) -> Result<(), ContractError> {
         Self::require_not_frozen(&env);
 
         let record_key = DataKey::MedicalRecord(record_id);
@@ -1615,11 +1697,9 @@ impl MedicalRegistry {
             }
         }
         env.storage().persistent().set(&idx_key, &updated);
-        env.storage().persistent().extend_ttl(
-            &idx_key,
-            LEDGER_THRESHOLD,
-            LEDGER_BUMP_AMOUNT,
-        );
+        env.storage()
+            .persistent()
+            .extend_ttl(&idx_key, LEDGER_THRESHOLD, LEDGER_BUMP_AMOUNT);
         // ─────────────────────────────────────────────────────────────────────
 
         env.events().publish(
@@ -1647,11 +1727,9 @@ impl MedicalRegistry {
             .unwrap_or(Vec::new(&env));
 
         if env.storage().persistent().has(&idx_key) {
-            env.storage().persistent().extend_ttl(
-                &idx_key,
-                LEDGER_THRESHOLD,
-                LEDGER_BUMP_AMOUNT,
-            );
+            env.storage()
+                .persistent()
+                .extend_ttl(&idx_key, LEDGER_THRESHOLD, LEDGER_BUMP_AMOUNT);
         }
 
         Ok(index)
@@ -1661,10 +1739,7 @@ impl MedicalRegistry {
     /// across all patients.
     ///
     /// **Admin-only.** Non-admins receive `NotAuthorized`.
-    pub fn get_global_type_count(
-        env: Env,
-        record_type: Symbol,
-    ) -> Result<u64, ContractError> {
+    pub fn get_global_type_count(env: Env, record_type: Symbol) -> Result<u64, ContractError> {
         Self::require_admin(&env);
 
         let idx_key = DataKey::GlobalTypeIndex(record_type);
@@ -1739,11 +1814,9 @@ impl MedicalRegistry {
         let root = merkle::compute_merkle_root(env, ids);
         let root_key = DataKey::MerkleRoot(patient.clone());
         env.storage().persistent().set(&root_key, &root);
-        env.storage().persistent().extend_ttl(
-            &root_key,
-            LEDGER_THRESHOLD,
-            LEDGER_BUMP_AMOUNT,
-        );
+        env.storage()
+            .persistent()
+            .extend_ttl(&root_key, LEDGER_THRESHOLD, LEDGER_BUMP_AMOUNT);
     }
 
     /// Bump TTL for all critical persistent keys belonging to a patient.

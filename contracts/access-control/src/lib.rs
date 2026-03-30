@@ -13,6 +13,7 @@ mod test;
 #[repr(u32)]
 pub enum ContractError {
     InvalidDidFormat = 1,
+    AlreadyInitialized = 2,
 }
 
 /// --------------------
@@ -73,15 +74,16 @@ impl AccessControl {
     ///
     /// # Arguments
     /// * `admin` - The admin address for the contract
-    pub fn initialize(env: Env, admin: Address) {
+    pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
         if env.storage().persistent().has(&DataKey::Admin) {
-            panic!("Contract already initialized");
+            return Err(ContractError::AlreadyInitialized);
         }
         admin.require_auth();
         env.storage().persistent().set(&DataKey::Admin, &admin);
 
         env.events()
             .publish((symbol_short!("init"), admin), symbol_short!("success"));
+        Ok(())
     }
 
     /// Register a new entity in the system
@@ -97,12 +99,12 @@ impl AccessControl {
         entity_type: EntityType,
         name: String,
         metadata: String,
-    ) {
+    ) -> Result<(), ContractError> {
         wallet.require_auth();
 
         let key = DataKey::Entity(wallet.clone());
         if env.storage().persistent().has(&key) {
-            panic!("Entity already registered");
+            return Err(ContractError::EntityAlreadyRegistered);
         }
 
         let entity = EntityData {
@@ -122,6 +124,7 @@ impl AccessControl {
 
         env.events()
             .publish((symbol_short!("reg_ent"), wallet), symbol_short!("success"));
+        Ok(())
     }
 
     /// Grant access permission to an entity for a specific resource
@@ -137,19 +140,19 @@ impl AccessControl {
         grantee: Address,
         resource_id: String,
         expires_at: u64,
-    ) {
+    ) -> Result<(), ContractError> {
         grantor.require_auth();
 
         // Verify grantor is a registered entity
         let grantor_key = DataKey::Entity(grantor.clone());
         if !env.storage().persistent().has(&grantor_key) {
-            panic!("Grantor not registered");
+            return Err(ContractError::GrantorNotRegistered);
         }
 
         // Verify grantee is a registered entity
         let grantee_key = DataKey::Entity(grantee.clone());
         if !env.storage().persistent().has(&grantee_key) {
-            panic!("Grantee not registered");
+            return Err(ContractError::GranteeNotRegistered);
         }
 
         let permission = AccessPermission {
@@ -178,7 +181,7 @@ impl AccessControl {
             }
         }
         if exists {
-            panic!("Access already granted for this resource");
+            return Err(ContractError::AccessAlreadyGranted);
         }
 
         access_list.push_back(permission);
@@ -199,6 +202,7 @@ impl AccessControl {
             (symbol_short!("grant"), grantee, resource_id),
             symbol_short!("success"),
         );
+        Ok(())
     }
 
     /// Revoke access permission from an entity for a specific resource
@@ -207,7 +211,7 @@ impl AccessControl {
     /// * `revoker` - The address revoking access (must be the original grantor or admin)
     /// * `revokee` - The address losing access
     /// * `resource_id` - The identifier of the resource
-    pub fn revoke_access(env: Env, revoker: Address, revokee: Address, resource_id: String) {
+    pub fn revoke_access(env: Env, revoker: Address, revokee: Address, resource_id: String) -> Result<(), ContractError> {
         revoker.require_auth();
 
         // Get admin for authorization check
@@ -215,7 +219,7 @@ impl AccessControl {
             .storage()
             .persistent()
             .get(&DataKey::Admin)
-            .expect("Contract not initialized");
+            .ok_or(ContractError::ContractNotInitialized)?;
 
         // Remove from grantee's access list
         let access_key = DataKey::AccessList(revokee.clone());
@@ -233,7 +237,7 @@ impl AccessControl {
                 if permission.resource_id == resource_id {
                     // Verify revoker is either the original grantor or admin
                     if permission.granted_by != revoker && revoker != admin {
-                        panic!("Not authorized to revoke this access");
+                        return Err(ContractError::NotAuthorizedToRevoke);
                     }
                     found = true;
                     // Skip this permission (effectively removing it)
@@ -244,7 +248,7 @@ impl AccessControl {
         }
 
         if !found {
-            panic!("Access permission not found");
+            return Err(ContractError::AccessPermissionNotFound);
         }
 
         env.storage()
@@ -275,6 +279,7 @@ impl AccessControl {
             (symbol_short!("revoke"), revokee, resource_id),
             symbol_short!("success"),
         );
+        Ok(())
     }
 
     /// Check if an entity has access to a specific resource
@@ -331,12 +336,12 @@ impl AccessControl {
     ///
     /// # Returns
     /// The EntityData for the given wallet address
-    pub fn get_entity(env: Env, wallet: Address) -> EntityData {
+    pub fn get_entity(env: Env, wallet: Address) -> Result<EntityData, ContractError> {
         let key = DataKey::Entity(wallet);
         env.storage()
             .persistent()
             .get(&key)
-            .expect("Entity not found")
+            .ok_or(ContractError::EntityNotFound)
     }
 
     /// Get all access permissions for an entity
@@ -359,7 +364,7 @@ impl AccessControl {
     /// # Arguments
     /// * `wallet` - The wallet address of the entity
     /// * `metadata` - Updated metadata information
-    pub fn update_entity(env: Env, wallet: Address, metadata: String) {
+    pub fn update_entity(env: Env, wallet: Address, metadata: String) -> Result<(), ContractError> {
         wallet.require_auth();
 
         let key = DataKey::Entity(wallet.clone());
@@ -367,13 +372,14 @@ impl AccessControl {
             .storage()
             .persistent()
             .get(&key)
-            .expect("Entity not found");
+            .ok_or(ContractError::EntityNotFound)?;
 
         entity.metadata = metadata;
         env.storage().persistent().set(&key, &entity);
 
         env.events()
             .publish((symbol_short!("upd_ent"), wallet), symbol_short!("success"));
+        Ok(())
     }
 
     /// Deactivate an entity (admin only)
@@ -381,17 +387,17 @@ impl AccessControl {
     /// # Arguments
     /// * `admin` - The admin address
     /// * `wallet` - The wallet address of the entity to deactivate
-    pub fn deactivate_entity(env: Env, admin: Address, wallet: Address) {
+    pub fn deactivate_entity(env: Env, admin: Address, wallet: Address) -> Result<(), ContractError> {
         admin.require_auth();
 
         let stored_admin: Address = env
             .storage()
             .persistent()
             .get(&DataKey::Admin)
-            .expect("Contract not initialized");
+            .ok_or(ContractError::ContractNotInitialized)?;
 
         if admin != stored_admin {
-            panic!("Only admin can deactivate entities");
+            return Err(ContractError::OnlyAdminCanDeactivate);
         }
 
         let key = DataKey::Entity(wallet.clone());
@@ -399,13 +405,14 @@ impl AccessControl {
             .storage()
             .persistent()
             .get(&key)
-            .expect("Entity not found");
+            .ok_or(ContractError::EntityNotFound)?;
 
         entity.active = false;
         env.storage().persistent().set(&key, &entity);
 
         env.events()
             .publish((symbol_short!("deact"), wallet), symbol_short!("success"));
+        Ok(())
     }
 
     /// Register or update a W3C DID for the provided address.
