@@ -9,7 +9,6 @@ fn test_register_hospital() {
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let hospital_wallet = Address::generate(&env);
-
     env.mock_all_auths();
 
     client.register_hospital(
@@ -39,7 +38,6 @@ fn test_update_hospital() {
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let hospital_wallet = Address::generate(&env);
-
     env.mock_all_auths();
 
     client.register_hospital(
@@ -64,14 +62,12 @@ fn test_update_hospital() {
 }
 
 #[test]
-#[should_panic(expected = "Hospital already registered")]
 fn test_duplicate_registration() {
     let env = Env::default();
     let contract_id = env.register_contract(None, HospitalRegistry);
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let hospital_wallet = Address::generate(&env);
-
     env.mock_all_auths();
 
     client.register_hospital(
@@ -81,17 +77,17 @@ fn test_duplicate_registration() {
         &String::from_str(&env, "Test Metadata"),
     );
 
-    // Attempt to register again
-    client.register_hospital(
+    let result = client.try_register_hospital(
         &hospital_wallet,
         &String::from_str(&env, "Test Hospital"),
         &String::from_str(&env, "Test Location"),
         &String::from_str(&env, "Test Metadata"),
     );
+
+    assert_eq!(result, Err(Ok(ContractError::HospitalAlreadyRegistered)));
 }
 
 #[test]
-#[should_panic(expected = "Hospital not found")]
 fn test_get_nonexistent_hospital() {
     let env = Env::default();
     let contract_id = env.register_contract(None, HospitalRegistry);
@@ -99,24 +95,24 @@ fn test_get_nonexistent_hospital() {
 
     let hospital_wallet = Address::generate(&env);
 
-    client.get_hospital(&hospital_wallet);
+    let result = client.try_get_hospital(&hospital_wallet);
+    assert_eq!(result, Err(Ok(ContractError::HospitalNotFound)));
 }
 
 #[test]
-#[should_panic(expected = "Hospital not found")]
 fn test_update_nonexistent_hospital() {
     let env = Env::default();
     let contract_id = env.register_contract(None, HospitalRegistry);
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let hospital_wallet = Address::generate(&env);
-
     env.mock_all_auths();
 
-    client.update_hospital(
+    let result = client.try_update_hospital(
         &hospital_wallet,
         &String::from_str(&env, "Updated Metadata"),
     );
+    assert_eq!(result, Err(Ok(ContractError::HospitalNotFound)));
 }
 
 #[test]

@@ -217,6 +217,18 @@ pub enum ContractError {
     ContractFrozen = 6,
     NoRecordsFound = 7,
     NotFound = 8,
+    AlreadyInitialized = 9,
+    AlreadyExists = 10,
+    AlreadyDeregistered = 11,
+    AlreadyDeleted = 12,
+    InvalidFee = 13,
+    ConsentVersionMismatch = 14,
+    ConsentNotAcknowledged = 15,
+    HoldAlreadyActive = 16,
+    HoldExpired = 17,
+    TooManyIds = 18,
+    SnapshotRateLimit = 19,
+    UnauthorizedInstitution = 20,
 }
 
 pub fn validate_cid(cid: &Bytes) -> Result<(), ContractError> {
@@ -249,13 +261,14 @@ pub fn validate_score(score: i32) -> Result<(), ContractError> {
     validation::validate_score_i32(score).map_err(|_| ContractError::InvalidScore)
 }
 
-fn require_patient_or_guardian(env: &Env, patient: &Address, caller: &Address) {
+fn require_patient_or_guardian(env: &Env, patient: &Address, caller: &Address) -> Result<(), ContractError> {
     let guardian_key = DataKey::Guardian(patient.clone());
     let guardian_opt: Option<Address> = env.storage().persistent().get(&guardian_key);
     if caller == patient || guardian_opt.as_ref() == Some(caller) {
         caller.require_auth();
+        Ok(())
     } else {
-        panic!("Caller is not patient or assigned guardian");
+        Err(ContractError::NotAuthorized)
     }
 }
 
@@ -289,16 +302,16 @@ fn sign_export_ticket(
 }
 
 /// Enforces that `caller` is the patient, their guardian, or an authorized doctor.
-fn require_record_access(env: &Env, patient: &Address, caller: &Address) {
+fn require_record_access(env: &Env, patient: &Address, caller: &Address) -> Result<(), ContractError> {
     if caller == patient {
         caller.require_auth();
-        return;
+        return Ok(());
     }
     let guardian_key = DataKey::Guardian(patient.clone());
     let guardian_opt: Option<Address> = env.storage().persistent().get(&guardian_key);
     if guardian_opt.as_ref() == Some(caller) {
         caller.require_auth();
-        return;
+        return Ok(());
     }
     let access_key = DataKey::AuthorizedDoctors(patient.clone());
     let access_map: Map<Address, bool> = env
@@ -308,9 +321,9 @@ fn require_record_access(env: &Env, patient: &Address, caller: &Address) {
         .unwrap_or(Map::new(env));
     if access_map.contains_key(caller.clone()) {
         caller.require_auth();
-        return;
+        return Ok(());
     }
-    panic!("Caller not authorized to view records");
+    Err(ContractError::NotAuthorized)
 }
 
 const FIELD_RECORD_TYPE: u32 = 1 << 0;
@@ -376,9 +389,9 @@ impl MedicalRegistry {
     //                    ADMIN / CONSENT
     // =====================================================
 
-    pub fn initialize(env: Env, admin: Address, treasury: Address, fee_token: Address) {
+    pub fn initialize(env: Env, admin: Address, treasury: Address, fee_token: Address) -> Result<(), ContractError> {
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("Already initialized");
+            return Err(ContractError::AlreadyInitialized);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Treasury, &treasury);
@@ -395,6 +408,7 @@ impl MedicalRegistry {
             .instance()
             .set(&DataKey::TotalAccessGrants, &0u64);
         env.storage().instance().set(&DataKey::RecordCounter, &0u64);
+        Ok(())
     }
 
     // =====================================================
@@ -426,7 +440,7 @@ impl MedicalRegistry {
     //                    ADMIN / CONSENT
     // =====================================================
 
-    pub fn set_record_fee(env: Env, amount: i128) {
+    pub fn set_record_fee(env: Env, amount: i128) -> Result<(), ContractError> {
         Self::require_not_frozen(&env);
         let admin: Address = env
             .storage()
@@ -435,9 +449,10 @@ impl MedicalRegistry {
             .expect("Not initialized");
         admin.require_auth();
         if amount < 0 {
-            panic!("Fee cannot be negative");
+            return Err(ContractError::InvalidFee);
         }
         env.storage().instance().set(&DataKey::RecordFee, &amount);
+        Ok(())
     }
 
     pub fn get_record_fee(env: Env) -> i128 {
@@ -503,22 +518,23 @@ impl MedicalRegistry {
         patient: Address,
         caller: Address,
         version_hash: BytesN<32>,
-    ) {
+    ) -> Result<(), ContractError> {
         Self::require_not_frozen(&env);
-        require_patient_or_guardian(&env, &patient, &caller);
+        require_patient_or_guardian(&env, &patient, &caller)?;
         let current: BytesN<32> = env
             .storage()
             .persistent()
             .get(&DataKey::ConsentVersion)
             .expect("No consent version published");
         if current != version_hash {
-            panic!("Version mismatch");
+            return Err(ContractError::ConsentVersionMismatch);
         }
         env.storage()
             .persistent()
             .set(&DataKey::ConsentAck(patient.clone()), &version_hash);
         env.events()
             .publish((symbol_short!("consent_a"), patient), version_hash);
+        Ok(())
     }
 
     pub fn get_consent_status(env: Env, patient: Address) -> ConsentStatus {
@@ -569,13 +585,13 @@ impl MedicalRegistry {
     //                    PATIENT LOGIC
     // =====================================================
 
-    pub fn register_patient(env: Env, wallet: Address, name: String, dob: u64, metadata: String) {
+    pub fn register_patient(env: Env, wallet: Address, name: String, dob: u64, metadata: String) -> Result<(), ContractError> {
         Self::require_not_frozen(&env);
         wallet.require_auth();
 
         let key = DataKey::Patient(wallet.clone());
         if env.storage().persistent().has(&key) {
-            panic!("Patient already registered");
+            return Err(ContractError::AlreadyExists);
         }
 
         let patient = PatientData {
@@ -606,33 +622,35 @@ impl MedicalRegistry {
 
         env.events()
             .publish((symbol_short!("reg_pat"), wallet), symbol_short!("success"));
+        Ok(())
     }
 
-    pub fn update_patient(env: Env, wallet: Address, caller: Address, metadata: String) {
+    pub fn update_patient(env: Env, wallet: Address, caller: Address, metadata: String) -> Result<(), ContractError> {
         Self::require_not_frozen(&env);
-        require_patient_or_guardian(&env, &wallet, &caller);
-        Self::require_not_on_hold(&env, &wallet);
+        require_patient_or_guardian(&env, &wallet, &caller)?;
+        Self::require_not_on_hold(&env, &wallet)?;
 
         let key = DataKey::Patient(wallet.clone());
         let mut patient: PatientData = env
             .storage()
             .persistent()
             .get(&key)
-            .expect("Patient not found");
+            .ok_or(ContractError::NotFound)?;
 
         patient.metadata = metadata;
         env.storage().persistent().set(&key, &patient);
 
         env.events()
             .publish((symbol_short!("upd_pat"), wallet), symbol_short!("success"));
+        Ok(())
     }
 
-    pub fn get_patient(env: Env, wallet: Address) -> PatientData {
+    pub fn get_patient(env: Env, wallet: Address) -> Result<PatientData, ContractError> {
         let key = DataKey::Patient(wallet);
         env.storage()
             .persistent()
             .get(&key)
-            .expect("Patient not found")
+            .ok_or(ContractError::NotFound)
     }
 
     pub fn is_patient_registered(env: Env, wallet: Address) -> bool {
@@ -646,7 +664,7 @@ impl MedicalRegistry {
     /// - Clears all access grants so former grantees can no longer read records.
     /// - Records are retained (not deleted) and remain readable by the admin.
     /// - Emits a `pat_dreg` audit event.
-    pub fn deregister_patient(env: Env, patient: Address) {
+    pub fn deregister_patient(env: Env, patient: Address) -> Result<(), ContractError> {
         patient.require_auth();
 
         let key = DataKey::Patient(patient.clone());
@@ -654,22 +672,20 @@ impl MedicalRegistry {
             .storage()
             .persistent()
             .get(&key)
-            .expect("Patient not found");
+            .ok_or(ContractError::NotFound)?;
 
         if data.status == PatientStatus::Deregistered {
-            panic!("Patient already deregistered");
+            return Err(ContractError::AlreadyDeregistered);
         }
 
         data.status = PatientStatus::Deregistered;
         env.storage().persistent().set(&key, &data);
 
-        // Stamp deregistration time for audit trail.
         env.storage().persistent().set(
             &DataKey::Deregistered(patient.clone()),
             &env.ledger().timestamp(),
         );
 
-        // Revoke all access grants.
         env.storage()
             .persistent()
             .remove(&DataKey::AuthorizedDoctors(patient.clone()));
@@ -678,6 +694,7 @@ impl MedicalRegistry {
             (symbol_short!("pat_dreg"), patient),
             env.ledger().timestamp(),
         );
+        Ok(())
     }
 
     pub fn get_total_patients(env: Env) -> u64 {
@@ -752,17 +769,17 @@ impl MedicalRegistry {
         }
     }
 
-    pub fn place_hold(env: Env, patient: Address, reason_hash: BytesN<32>, expires_at: u64) {
+    pub fn place_hold(env: Env, patient: Address, reason_hash: BytesN<32>, expires_at: u64) -> Result<(), ContractError> {
         Self::require_not_frozen(&env);
         Self::require_admin(&env);
-        Self::require_patient_exists(&env, &patient);
+        Self::require_patient_exists(&env, &patient)?;
 
         let now = env.ledger().timestamp();
         if expires_at <= now {
-            panic!("Hold expiry must be in the future");
+            return Err(ContractError::HoldExpired);
         }
         if Self::active_hold(&env, &patient).is_some() {
-            panic!("Regulatory hold already active");
+            return Err(ContractError::HoldAlreadyActive);
         }
 
         let hold = RegulatoryHold {
@@ -779,13 +796,14 @@ impl MedicalRegistry {
             (symbol_short!("hold_set"), patient),
             (reason_hash, expires_at, now),
         );
+        Ok(())
     }
 
-    pub fn lift_hold(env: Env, patient: Address) {
+    pub fn lift_hold(env: Env, patient: Address) -> Result<(), ContractError> {
         Self::require_not_frozen(&env);
         Self::require_admin(&env);
 
-        let hold = Self::active_hold(&env, &patient).expect("No active regulatory hold");
+        let hold = Self::active_hold(&env, &patient).ok_or(ContractError::NotFound)?;
         let lifted_at = env.ledger().timestamp();
 
         env.storage()
@@ -796,6 +814,7 @@ impl MedicalRegistry {
             (symbol_short!("hold_lift"), patient),
             (hold.reason_hash, hold.expires_at, hold.placed_at, lifted_at),
         );
+        Ok(())
     }
 
     pub fn is_hold_active(env: Env, patient: Address) -> bool {
@@ -816,13 +835,13 @@ impl MedicalRegistry {
         name: String,
         specialization: String,
         certificate_hash: Bytes,
-    ) {
+    ) -> Result<(), ContractError> {
         Self::require_not_frozen(&env);
         wallet.require_auth();
 
         let key = DataKey::Doctor(wallet.clone());
         if env.storage().persistent().has(&key) {
-            panic!("Doctor already registered");
+            return Err(ContractError::AlreadyExists);
         }
 
         let doctor = DoctorData {
@@ -855,15 +874,16 @@ impl MedicalRegistry {
 
         env.events()
             .publish((symbol_short!("reg_doc"), wallet), symbol_short!("success"));
+        Ok(())
     }
 
-    pub fn verify_doctor(env: Env, wallet: Address, institution_wallet: Address) {
+    pub fn verify_doctor(env: Env, wallet: Address, institution_wallet: Address) -> Result<(), ContractError> {
         Self::require_not_frozen(&env);
         institution_wallet.require_auth();
 
         let inst_key = DataKey::Institution(institution_wallet);
         if !env.storage().persistent().has(&inst_key) {
-            panic!("Unauthorized institution");
+            return Err(ContractError::UnauthorizedInstitution);
         }
 
         let doc_key = DataKey::Doctor(wallet.clone());
@@ -871,7 +891,7 @@ impl MedicalRegistry {
             .storage()
             .persistent()
             .get(&doc_key)
-            .expect("Doctor not found");
+            .ok_or(ContractError::NotFound)?;
 
         doctor.verified = true;
         env.storage().persistent().set(&doc_key, &doctor);
@@ -880,14 +900,15 @@ impl MedicalRegistry {
             (symbol_short!("ver_doc"), wallet),
             symbol_short!("verified"),
         );
+        Ok(())
     }
 
-    pub fn get_doctor(env: Env, wallet: Address) -> DoctorData {
+    pub fn get_doctor(env: Env, wallet: Address) -> Result<DoctorData, ContractError> {
         let key = DataKey::Doctor(wallet);
         env.storage()
             .persistent()
             .get(&key)
-            .expect("Doctor not found")
+            .ok_or(ContractError::NotFound)
     }
 
     // =====================================================
@@ -914,10 +935,10 @@ impl MedicalRegistry {
     //            MEDICAL RECORD ACCESS CONTROL
     // =====================================================
 
-    pub fn grant_access(env: Env, patient: Address, caller: Address, doctor: Address) {
+    pub fn grant_access(env: Env, patient: Address, caller: Address, doctor: Address) -> Result<(), ContractError> {
         Self::require_not_frozen(&env);
-        require_patient_or_guardian(&env, &patient, &caller);
-        Self::require_not_on_hold(&env, &patient);
+        require_patient_or_guardian(&env, &patient, &caller)?;
+        Self::require_not_on_hold(&env, &patient)?;
 
         let key = DataKey::AuthorizedDoctors(patient.clone());
         let mut map: Map<Address, bool> = env
@@ -939,6 +960,7 @@ impl MedicalRegistry {
 
         map.set(doctor.clone(), true);
         env.storage().persistent().set(&key, &map);
+        Ok(())
     }
 
     pub fn grant_field_access(
@@ -980,8 +1002,8 @@ impl MedicalRegistry {
 
     pub fn revoke_access(env: Env, patient: Address, caller: Address, doctor: Address) {
         Self::require_not_frozen(&env);
-        require_patient_or_guardian(&env, &patient, &caller);
-        Self::require_not_on_hold(&env, &patient);
+        require_patient_or_guardian(&env, &patient, &caller)?;
+        Self::require_not_on_hold(&env, &patient)?;
 
         let key = DataKey::AuthorizedDoctors(patient.clone());
         let mut map: Map<Address, bool> = env
@@ -1004,6 +1026,7 @@ impl MedicalRegistry {
 
         map.remove(doctor);
         env.storage().persistent().set(&key, &map);
+        Ok(())
     }
 
     pub fn get_authorized_doctors(env: Env, patient: Address) -> Vec<Address> {
@@ -1030,7 +1053,7 @@ impl MedicalRegistry {
         record_type: Symbol,
     ) -> Result<u64, ContractError> {
         Self::require_not_frozen(&env);
-        Self::require_patient_exists(&env, &patient);
+        Self::require_patient_exists(&env, &patient)?;
         doctor.require_auth();
         validate_cid(&record_hash)?;
 
@@ -1056,7 +1079,7 @@ impl MedicalRegistry {
 
         // Check consent
         if Self::get_consent_status(env.clone(), patient.clone()) != ConsentStatus::Acknowledged {
-            panic!("Patient has not acknowledged current consent version");
+            return Err(ContractError::ConsentNotAcknowledged);
         }
 
         // Check access
@@ -1068,8 +1091,8 @@ impl MedicalRegistry {
             .unwrap_or(Map::new(&env));
 
         if !access_map.contains_key(doctor.clone()) {
-            panic!("Doctor not authorized");
-        }
+            return Err(ContractError::NotAuthorized);
+        }     }
 
         let timestamp = env.ledger().timestamp();
 
@@ -1196,8 +1219,7 @@ impl MedicalRegistry {
         Ok(record_id)
     }
 
-    pub fn get_medical_records(env: Env, patient: Address, caller: Address) -> Vec<MedicalRecord> {
-        // If the patient is deregistered, only the admin may read records.
+    pub fn get_medical_records(env: Env, patient: Address, caller: Address) -> Result<Vec<MedicalRecord>, ContractError> {
         let patient_key = DataKey::Patient(patient.clone());
         if let Some(data) = env
             .storage()
@@ -1211,7 +1233,7 @@ impl MedicalRegistry {
                     .get(&DataKey::Admin)
                     .expect("Not initialized");
                 if caller != admin {
-                    panic!("Records only accessible by admin after deregistration");
+                    return Err(ContractError::NotAuthorized);
                 }
             }
         }
@@ -1224,7 +1246,6 @@ impl MedicalRegistry {
                 .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP_AMOUNT);
         }
 
-        // Also bump the patient record itself
         let patient_key = DataKey::Patient(patient.clone());
         if env.storage().persistent().has(&patient_key) {
             env.storage().persistent().extend_ttl(
@@ -1234,10 +1255,11 @@ impl MedicalRegistry {
             );
         }
 
-        env.storage()
+        Ok(env
+            .storage()
             .persistent()
             .get(&key)
-            .unwrap_or(Vec::new(&env))
+            .unwrap_or(Vec::new(&env)))
     }
 
     pub fn get_latest_record(
@@ -1245,7 +1267,6 @@ impl MedicalRegistry {
         patient: Address,
         caller: Address,
     ) -> Result<MedicalRecord, ContractError> {
-        // account for deregistered patient policy from get_medical_records
         let patient_key = DataKey::Patient(patient.clone());
         if let Some(data) = env
             .storage()
@@ -1259,13 +1280,13 @@ impl MedicalRegistry {
                     .get(&DataKey::Admin)
                     .expect("Not initialized");
                 if caller != admin {
-                    panic!("Records only accessible by admin after deregistration");
+                    return Err(ContractError::NotAuthorized);
                 }
             } else {
-                require_record_access(&env, &patient, &caller);
+                require_record_access(&env, &patient, &caller)?;
             }
         } else {
-            require_record_access(&env, &patient, &caller);
+            require_record_access(&env, &patient, &caller)?;
         }
 
         let key = DataKey::MedicalRecords(patient.clone());
@@ -1350,11 +1371,11 @@ impl MedicalRegistry {
             .ok_or(ContractError::NotFound)?;
 
         let patient = record_data.patient.clone();
-        Self::require_patient_exists(&env, &patient);
-        Self::require_not_on_hold(&env, &patient);
+        Self::require_patient_exists(&env, &patient)?;
+        Self::require_not_on_hold(&env, &patient)?;
 
         caller.require_auth();
-        require_record_access(&env, &patient, &caller);
+        require_record_access(&env, &patient, &caller)?;
 
         validate_cid(&new_ipfs_hash)?;
 
@@ -1454,8 +1475,8 @@ impl MedicalRegistry {
         patient: Address,
         caller: Address,
         record_type: Symbol,
-    ) -> Vec<MedicalRecord> {
-        require_record_access(&env, &patient, &caller);
+    ) -> Result<Vec<MedicalRecord>, ContractError> {
+        require_record_access(&env, &patient, &caller)?;
 
         let ids_key = DataKey::PatientRecordIds(patient);
         let record_ids: Vec<u64> = env
@@ -1499,7 +1520,7 @@ impl MedicalRegistry {
                 }
             }
         }
-        filtered
+        Ok(filtered)
     }
 
     /// Returns records by positional IDs for a patient.
@@ -1512,11 +1533,11 @@ impl MedicalRegistry {
         caller: Address,
         ids: Vec<u32>,
         strict_not_found: bool,
-    ) -> Vec<MedicalRecord> {
+    ) -> Result<Vec<MedicalRecord>, ContractError> {
         if ids.len() > 10 {
-            panic!("Too many record IDs; maximum is 10");
+            return Err(ContractError::TooManyIds);
         }
-        require_record_access(&env, &patient, &caller);
+        require_record_access(&env, &patient, &caller)?;
 
         let key = DataKey::MedicalRecords(patient.clone());
         let records: Vec<MedicalRecord> = env
@@ -1531,13 +1552,13 @@ impl MedicalRegistry {
                 Some(record) => selected.push_back(record),
                 None => {
                     if strict_not_found {
-                        panic!("Record ID not found");
+                        return Err(ContractError::NotFound);
                     }
                 }
             }
         }
 
-        selected
+        Ok(selected)
     }
 
     // =====================================================
@@ -1558,7 +1579,7 @@ impl MedicalRegistry {
     ///
     /// 3. `snap_docs` — topics: `("snap_docs", ledger_sequence)`,
     ///    data: `Vec<Address>` of all registered doctor addresses.
-    pub fn emit_state_snapshot(env: Env) {
+    pub fn emit_state_snapshot(env: Env) -> Result<(), ContractError> {
         Self::require_not_frozen(&env);
         let admin: Address = env
             .storage()
@@ -1573,7 +1594,7 @@ impl MedicalRegistry {
 
         if let Some(last_ledger) = last {
             if current_ledger.saturating_sub(last_ledger) < SNAPSHOT_INTERVAL {
-                panic!("Snapshot rate limit: must wait 100,000 ledgers between snapshots");
+                return Err(ContractError::SnapshotRateLimit);
             }
         }
 
@@ -1608,6 +1629,7 @@ impl MedicalRegistry {
             .publish((symbol_short!("snap_pats"), current_ledger), patients);
         env.events()
             .publish((symbol_short!("snap_docs"), current_ledger), doctors);
+        Ok(())
     }
 
     pub fn get_last_snapshot_ledger(env: Env) -> Option<u32> {
@@ -1800,16 +1822,12 @@ impl MedicalRegistry {
             .ok_or(ContractError::NotFound)?;
 
         let patient = record_data.patient.clone();
-        Self::require_patient_exists(&env, &patient);
-        require_record_access(&env, &patient, &caller);
+        Self::require_patient_exists(&env, &patient)?;
+        require_record_access(&env, &patient, &caller)?;
 
         // Guard: already deleted?
-        if env
-            .storage()
-            .persistent()
-            .has(&DataKey::DeletedRecord(record_id))
-        {
-            panic!("Record already deleted");
+        if env.storage().persistent().has(&DataKey::DeletedRecord(record_id)) {
+            return Err(ContractError::AlreadyDeleted);
         }
 
         // Stamp the tombstone.
@@ -1913,20 +1931,22 @@ impl MedicalRegistry {
         admin.require_auth();
     }
 
-    fn require_patient_exists(env: &Env, patient: &Address) {
+    fn require_patient_exists(env: &Env, patient: &Address) -> Result<(), ContractError> {
         if !env
             .storage()
             .persistent()
             .has(&DataKey::Patient(patient.clone()))
         {
-            panic!("Patient not found");
+            return Err(ContractError::NotFound);
         }
+        Ok(())
     }
 
-    fn require_not_on_hold(env: &Env, patient: &Address) {
+    fn require_not_on_hold(env: &Env, patient: &Address) -> Result<(), ContractError> {
         if Self::active_hold(env, patient).is_some() {
-            panic!("Patient data is on regulatory hold");
+            return Err(ContractError::HoldAlreadyActive);
         }
+        Ok(())
     }
 
     fn active_hold(env: &Env, patient: &Address) -> Option<RegulatoryHold> {

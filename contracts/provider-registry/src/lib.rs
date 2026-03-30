@@ -2,8 +2,8 @@
 #![allow(deprecated)]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, vec, Address, Env, String,
-    Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, vec,
+    Address, Env, String, Vec,
 };
 
 mod test;
@@ -15,6 +15,9 @@ pub enum ContractError {
     RateLimitExceeded = 1,
     InvalidScore = 2,
     AlreadyRated = 3,
+    Unauthorized = 4,
+    NotFound = 5,
+    AlreadyInitialized = 6,
 }
 
 #[contracttype]
@@ -52,6 +55,7 @@ pub enum DataKey {
     Provider(Address),
     Record(String),
     ProviderRecords(Address),
+    ProviderRecordCount(Address),
     RateLimitConfig,
     ProviderRate(Address),
     ProviderReputation(Address),
@@ -64,12 +68,13 @@ pub struct ProviderRegistry;
 #[contractimpl]
 impl ProviderRegistry {
     /// Initialize the contract with an admin address.
-    pub fn initialize(env: Env, admin: Address) {
+    pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
         if env.storage().persistent().has(&DataKey::Admin) {
-            panic!("Already initialized");
+            return Err(ContractError::AlreadyInitialized);
         }
         admin.require_auth();
         env.storage().persistent().set(&DataKey::Admin, &admin);
+        Ok(())
     }
 
     /// Configure rolling per-provider rate limit for `add_record`. Admin only.
@@ -122,7 +127,7 @@ impl ProviderRegistry {
     ) -> Result<(), ContractError> {
         provider.require_auth();
         if !Self::is_provider(env.clone(), provider.clone()) {
-            panic!("Unauthorized: not a whitelisted provider");
+            return Err(ContractError::Unauthorized);
         }
         Self::consume_provider_rate_slot(&env, &provider)?;
 
@@ -144,6 +149,10 @@ impl ProviderRegistry {
         ids.push_back(record_id.clone());
         env.storage().persistent().set(&list_key, &ids);
 
+        let count_key = DataKey::ProviderRecordCount(provider.clone());
+        let count: u64 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        env.storage().persistent().set(&count_key, &(count + 1));
+
         env.events().publish(
             (symbol_short!("add_rec"), provider, record_id),
             symbol_short!("ok"),
@@ -152,11 +161,19 @@ impl ProviderRegistry {
     }
 
     /// Retrieve a medical record by ID.
-    pub fn get_record(env: Env, record_id: String) -> Record {
+    pub fn get_record(env: Env, record_id: String) -> Result<Record, ContractError> {
         env.storage()
             .persistent()
             .get(&DataKey::Record(record_id))
-            .expect("Record not found")
+            .ok_or(ContractError::NotFound)
+    }
+
+    /// Retrieve the total number of records ever created by a provider.
+    pub fn get_provider_record_count(env: Env, provider: Address) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ProviderRecordCount(provider))
+            .unwrap_or(0)
     }
 
     /// Rate a provider with score 1..=5.
@@ -169,11 +186,11 @@ impl ProviderRegistry {
     ) -> Result<(), ContractError> {
         patient.require_auth();
 
-        if score < 1 || score > 5 {
+        if !(1..=5).contains(&score) {
             return Err(ContractError::InvalidScore);
         }
         if !Self::is_provider(env.clone(), provider.clone()) {
-            panic!("Provider not found");
+            return Err(ContractError::NotFound);
         }
 
         let patient_rating_key = DataKey::ProviderRatingByPatient(provider.clone(), patient);
@@ -194,9 +211,7 @@ impl ProviderRegistry {
         reputation.total_ratings += 1;
         reputation.total_score += score as u64;
 
-        env.storage()
-            .persistent()
-            .set(&patient_rating_key, &true);
+        env.storage().persistent().set(&patient_rating_key, &true);
         env.storage().persistent().set(&reputation_key, &reputation);
         env.events().publish(
             (symbol_short!("rate"), provider),
@@ -222,6 +237,8 @@ impl ProviderRegistry {
         }
         let average_scaled = (reputation.total_score * 100) / reputation.total_ratings;
         (reputation.total_ratings, average_scaled)
+    }
+
     /// Deactivate a provider: reassign all their records to `successor`,
     /// remove them from the whitelist, and emit deactivation events. Admin only.
     pub fn deactivate_provider(env: Env, admin: Address, provider: Address, successor: Address) {
@@ -238,11 +255,7 @@ impl ProviderRegistry {
         let count = ids.len();
         for id in ids.iter() {
             let rec_key = DataKey::Record(id.clone());
-            if let Some(mut rec) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, Record>(&rec_key)
-            {
+            if let Some(mut rec) = env.storage().persistent().get::<DataKey, Record>(&rec_key) {
                 rec.created_by = successor.clone();
                 env.storage().persistent().set(&rec_key, &rec);
             }
@@ -272,10 +285,8 @@ impl ProviderRegistry {
             (symbol_short!("prov_deac"), provider.clone()),
             symbol_short!("ok"),
         );
-        env.events().publish(
-            (symbol_short!("rec_xfer"), provider, successor),
-            count,
-        );
+        env.events()
+            .publish((symbol_short!("rec_xfer"), provider, successor), count);
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
@@ -286,9 +297,9 @@ impl ProviderRegistry {
             .storage()
             .persistent()
             .get(&DataKey::Admin)
-            .expect("Not initialized");
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::NotFound));
         if *caller != admin {
-            panic!("Unauthorized: admin only");
+            panic_with_error!(env, ContractError::Unauthorized);
         }
     }
 

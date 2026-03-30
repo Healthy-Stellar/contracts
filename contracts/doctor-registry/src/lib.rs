@@ -1,7 +1,16 @@
 #![no_std]
 #![allow(deprecated)]
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, String};
+use soroban_sdk::{contract, contractimpl, contracterror, contracttype, symbol_short, Address, Env, String};
+
+/// Error codes for doctor registry operations
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum Error {
+    DuplicateProfile = 1,
+    ProfileNotFound = 2,
+}
 
 /// --------------------
 /// Doctor Structures
@@ -41,12 +50,12 @@ impl DoctorRegistry {
         name: String,
         specialization: String,
         institution_wallet: Address,
-    ) {
+    ) -> Result<(), Error> {
         wallet.require_auth();
 
         let key = DataKey::Doctor(wallet.clone());
         if env.storage().persistent().has(&key) {
-            panic!("Doctor profile already exists");
+            return Err(Error::DuplicateProfile);
         }
 
         let doctor_profile = DoctorProfileData {
@@ -60,6 +69,8 @@ impl DoctorRegistry {
 
         env.events()
             .publish((symbol_short!("crt_doc"), wallet), symbol_short!("success"));
+
+        Ok(())
     }
 
     /// Update doctor profile specialization and metadata
@@ -73,7 +84,7 @@ impl DoctorRegistry {
         wallet: Address,
         specialization: String,
         metadata: String,
-    ) {
+    ) -> Result<(), Error> {
         wallet.require_auth();
 
         let key = DataKey::Doctor(wallet.clone());
@@ -81,7 +92,7 @@ impl DoctorRegistry {
             .storage()
             .persistent()
             .get(&key)
-            .expect("Doctor profile not found");
+            .ok_or(Error::ProfileNotFound)?;
 
         doctor_profile.specialization = specialization;
         doctor_profile.metadata = metadata;
@@ -89,21 +100,16 @@ impl DoctorRegistry {
 
         env.events()
             .publish((symbol_short!("upd_doc"), wallet), symbol_short!("success"));
+
+        Ok(())
     }
 
-    /// Retrieve doctor profile data by wallet address
-    ///
-    /// # Arguments
-    /// * `wallet` - The wallet address of the doctor
-    ///
-    /// # Returns
-    /// The DoctorProfileData for the given wallet address
-    pub fn get_doctor_profile(env: Env, wallet: Address) -> DoctorProfileData {
+    pub fn get_doctor_profile(env: Env, wallet: Address) -> Result<DoctorProfileData, Error> {
         let key = DataKey::Doctor(wallet);
         env.storage()
             .persistent()
             .get(&key)
-            .expect("Doctor profile not found")
+            .ok_or(Error::ProfileNotFound)
     }
 }
 

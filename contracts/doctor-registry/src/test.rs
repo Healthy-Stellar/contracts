@@ -66,7 +66,6 @@ fn test_update_doctor_profile() {
 }
 
 #[test]
-#[should_panic(expected = "Doctor profile already exists")]
 fn test_duplicate_profile_creation() {
     let env = Env::default();
     let contract_id = env.register_contract(None, DoctorRegistry);
@@ -84,17 +83,18 @@ fn test_duplicate_profile_creation() {
         &institution_wallet,
     );
 
-    // Attempt to create again
-    client.create_doctor_profile(
+    // Attempt to create again — must return DuplicateProfile typed error
+    let result = client.try_create_doctor_profile(
         &doctor_wallet,
         &String::from_str(&env, "Dr. Test"),
         &String::from_str(&env, "General Medicine"),
         &institution_wallet,
     );
+
+    assert_eq!(result, Err(Ok(Error::DuplicateProfile)));
 }
 
 #[test]
-#[should_panic(expected = "Doctor profile not found")]
 fn test_get_nonexistent_profile() {
     let env = Env::default();
     let contract_id = env.register_contract(None, DoctorRegistry);
@@ -102,11 +102,11 @@ fn test_get_nonexistent_profile() {
 
     let doctor_wallet = Address::generate(&env);
 
-    client.get_doctor_profile(&doctor_wallet);
+    let result = client.try_get_doctor_profile(&doctor_wallet);
+    assert_eq!(result, Err(Ok(Error::ProfileNotFound)));
 }
 
 #[test]
-#[should_panic(expected = "Doctor profile not found")]
 fn test_update_nonexistent_profile() {
     let env = Env::default();
     let contract_id = env.register_contract(None, DoctorRegistry);
@@ -116,11 +116,13 @@ fn test_update_nonexistent_profile() {
 
     env.mock_all_auths();
 
-    client.update_doctor_profile(
+    let result = client.try_update_doctor_profile(
         &doctor_wallet,
         &String::from_str(&env, "Cardiology"),
         &String::from_str(&env, "Updated info"),
     );
+
+    assert_eq!(result, Err(Ok(Error::ProfileNotFound)));
 }
 
 #[test]

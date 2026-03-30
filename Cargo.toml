@@ -36,6 +36,7 @@ members = [
   "contracts/multisig-governance",
   "contracts/upgrade-governance",
   "contracts/zk-eligibility-verifier",
+  "contracts/clinical-trial",
 ]
 exclude = ["contracts/patient-registry/benches"]
 
