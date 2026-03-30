@@ -52,6 +52,7 @@ pub enum DataKey {
     Provider(Address),
     Record(String),
     ProviderRecords(Address),
+    ProviderRecordCount(Address),
     RateLimitConfig,
     ProviderRate(Address),
     ProviderReputation(Address),
@@ -144,6 +145,10 @@ impl ProviderRegistry {
         ids.push_back(record_id.clone());
         env.storage().persistent().set(&list_key, &ids);
 
+        let count_key = DataKey::ProviderRecordCount(provider.clone());
+        let count: u64 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        env.storage().persistent().set(&count_key, &(count + 1));
+
         env.events().publish(
             (symbol_short!("add_rec"), provider, record_id),
             symbol_short!("ok"),
@@ -159,6 +164,14 @@ impl ProviderRegistry {
             .expect("Record not found")
     }
 
+    /// Retrieve the total number of records ever created by a provider.
+    pub fn get_provider_record_count(env: Env, provider: Address) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ProviderRecordCount(provider))
+            .unwrap_or(0)
+    }
+
     /// Rate a provider with score 1..=5.
     /// A patient can only rate the same provider once.
     pub fn rate_provider(
@@ -169,7 +182,7 @@ impl ProviderRegistry {
     ) -> Result<(), ContractError> {
         patient.require_auth();
 
-        if score < 1 || score > 5 {
+        if !(1..=5).contains(&score) {
             return Err(ContractError::InvalidScore);
         }
         if !Self::is_provider(env.clone(), provider.clone()) {
@@ -194,9 +207,7 @@ impl ProviderRegistry {
         reputation.total_ratings += 1;
         reputation.total_score += score as u64;
 
-        env.storage()
-            .persistent()
-            .set(&patient_rating_key, &true);
+        env.storage().persistent().set(&patient_rating_key, &true);
         env.storage().persistent().set(&reputation_key, &reputation);
         env.events().publish(
             (symbol_short!("rate"), provider),
@@ -222,6 +233,8 @@ impl ProviderRegistry {
         }
         let average_scaled = (reputation.total_score * 100) / reputation.total_ratings;
         (reputation.total_ratings, average_scaled)
+    }
+
     /// Deactivate a provider: reassign all their records to `successor`,
     /// remove them from the whitelist, and emit deactivation events. Admin only.
     pub fn deactivate_provider(env: Env, admin: Address, provider: Address, successor: Address) {
@@ -238,11 +251,7 @@ impl ProviderRegistry {
         let count = ids.len();
         for id in ids.iter() {
             let rec_key = DataKey::Record(id.clone());
-            if let Some(mut rec) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, Record>(&rec_key)
-            {
+            if let Some(mut rec) = env.storage().persistent().get::<DataKey, Record>(&rec_key) {
                 rec.created_by = successor.clone();
                 env.storage().persistent().set(&rec_key, &rec);
             }
@@ -272,10 +281,8 @@ impl ProviderRegistry {
             (symbol_short!("prov_deac"), provider.clone()),
             symbol_short!("ok"),
         );
-        env.events().publish(
-            (symbol_short!("rec_xfer"), provider, successor),
-            count,
-        );
+        env.events()
+            .publish((symbol_short!("rec_xfer"), provider, successor), count);
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
