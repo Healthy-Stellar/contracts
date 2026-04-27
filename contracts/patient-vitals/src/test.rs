@@ -79,7 +79,9 @@ fn test_device_registration_and_reading() {
     let client = PatientVitalsContractClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);
+    let device_signer = Address::generate(&env);
     let device_id = String::from_str(&env, "DEVICE_123");
+    let calibration_expiry: u64 = 1672531200 + 3600;
 
     client.register_monitoring_device(
         &patient_id,
@@ -87,6 +89,8 @@ fn test_device_registration_and_reading() {
         &Symbol::new(&env, "watch"),
         &String::from_str(&env, "SN-456"),
         &1670000000,
+        &device_signer,
+        &calibration_expiry,
     );
 
     let mut readings = Vec::new(&env);
@@ -106,11 +110,134 @@ fn test_device_registration_and_reading() {
 
     client.submit_device_reading(&device_id, &patient_id, &1672531200, &readings);
 
-    // Verify trends to see the reading was added
     let trends =
         client.get_vital_trends(&patient_id, &Symbol::new(&env, "heart_rate"), &0, &u64::MAX);
     assert_eq!(trends.len(), 1);
     assert_eq!(trends.get(0).unwrap().vitals.heart_rate, Some(75));
+}
+
+#[test]
+fn test_spoofed_device_rejected() {
+    let env = Env::default();
+
+    let contract_id = env.register_contract(None, PatientVitalsContract);
+    let client = PatientVitalsContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let real_signer = Address::generate(&env);
+    let spoofed_signer = Address::generate(&env);
+    let device_id = String::from_str(&env, "DEVICE_REAL");
+    let calibration_expiry: u64 = 9_999_999_999;
+
+    // Register with real_signer — patient authorises this
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &patient_id,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "register_monitoring_device",
+            args: (
+                patient_id.clone(),
+                device_id.clone(),
+                Symbol::new(&env, "watch"),
+                String::from_str(&env, "SN-001"),
+                1670000000_u64,
+                real_signer.clone(),
+                calibration_expiry,
+            )
+                .into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.register_monitoring_device(
+        &patient_id,
+        &device_id,
+        &Symbol::new(&env, "watch"),
+        &String::from_str(&env, "SN-001"),
+        &1670000000,
+        &real_signer,
+        &calibration_expiry,
+    );
+
+    // Attempt to submit signed by spoofed_signer — must fail auth
+    let mut readings = Vec::new(&env);
+    readings.push_back(DeviceReading {
+        reading_time: 1_000_000,
+        values: VitalSigns {
+            blood_pressure_systolic: Some(200),
+            blood_pressure_diastolic: None,
+            heart_rate: None,
+            temperature: None,
+            respiratory_rate: None,
+            oxygen_saturation: None,
+            blood_glucose: None,
+            weight: None,
+        },
+    });
+
+    // Only authorise spoofed_signer — real_signer is NOT authorised
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &spoofed_signer,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "submit_device_reading",
+            args: (
+                device_id.clone(),
+                patient_id.clone(),
+                1_000_000_u64,
+                readings.clone(),
+            )
+                .into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result =
+        client.try_submit_device_reading(&device_id, &patient_id, &1_000_000, &readings);
+    // Auth check for real_signer fails because only spoofed_signer was mocked
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_expired_calibration_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PatientVitalsContract);
+    let client = PatientVitalsContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let device_signer = Address::generate(&env);
+    let device_id = String::from_str(&env, "DEVICE_EXP");
+    let calibration_expiry: u64 = 1_000_000; // expires at t=1_000_000
+
+    client.register_monitoring_device(
+        &patient_id,
+        &device_id,
+        &Symbol::new(&env, "sensor"),
+        &String::from_str(&env, "SN-EXP"),
+        &900_000,
+        &device_signer,
+        &calibration_expiry,
+    );
+
+    let mut readings = Vec::new(&env);
+    readings.push_back(DeviceReading {
+        reading_time: 1_000_001, // one second past expiry
+        values: VitalSigns {
+            blood_pressure_systolic: None,
+            blood_pressure_diastolic: None,
+            heart_rate: Some(80),
+            temperature: None,
+            respiratory_rate: None,
+            oxygen_saturation: None,
+            blood_glucose: None,
+            weight: None,
+        },
+    });
+
+    let result =
+        client.try_submit_device_reading(&device_id, &patient_id, &1_000_001, &readings);
+    assert_eq!(result, Err(Ok(crate::types::Error::CalibrationExpired)));
 }
 
 #[test]
