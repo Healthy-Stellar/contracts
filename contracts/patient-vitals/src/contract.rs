@@ -96,14 +96,25 @@ impl PatientVitalsContract {
         device_type: Symbol,
         serial_number: String,
         calibration_date: u64,
+        device_signer: Address,
+        calibration_expiry: u64,
     ) -> Result<(), Error> {
         patient_id.require_auth();
+
+        // Prevent a device signer from being bound to more than one patient
+        let bound_key = DataKey::DeviceSignerBound(device_signer.clone());
+        if env.storage().persistent().has(&bound_key) {
+            return Err(Error::Unauthorized);
+        }
+        env.storage().persistent().set(&bound_key, &patient_id);
 
         let key = DataKey::DeviceReg(patient_id, device_id);
         let reg = DeviceRegistration {
             device_type,
             serial_number,
             calibration_date,
+            device_signer,
+            calibration_expiry,
         };
 
         env.storage().persistent().set(&key, &reg);
@@ -114,16 +125,23 @@ impl PatientVitalsContract {
         env: Env,
         device_id: String,
         patient_id: Address,
-        _reading_time: u64,
+        reading_time: u64,
         readings: Vec<DeviceReading>,
     ) -> Result<(), Error> {
-        // Assume device or patient has permission to submit
-        patient_id.require_auth();
-
-        // Verify device is registered
+        // Load the device registration — rejects unregistered devices
         let device_key = DataKey::DeviceReg(patient_id.clone(), device_id);
-        if !env.storage().persistent().has(&device_key) {
-            return Err(Error::NotFound); // Device not registered
+        let reg: DeviceRegistration = env
+            .storage()
+            .persistent()
+            .get(&device_key)
+            .ok_or(Error::NotFound)?;
+
+        // Only the registered device signer may submit readings
+        reg.device_signer.require_auth();
+
+        // Reject expired calibration
+        if reading_time > reg.calibration_expiry {
+            return Err(Error::CalibrationExpired);
         }
 
         let key = DataKey::VitalsHistory(patient_id.clone());
@@ -137,7 +155,7 @@ impl PatientVitalsContract {
             history.push_back(VitalReading {
                 measurement_time: reading.reading_time,
                 vitals: reading.values,
-                recorder: patient_id.clone(), // or device address
+                recorder: reg.device_signer.clone(),
             });
         }
 

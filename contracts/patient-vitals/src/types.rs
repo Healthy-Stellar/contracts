@@ -8,6 +8,7 @@ pub enum Error {
     NotFound = 2,
     InvalidParameter = 3,
     InvalidPage = 4,
+    CalibrationExpired = 5,
 }
 
 #[contracttype]
@@ -66,6 +67,8 @@ pub enum DataKey {
     AggWindow(Address, u64),
     /// Tracks the latest raw window index written for a patient
     LatestRawWindow(Address),
+    /// Prevents a device signer from being bound to more than one patient
+    DeviceSignerBound(Address),
 }
 
 #[contracttype]
@@ -114,6 +117,8 @@ pub struct DeviceRegistration {
     pub device_type: Symbol,
     pub serial_number: String,
     pub calibration_date: u64,
+    pub device_signer: Address,
+    pub calibration_expiry: u64,
 }
 
 #[contracttype]
