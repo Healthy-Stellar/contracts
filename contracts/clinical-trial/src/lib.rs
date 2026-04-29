@@ -95,7 +95,9 @@ impl ClinicalTrialContract {
         }
 
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::PatientRegistry, &patient_registry);
+        env.storage()
+            .instance()
+            .set(&DataKey::PatientRegistry, &patient_registry);
         env.storage().instance().set(&DataKey::TrialCounter, &0u64);
         env.storage()
             .instance()
@@ -203,15 +205,25 @@ impl ClinicalTrialContract {
         let mut evaluation_artifacts = Vec::new(&env);
 
         for rule in criteria.inclusion_criteria.iter() {
-            let (passed, artifact) =
-                Self::evaluate_rule(&env, trial_record_id, &patient_data_hash, &rule, &claim_evidence);
+            let (passed, artifact) = Self::evaluate_rule(
+                &env,
+                trial_record_id,
+                &patient_data_hash,
+                &rule,
+                &claim_evidence,
+            );
             met_inclusion.push_back(passed);
             evaluation_artifacts.push_back(artifact);
         }
 
         for rule in criteria.exclusion_criteria.iter() {
-            let (matched, artifact) =
-                Self::evaluate_rule(&env, trial_record_id, &patient_data_hash, &rule, &claim_evidence);
+            let (matched, artifact) = Self::evaluate_rule(
+                &env,
+                trial_record_id,
+                &patient_data_hash,
+                &rule,
+                &claim_evidence,
+            );
             met_exclusion.push_back(matched);
             evaluation_artifacts.push_back(artifact);
         }
@@ -471,8 +483,8 @@ impl ClinicalTrialContract {
         env: Env,
         enrollment_id: u64,
         deviation_type: Symbol,
-        deviation_description: String,
-        corrective_action: String,
+        deviation_description_hash: BytesN<32>,
+        corrective_action_hash: BytesN<32>,
         reported_to_irb: bool,
     ) -> Result<(), Error> {
         // Verify enrollment exists
@@ -485,8 +497,8 @@ impl ClinicalTrialContract {
         let deviation = ProtocolDeviation {
             enrollment_id,
             deviation_type,
-            deviation_description,
-            corrective_action,
+            deviation_description_hash,
+            corrective_action_hash,
             reported_to_irb,
             reported_date: env.ledger().timestamp(),
             retention_class: DataRetentionClass::RegulatoryRequired,
@@ -579,7 +591,10 @@ impl ClinicalTrialContract {
 
         // Generate a hash representing the exported dataset
         // In production, this would be a hash of the actual de-identified data
-        let export_hash = env.crypto().sha256(&soroban_sdk::Bytes::from_slice(&env, &export_count.to_be_bytes()));
+        let export_hash = env.crypto().sha256(&soroban_sdk::Bytes::from_slice(
+            &env,
+            &export_count.to_be_bytes(),
+        ));
 
         Ok(export_hash.into())
     }

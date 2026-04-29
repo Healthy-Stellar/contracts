@@ -170,8 +170,8 @@ pub struct AdverseEventReport {
 pub struct ProtocolDeviation {
     pub enrollment_id: u64,
     pub deviation_type: Symbol,
-    pub deviation_description: String,
-    pub corrective_action: String,
+    pub deviation_description_hash: BytesN<32>,
+    pub corrective_action_hash: BytesN<32>,
     pub reported_to_irb: bool,
     pub reported_date: u64,
     pub retention_class: DataRetentionClass,
