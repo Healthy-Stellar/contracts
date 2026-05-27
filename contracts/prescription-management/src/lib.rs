@@ -328,10 +328,10 @@ impl PrescriptionContract {
 
         env.storage().persistent().set(&req.prescription_id, &p);
 
-        // Emit dispense event
+        // Emit dispense event — quantity omitted to prevent clinical PII exposure on-chain (#227)
         env.events().publish(
             (Symbol::new(&env, "prescription_dispensed"),),
-            (req.prescription_id, pharmacy_id, req.quantity),
+            (req.prescription_id, pharmacy_id),
         );
 
         Ok(())
@@ -401,15 +401,10 @@ impl PrescriptionContract {
 
         env.storage().persistent().set(&req.prescription_id, &p);
 
-        // Emit transfer event
+        // Emit transfer event — transfer_reason omitted to avoid free-text PII on-chain (#227)
         env.events().publish(
             (Symbol::new(&env, "prescription_transferred"),),
-            (
-                req.prescription_id,
-                from_pharmacy,
-                req.to_pharmacy,
-                req.transfer_reason,
-            ),
+            (req.prescription_id, from_pharmacy, req.to_pharmacy),
         );
 
         Ok(())
@@ -726,6 +721,13 @@ impl PrescriptionContract {
                     .get(&DataKey::InteractionById(interaction_id))
                     .ok_or(Error::InteractionNotFound)?;
 
+                // #302: Validate severity against the explicit allowlist.
+                // Silently-invalid severities would bypass requires_documentation(),
+                // which always returns false for unrecognised symbols.
+                if !is_valid_severity(&env, &interaction.severity) {
+                    return Err(Error::InvalidSeverity);
+                }
+
                 warnings.push_back(InteractionWarning {
                     drug1: interaction.drug1_ndc,
                     drug2: interaction.drug2_ndc,
@@ -978,15 +980,10 @@ impl PrescriptionContract {
 
         env.storage().persistent().set(&prescription_id, &p);
 
-        // Emit refill event
+        // Emit refill event — refills_remaining omitted to avoid clinical detail on-chain (#227)
         env.events().publish(
             (Symbol::new(&env, "prescription_refilled"),),
-            (
-                prescription_id,
-                pharmacy_id,
-                provider_id,
-                p.refills_remaining,
-            ),
+            (prescription_id, pharmacy_id, provider_id),
         );
 
         Ok(())
@@ -1033,10 +1030,10 @@ impl PrescriptionContract {
         p.status = PrescriptionStatus::Cancelled;
         env.storage().persistent().set(&prescription_id, &p);
 
-        // Emit cancellation event
+        // Emit cancellation event — reason omitted to avoid free-text PII on-chain (#227)
         env.events().publish(
             (Symbol::new(&env, "prescription_cancelled"),),
-            (prescription_id, provider_id, reason),
+            (prescription_id, provider_id),
         );
 
         Ok(())

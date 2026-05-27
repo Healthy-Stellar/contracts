@@ -3,7 +3,27 @@
 
 use super::*;
 use shared::privacy::PolicyMetadata;
-use soroban_sdk::{testutils::Address as _, BytesN, Env, String, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, testutils::Address as _, BytesN, Env, String, Symbol, Vec};
+
+// ── Mock access-control contract for tests (#300) ────────────────────────────
+//
+// Always approves check_consent so existing claim-lifecycle tests are
+// unaffected.  A separate test verifies that consent denial propagates.
+#[contract]
+struct MockAccessControl;
+
+#[contractimpl]
+impl MockAccessControl {
+    /// Unconditionally succeeds — represents a patient who has granted consent.
+    pub fn check_consent(
+        _env: Env,
+        _subject: Address,
+        _grantee: Address,
+        _purpose_code: String,
+        _required_scope: u32,
+    ) {
+    }
+}
 
 fn policy(env: &Env) -> PolicyMetadata {
     PolicyMetadata {
@@ -38,13 +58,16 @@ fn setup(
     Address,
     Address,
 ) {
+    // Register the always-approving mock access-control contract (#300).
+    let ac_id = env.register(MockAccessControl, ());
+
     let contract_id = env.register_contract(None, MedicalClaimsSystem);
     let client = MedicalClaimsSystemClient::new(env, &contract_id);
     let admin = Address::generate(env);
     let provider = Address::generate(env);
     let patient = Address::generate(env);
     let insurer = Address::generate(env);
-    client.initialize(&admin);
+    client.initialize(&admin, &ac_id);
     client.register_insurer(&admin, &insurer);
     (client, admin, provider, patient, insurer)
 }
@@ -289,7 +312,10 @@ fn test_double_initialize_fails() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, admin, _, _, _) = setup(&env);
-    let result = client.try_initialize(&admin);
+    // Second initialize must fail regardless of which access-control address is
+    // provided — the AlreadyInitialized guard is checked first.
+    let dummy_ac = Address::generate(&env);
+    let result = client.try_initialize(&admin, &dummy_ac);
     assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
 }
 

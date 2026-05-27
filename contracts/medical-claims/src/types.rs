@@ -15,6 +15,9 @@ pub enum Error {
     InvalidAmount = 8,
     AmountOverflow = 9,
     InvalidPolicyMetadata = 10,
+    /// #300: Patient has not granted consent to this provider, or consent has
+    /// expired / been revoked.  The access-control contract is the authority.
+    ConsentNotVerified = 11,
 }
 
 #[contracttype]
@@ -105,4 +108,7 @@ pub enum DataKey {
     PatientClaims(Address),
     ClaimPayment(u64),
     PatientPayment(u64),
+    /// #300: Address of the deployed access-control contract used to verify
+    /// patient → provider consent before a claim may be submitted.
+    AccessControlId,
 }

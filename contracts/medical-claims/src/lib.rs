@@ -5,24 +5,54 @@ mod test;
 mod types;
 
 use shared::privacy::{validate_policy_metadata, PolicyMetadata};
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, Vec};
+use soroban_sdk::{contract, contractclient, contractimpl, Address, BytesN, Env, String, Vec};
 use types::{
     ClaimRecord, ClaimStatus, DataKey, DenialInfo, Error, InsurerPaymentRecord,
     PatientPaymentRecord, ReconciliationStatus, ServiceLine,
 };
+
+// ── Cross-contract interface for consent verification (#300) ──────────────────
+//
+// Defines only the one method we need; the generated `AccessControlClient`
+// calls the access-control contract by function name at runtime.
+#[contractclient(name = "AccessControlClient")]
+pub trait AccessControlInterface {
+    /// Returns `()` on success; panics / traps when consent is absent,
+    /// expired, or revoked.  The `try_` variant is used below to convert
+    /// those failures into `Error::ConsentNotVerified`.
+    fn check_consent(
+        env: Env,
+        subject: Address,
+        grantee: Address,
+        purpose_code: String,
+        required_scope: u32,
+    );
+}
 
 #[contract]
 pub struct MedicalClaimsSystem;
 
 #[contractimpl]
 impl MedicalClaimsSystem {
-    /// One-time setup: register the contract admin.
-    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
+    /// One-time setup: register the contract admin and the access-control
+    /// contract that will be queried for patient → provider consent.
+    ///
+    /// `access_control_id` must be the address of the deployed access-control
+    /// contract.  Every `submit_claim` call will cross-contract-call its
+    /// `check_consent` function before creating a claim record (#300).
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        access_control_id: Address,
+    ) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::AccessControlId, &access_control_id);
         Ok(())
     }
 
@@ -72,6 +102,30 @@ impl MedicalClaimsSystem {
         provider_id.require_auth();
         Self::require_insurer(&env, &insurer_id)?;
         validate_policy_metadata(&policy).map_err(|_| Error::InvalidPolicyMetadata)?;
+
+        // #300: Verify that the patient has granted consent to this provider
+        // before creating a claim record (HIPAA compliance).
+        //
+        // We look up the access-control contract stored at initialization time,
+        // then call check_consent(patient, provider, "treatment", 0x01 = read).
+        // Any failure (ConsentNotFound / ConsentRevoked / ConsentExpired /
+        // ConsentDenied) is surfaced as Error::ConsentNotVerified so callers
+        // receive a clear, auditable rejection.
+        let access_control_id: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::AccessControlId)
+            .ok_or(Error::NotInitialized)?;
+
+        let ac_client = AccessControlClient::new(&env, &access_control_id);
+        ac_client
+            .try_check_consent(
+                &patient_id,
+                &provider_id,
+                &String::from_str(&env, "treatment"),
+                &1u32, // scope bit 0x01 = read
+            )
+            .map_err(|_| Error::ConsentNotVerified)?;
 
         let count: u64 = env
             .storage()

@@ -100,13 +100,14 @@ pub struct MultisigGovernance;
 
 #[contractimpl]
 impl MultisigGovernance {
-    /// Initialize with a set of admin signers, an approval threshold, and a
-    /// proposal TTL in seconds.
+    /// Initialize with a set of admin signers, an approval threshold, a
+    /// proposal TTL in seconds, and the minimum quorum count.
     pub fn initialize(
         env: Env,
         signers: Vec<Address>,
         threshold: u32,
         ttl_seconds: u64,
+        quorum_min: u32,
     ) -> Result<(), Error> {
         if env.storage().persistent().has(&DataKey::Signers) {
             return Err(Error::AlreadyInitialized);
@@ -119,6 +120,9 @@ impl MultisigGovernance {
             .persistent()
             .set(&DataKey::Threshold, &threshold);
         env.storage().persistent().set(&DataKey::Ttl, &ttl_seconds);
+        env.storage()
+            .persistent()
+            .set(&DataKey::QuorumMin, &quorum_min);
         Ok(())
     }
 
@@ -236,9 +240,36 @@ impl MultisigGovernance {
         proposer.require_auth();
         Self::assert_signer(&env, &proposer)?;
 
-        // Reject if there is already an active signer-change proposal.
-        if env.storage().persistent().has(&DataKey::SignerProposal) {
-            return Err(Error::ProposalExists);
+        // #305: Atomic compare-and-set guard.
+        //
+        // The previous code used a two-step has() → set() pattern.  If a
+        // proposal expired between those two operations two concurrent
+        // transactions could both pass the has() check and write duplicate
+        // proposals.
+        //
+        // Fix: read the full proposal in one operation, then decide:
+        //   • Pending + still within TTL  → block; return ProposalExists
+        //   • Pending + TTL elapsed       → allow; overwrite the stale entry
+        //   • Executed / Failed           → allow; the slot is logically free
+        //   • No entry                   → allow
+        if let Some(existing) = env
+            .storage()
+            .persistent()
+            .get::<_, SignerProposal>(&DataKey::SignerProposal)
+        {
+            if existing.status == ProposalStatus::Pending {
+                let ttl: u64 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::Ttl)
+                    .ok_or(Error::NotInitialized)?;
+                if env.ledger().timestamp() <= existing.proposed_at + ttl {
+                    // Active proposal still within its TTL — reject.
+                    return Err(Error::ProposalExists);
+                }
+                // Expired pending proposal — fall through and overwrite.
+            }
+            // Finalized (Executed / Failed) proposals do not block new ones.
         }
 
         let signers: Vec<Address> = env
