@@ -89,6 +89,35 @@ fn test_record_multiple_metrics_same_type() {
 }
 
 #[test]
+fn test_statistics_sum_overflow_rejected() {
+    let (_env, client) = setup();
+
+    client.record_metric(
+        &symbol_short!("bp"),
+        &i128::MAX,
+        &symbol_short!("vitals"),
+        &1700000000,
+        &None,
+    );
+    client.record_metric(
+        &symbol_short!("bp"),
+        &1,
+        &symbol_short!("vitals"),
+        &1700000001,
+        &None,
+    );
+
+    let result = client.try_get_statistics(
+        &symbol_short!("bp"),
+        &1699999999,
+        &1700000002,
+        &None,
+    );
+
+    assert_eq!(result, Err(Ok(Error::ArithmeticOverflow)));
+}
+
+#[test]
 fn test_record_metrics_different_types() {
     let (_env, client) = setup();
 

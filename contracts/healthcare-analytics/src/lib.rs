@@ -83,6 +83,7 @@ pub enum Error {
     JobNotFound = 7,
     ResourceOverrun = 8,
     JobFailure = 9,
+    ArithmeticOverflow = 10,
 }
 
 #[contract]
@@ -370,7 +371,7 @@ impl HealthcareAnalytics {
                 }
 
                 count += 1;
-                sum += record.value;
+                sum = sum.checked_add(record.value).ok_or(Error::ArithmeticOverflow)?;
                 if record.value < min {
                     min = record.value;
                 }
