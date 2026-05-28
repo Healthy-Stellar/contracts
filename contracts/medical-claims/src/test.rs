@@ -3,7 +3,9 @@
 
 use super::*;
 use shared::privacy::PolicyMetadata;
-use soroban_sdk::{contract, contractimpl, testutils::Address as _, BytesN, Env, String, Symbol, Vec};
+use soroban_sdk::{
+    contract, contractimpl, testutils::Address as _, BytesN, Env, String, Symbol, Vec,
+};
 
 // ── Mock access-control contract for tests (#300) ────────────────────────────
 //
@@ -151,7 +153,7 @@ fn test_unregistered_insurer_cannot_adjudicate() {
         &Vec::new(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
-        &5000,
+        &15000,
     );
 
     let result =
@@ -177,7 +179,7 @@ fn test_wrong_insurer_cannot_adjudicate() {
         &Vec::new(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
-        &5000,
+        &15000,
     );
 
     let result = client.try_adjudicate_claim(
@@ -208,7 +210,7 @@ fn test_unregistered_insurer_cannot_process_payment() {
         &Vec::new(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
-        &5000,
+        &15000,
     );
 
     client.adjudicate_claim(
@@ -242,9 +244,55 @@ fn test_submit_claim_with_unregistered_insurer_fails() {
         &Vec::new(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
-        &5000,
+        &15000,
     );
     assert_eq!(result, Err(Ok(Error::InsurerNotRegistered)));
+}
+
+#[test]
+fn test_submit_claim_rejects_negative_charge_service_line() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, provider, patient, insurer) = setup(&env);
+
+    let services = build_services(&env, -100);
+    let result = client.try_submit_claim(
+        &provider,
+        &patient,
+        &insurer,
+        &1,
+        &100,
+        &services,
+        &Vec::new(&env),
+        &BytesN::from_array(&env, &[0; 32]),
+        &policy(&env),
+        &-100,
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn test_submit_claim_rejects_zero_charge_service_line() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, provider, patient, insurer) = setup(&env);
+
+    let services = build_services(&env, 0);
+    let result = client.try_submit_claim(
+        &provider,
+        &patient,
+        &insurer,
+        &1,
+        &100,
+        &services,
+        &Vec::new(&env),
+        &BytesN::from_array(&env, &[0; 32]),
+        &policy(&env),
+        &0,
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
 
 #[test]
@@ -263,7 +311,7 @@ fn test_appeal_workflow() {
         &Vec::new(&env),
         &BytesN::from_array(&env, &[1; 32]),
         &policy(&env),
-        &25000,
+        &15000,
     );
 
     let mut denials = Vec::new(&env);

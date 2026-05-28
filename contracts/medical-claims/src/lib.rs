@@ -40,11 +40,7 @@ impl MedicalClaimsSystem {
     /// `access_control_id` must be the address of the deployed access-control
     /// contract.  Every `submit_claim` call will cross-contract-call its
     /// `check_consent` function before creating a claim record (#300).
-    pub fn initialize(
-        env: Env,
-        admin: Address,
-        access_control_id: Address,
-    ) -> Result<(), Error> {
+    pub fn initialize(env: Env, admin: Address, access_control_id: Address) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
@@ -102,6 +98,7 @@ impl MedicalClaimsSystem {
         provider_id.require_auth();
         Self::require_insurer(&env, &insurer_id)?;
         validate_policy_metadata(&policy).map_err(|_| Error::InvalidPolicyMetadata)?;
+        Self::validate_claim_amounts(&service_codes, total_amount)?;
 
         // #300: Verify that the patient has granted consent to this provider
         // before creating a claim record (HIPAA compliance).
@@ -425,7 +422,7 @@ impl MedicalClaimsSystem {
 
         let mut computed_total = 0_i128;
         for line in service_codes.iter() {
-            if line.quantity == 0 || line.charge_amount < 0 {
+            if line.quantity == 0 || line.charge_amount <= 0 {
                 return Err(Error::InvalidAmount);
             }
             computed_total = Self::checked_add(computed_total, line.charge_amount)?;
