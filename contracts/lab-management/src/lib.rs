@@ -13,6 +13,8 @@ pub enum Error {
     NotFound = 1,
     Unauthorized = 2,
     QCFieldFailed = 4,
+    /// The lab order counter has reached u64::MAX and cannot be incremented.
+    OrderIdOverflow = 5,
 }
 
 #[contracttype]
@@ -47,24 +49,34 @@ pub struct OrderRequest {
     pub collection_date: Option<u64>,
 }
 
+/// Typed storage keys.
+///
+/// `LabOrder(u64)` stores the full 64-bit order ID as part of the key so that
+/// no truncation to u32 can ever occur, regardless of how large the counter
+/// grows.  The monotonic counter itself lives in instance storage under
+/// `LabCounter`.
+#[contracttype]
+pub enum DataKey {
+    /// Per-order persistent storage: DataKey::LabOrder(order_id) -> LabOrder
+    LabOrder(u64),
+    /// Monotonic counter in instance storage.
+    LabCounter,
+}
+
 #[contract]
 pub struct LabManagementContract;
 
 #[contractimpl]
 impl LabManagementContract {
-    /// Validates QC check results before any state mutations occur
-    /// Returns Ok if validation passes, Err if validation fails
+    /// Validates QC check results before any state mutations occur.
+    /// Returns Ok if validation passes, Err if validation fails.
     fn validate_qc_results(qc_passed: bool, results_summary: &Vec<TestResult>) -> Result<(), Error> {
-        // Check QC status
         if !qc_passed {
             return Err(Error::QCFieldFailed);
         }
-
-        // Check results are not empty
         if results_summary.is_empty() {
             return Err(Error::NotFound);
         }
-
         Ok(())
     }
 
@@ -75,13 +87,22 @@ impl LabManagementContract {
         req: OrderRequest,
     ) -> u64 {
         provider_id.require_auth();
-        let counter_key = Symbol::new(&env, "LAB_ID");
+
+        // Read the current counter (u64 throughout — no cast to u32).
         let id: u64 = env
             .storage()
             .instance()
-            .get::<_, u64>(&counter_key)
+            .get::<_, u64>(&DataKey::LabCounter)
             .unwrap_or(0);
-        env.storage().instance().set(&counter_key, &(id + 1));
+
+        // Guard against u64 overflow before incrementing.
+        let next_id = id
+            .checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::OrderIdOverflow));
+
+        env.storage()
+            .instance()
+            .set(&DataKey::LabCounter, &next_id);
 
         let order = LabOrder {
             provider_id,
@@ -93,7 +114,10 @@ impl LabManagementContract {
             quality_control_passed: false,
         };
 
-        env.storage().persistent().set(&id, &order);
+        // Use the typed DataKey so the full u64 is embedded in the storage key.
+        env.storage()
+            .persistent()
+            .set(&DataKey::LabOrder(id), &order);
         id
     }
 
@@ -101,11 +125,13 @@ impl LabManagementContract {
         let mut order: LabOrder = env
             .storage()
             .persistent()
-            .get(&order_id)
+            .get(&DataKey::LabOrder(order_id))
             .unwrap_or_else(|| panic_with_error!(&env, Error::NotFound));
         order.lab_id = Some(lab_id);
         order.status = Symbol::new(&env, "Assigned");
-        env.storage().persistent().set(&order_id, &order);
+        env.storage()
+            .persistent()
+            .set(&DataKey::LabOrder(order_id), &order);
     }
 
     pub fn submit_results(
@@ -118,29 +144,25 @@ impl LabManagementContract {
     ) {
         lab_id.require_auth();
 
-        // VALIDATION PHASE: All validations must pass before any storage writes
-        // This ensures no partial state mutations on failure
+        // VALIDATION PHASE: All validations must pass before any storage writes.
 
-        // 1. Verify order exists
+        // 1. Verify order exists.
         let mut order: LabOrder = env
             .storage()
             .persistent()
-            .get(&order_id)
+            .get(&DataKey::LabOrder(order_id))
             .unwrap_or_else(|| panic_with_error!(&env, Error::NotFound));
 
-        // 2. Perform QC validation (BEFORE any mutations)
-        // All checks must pass before proceeding to mutation phase
+        // 2. Perform QC validation (BEFORE any mutations).
         Self::validate_qc_results(qc_passed, &results_summary)
             .unwrap_or_else(|e| panic_with_error!(&env, e));
 
-        // MUTATION PHASE: All state changes after validations have passed
-        // Only reached if all validations succeeded
+        // MUTATION PHASE: All state changes after validations have passed.
 
         order.results_hash = Some(results_hash);
         order.quality_control_passed = qc_passed;
         order.status = Symbol::new(&env, "Completed");
 
-        // Publish event before final storage write
         env.events().publish(
             (
                 Symbol::new(&env, "LAB"),
@@ -150,8 +172,9 @@ impl LabManagementContract {
             results_summary,
         );
 
-        // Final transactional write (only reached if all validations passed)
-        env.storage().persistent().set(&order_id, &order);
+        env.storage()
+            .persistent()
+            .set(&DataKey::LabOrder(order_id), &order);
     }
 
     pub fn flag_critical_value(
@@ -162,7 +185,6 @@ impl LabManagementContract {
         val: String,
     ) {
         lab_id.require_auth();
-        // Event for critical alerting
         env.events()
             .publish((Symbol::new(&env, "CRITICAL"), order_id), (test_code, val));
     }
