@@ -10,6 +10,8 @@ use soroban_sdk::{contract, contractimpl, contracterror, contracttype, symbol_sh
 pub enum Error {
     DuplicateProfile = 1,
     ProfileNotFound = 2,
+    Unauthorized = 3,
+    AlreadyInitialized = 4,
 }
 
 /// --------------------
@@ -29,6 +31,7 @@ pub struct DoctorProfileData {
 /// --------------------
 #[contracttype]
 pub enum DataKey {
+    Admin,
     Doctor(Address),
 }
 
@@ -37,21 +40,35 @@ pub struct DoctorRegistry;
 
 #[contractimpl]
 impl DoctorRegistry {
-    /// Create a new doctor profile with basic information and institution association
+    /// Set the contract admin. Must be called once before any profile operations.
+    /// Only the admin (or an authorized registrar) may create or modify doctor profiles.
+    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        if env.storage().persistent().has(&DataKey::Admin) {
+            return Err(Error::AlreadyInitialized);
+        }
+        env.storage().persistent().set(&DataKey::Admin, &admin);
+        Ok(())
+    }
+
+    /// Create a new doctor profile with basic information and institution association.
+    /// Requires the admin (registrar) to authorize, preventing arbitrary self-registration.
     ///
     /// # Arguments
-    /// * `wallet` - The wallet address of the doctor
+    /// * `registrar` - The admin address that authorizes this profile creation
+    /// * `wallet` - The wallet address of the doctor being registered
     /// * `name` - The name of the doctor
     /// * `specialization` - The area of specialization
     /// * `institution_wallet` - The wallet address of the associated hospital/clinic
     pub fn create_doctor_profile(
         env: Env,
+        registrar: Address,
         wallet: Address,
         name: String,
         specialization: String,
         institution_wallet: Address,
     ) -> Result<(), Error> {
-        wallet.require_auth();
+        require_admin(&env, &registrar)?;
 
         let key = DataKey::Doctor(wallet.clone());
         if env.storage().persistent().has(&key) {
@@ -73,19 +90,22 @@ impl DoctorRegistry {
         Ok(())
     }
 
-    /// Update doctor profile specialization and metadata
+    /// Update doctor profile specialization and metadata.
+    /// Requires the admin (registrar) to authorize, consistent with creation policy.
     ///
     /// # Arguments
-    /// * `wallet` - The wallet address of the doctor
+    /// * `registrar` - The admin address that authorizes this profile update
+    /// * `wallet` - The wallet address of the doctor whose profile is being updated
     /// * `specialization` - Updated area of specialization
     /// * `metadata` - Additional information (credentials, certifications, etc.)
     pub fn update_doctor_profile(
         env: Env,
+        registrar: Address,
         wallet: Address,
         specialization: String,
         metadata: String,
     ) -> Result<(), Error> {
-        wallet.require_auth();
+        require_admin(&env, &registrar)?;
 
         let key = DataKey::Doctor(wallet.clone());
         let mut doctor_profile: DoctorProfileData = env
@@ -111,6 +131,19 @@ impl DoctorRegistry {
             .get(&key)
             .ok_or(Error::ProfileNotFound)
     }
+}
+
+fn require_admin(env: &Env, admin: &Address) -> Result<(), Error> {
+    admin.require_auth();
+    let configured: Address = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Admin)
+        .ok_or(Error::Unauthorized)?;
+    if configured != *admin {
+        return Err(Error::Unauthorized);
+    }
+    Ok(())
 }
 
 mod test;

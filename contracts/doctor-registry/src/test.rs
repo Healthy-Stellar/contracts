@@ -8,12 +8,16 @@ fn test_create_doctor_profile() {
     let contract_id = env.register_contract(None, DoctorRegistry);
     let client = DoctorRegistryClient::new(&env, &contract_id);
 
+    let admin = Address::generate(&env);
     let doctor_wallet = Address::generate(&env);
     let institution_wallet = Address::generate(&env);
 
     env.mock_all_auths();
 
+    client.initialize(&admin);
+
     client.create_doctor_profile(
+        &admin,
         &doctor_wallet,
         &String::from_str(&env, "Dr. John Smith"),
         &String::from_str(&env, "Cardiology"),
@@ -34,12 +38,16 @@ fn test_update_doctor_profile() {
     let contract_id = env.register_contract(None, DoctorRegistry);
     let client = DoctorRegistryClient::new(&env, &contract_id);
 
+    let admin = Address::generate(&env);
     let doctor_wallet = Address::generate(&env);
     let institution_wallet = Address::generate(&env);
 
     env.mock_all_auths();
 
+    client.initialize(&admin);
+
     client.create_doctor_profile(
+        &admin,
         &doctor_wallet,
         &String::from_str(&env, "Dr. Jane Doe"),
         &String::from_str(&env, "Neurology"),
@@ -47,6 +55,7 @@ fn test_update_doctor_profile() {
     );
 
     client.update_doctor_profile(
+        &admin,
         &doctor_wallet,
         &String::from_str(&env, "Pediatric Neurology"),
         &String::from_str(&env, "Board Certified, 15 years experience"),
@@ -71,12 +80,16 @@ fn test_duplicate_profile_creation() {
     let contract_id = env.register_contract(None, DoctorRegistry);
     let client = DoctorRegistryClient::new(&env, &contract_id);
 
+    let admin = Address::generate(&env);
     let doctor_wallet = Address::generate(&env);
     let institution_wallet = Address::generate(&env);
 
     env.mock_all_auths();
 
+    client.initialize(&admin);
+
     client.create_doctor_profile(
+        &admin,
         &doctor_wallet,
         &String::from_str(&env, "Dr. Test"),
         &String::from_str(&env, "General Medicine"),
@@ -85,6 +98,7 @@ fn test_duplicate_profile_creation() {
 
     // Attempt to create again — must return DuplicateProfile typed error
     let result = client.try_create_doctor_profile(
+        &admin,
         &doctor_wallet,
         &String::from_str(&env, "Dr. Test"),
         &String::from_str(&env, "General Medicine"),
@@ -112,11 +126,15 @@ fn test_update_nonexistent_profile() {
     let contract_id = env.register_contract(None, DoctorRegistry);
     let client = DoctorRegistryClient::new(&env, &contract_id);
 
+    let admin = Address::generate(&env);
     let doctor_wallet = Address::generate(&env);
 
     env.mock_all_auths();
 
+    client.initialize(&admin);
+
     let result = client.try_update_doctor_profile(
+        &admin,
         &doctor_wallet,
         &String::from_str(&env, "Cardiology"),
         &String::from_str(&env, "Updated info"),
@@ -131,13 +149,17 @@ fn test_multiple_doctors() {
     let contract_id = env.register_contract(None, DoctorRegistry);
     let client = DoctorRegistryClient::new(&env, &contract_id);
 
+    let admin = Address::generate(&env);
     let doctor1_wallet = Address::generate(&env);
     let doctor2_wallet = Address::generate(&env);
     let institution_wallet = Address::generate(&env);
 
     env.mock_all_auths();
 
+    client.initialize(&admin);
+
     client.create_doctor_profile(
+        &admin,
         &doctor1_wallet,
         &String::from_str(&env, "Dr. Alice"),
         &String::from_str(&env, "Oncology"),
@@ -145,6 +167,7 @@ fn test_multiple_doctors() {
     );
 
     client.create_doctor_profile(
+        &admin,
         &doctor2_wallet,
         &String::from_str(&env, "Dr. Bob"),
         &String::from_str(&env, "Orthopedics"),
@@ -162,4 +185,71 @@ fn test_multiple_doctors() {
         profile2.specialization,
         String::from_str(&env, "Orthopedics")
     );
+}
+
+#[test]
+fn test_double_initialize_fails() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, DoctorRegistry);
+    let client = DoctorRegistryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+
+    env.mock_all_auths();
+
+    client.initialize(&admin);
+
+    let result = client.try_initialize(&admin);
+    assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
+}
+
+#[test]
+fn test_create_without_initialize_fails() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, DoctorRegistry);
+    let client = DoctorRegistryClient::new(&env, &contract_id);
+
+    let non_admin = Address::generate(&env);
+    let doctor_wallet = Address::generate(&env);
+    let institution_wallet = Address::generate(&env);
+
+    env.mock_all_auths();
+
+    // Contract not initialized — no admin stored, so require_admin returns Unauthorized
+    let result = client.try_create_doctor_profile(
+        &non_admin,
+        &doctor_wallet,
+        &String::from_str(&env, "Dr. Impostor"),
+        &String::from_str(&env, "Fake Specialty"),
+        &institution_wallet,
+    );
+
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_non_admin_cannot_create_profile() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, DoctorRegistry);
+    let client = DoctorRegistryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let doctor_wallet = Address::generate(&env);
+    let institution_wallet = Address::generate(&env);
+
+    env.mock_all_auths();
+
+    client.initialize(&admin);
+
+    // Attacker passes their own address as registrar — stored admin is different
+    let result = client.try_create_doctor_profile(
+        &attacker,
+        &doctor_wallet,
+        &String::from_str(&env, "Dr. Impostor"),
+        &String::from_str(&env, "Fake Specialty"),
+        &institution_wallet,
+    );
+
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
 }

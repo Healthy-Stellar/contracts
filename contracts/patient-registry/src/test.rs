@@ -1969,6 +1969,10 @@ fn test_get_records_by_type_missing_doctor_history_returns_not_found() {
     });
 
     let result = client.try_get_records_by_type(&patient, &patient, &Symbol::new(&env, "VISIT"));
+    assert_eq!(result, Err(Ok(ContractError::NotFound)));
+}
+
+#[test]
 fn test_get_record_history_missing_record_returns_not_found() {
     let env = Env::default();
     let (client, patient, _doctor) = setup_for_filter(&env);
@@ -3023,6 +3027,68 @@ fn test_only_patient_can_create_share_link() {
         .try_create_share_link(&patient, &0u64, &1u32, &2000u64);
 
     assert!(result.is_err());
+}
+
+// -----------------------------------------------------------------------
+// #325 – Concurrent share link redemption
+// -----------------------------------------------------------------------
+
+/// Two callers attempt to redeem the same single-use link "simultaneously".
+///
+/// In Soroban, transactions within a ledger round are serialized at the
+/// contract level — only one can execute at a time. The first call succeeds
+/// and atomically removes the token; the second call finds it gone and must
+/// return InvalidToken. This ensures uses_remaining = 1 is honored even under
+/// concurrent submission pressure.
+#[test]
+fn test_concurrent_single_use_link_only_one_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1000);
+
+    let (_admin, patient, _doctor, client) = setup_with_record(&env);
+
+    // Create a single-use link (uses_remaining = 1).
+    let token = client.create_share_link(&patient, &0u64, &1u32, &2000u64);
+
+    // First redemption — represents the winning transaction in the race.
+    let record = client.use_share_link(&token);
+    assert_eq!(record.record_type, Symbol::new(&env, "LAB"));
+
+    // Second redemption — represents the losing transaction; the token was
+    // removed atomically after the first use so this must fail.
+    let result = client.try_use_share_link(&token);
+    assert!(
+        matches!(result, Err(Ok(ContractError::InvalidToken))),
+        "second redemption must fail with InvalidToken after single-use link is exhausted"
+    );
+}
+
+/// Concurrent redemptions against a two-use link: both succeed, the third fails.
+/// Verifies the counter decrements correctly under sequential ordering.
+#[test]
+fn test_concurrent_two_use_link_third_call_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1000);
+
+    let (_admin, patient, _doctor, client) = setup_with_record(&env);
+
+    let token = client.create_share_link(&patient, &0u64, &2u32, &5000u64);
+
+    // First and second callers both succeed.
+    let record1 = client.use_share_link(&token);
+    assert_eq!(record1.record_type, Symbol::new(&env, "LAB"));
+
+    let record2 = client.use_share_link(&token);
+    assert_eq!(record2.record_type, Symbol::new(&env, "LAB"));
+
+    // Third caller loses — link is exhausted.
+    let result = client.try_use_share_link(&token);
+    assert!(
+        matches!(result, Err(Ok(ContractError::InvalidToken))),
+        "third redemption must fail after two-use link is exhausted"
+    );
 }
 
 #[test]
