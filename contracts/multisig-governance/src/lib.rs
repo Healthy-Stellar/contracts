@@ -45,6 +45,8 @@ pub enum DataKey {
     Proposal(Symbol),
     /// Pending signer-change proposal (only one active at a time).
     SignerProposal,
+    /// Catalog of all proposal IDs for enumeration / cleanup.
+    ProposalIds,
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -164,9 +166,64 @@ impl MultisigGovernance {
         };
 
         env.storage().persistent().set(&key, &proposal);
+
+        // Track proposal ID for cleanup enumeration.
+        let mut ids: Vec<Symbol> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProposalIds)
+            .unwrap_or(Vec::new(&env));
+        ids.push_back(action_id.clone());
+        env.storage().persistent().set(&DataKey::ProposalIds, &ids);
+
         env.events()
             .publish((symbol_short!("proposed"), action_id), signer);
         Ok(())
+    }
+
+    /// Delete all proposals whose TTL has elapsed. Callable by anyone.
+    pub fn cleanup_expired_proposals(env: Env) -> Result<u32, Error> {
+        let ttl: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Ttl)
+            .ok_or(Error::NotInitialized)?;
+
+        let now = env.ledger().timestamp();
+
+        let ids: Vec<Symbol> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProposalIds)
+            .unwrap_or(Vec::new(&env));
+
+        let mut remaining: Vec<Symbol> = Vec::new(&env);
+        let mut removed: u32 = 0;
+
+        for id in ids.iter() {
+            let key = DataKey::Proposal(id.clone());
+            if let Some(proposal) = env
+                .storage()
+                .persistent()
+                .get::<_, Proposal>(&key)
+            {
+                if now > proposal.proposed_at + ttl {
+                    env.storage().persistent().remove(&key);
+                    removed += 1;
+                } else {
+                    remaining.push_back(id);
+                }
+            }
+            // If the entry is already gone, drop it from the catalog too.
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::ProposalIds, &remaining);
+
+        env.events()
+            .publish((symbol_short!("cleanup"),), removed);
+        Ok(removed)
     }
 
     /// An admin signer approves an existing proposal. Once the approval count

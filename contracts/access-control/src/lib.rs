@@ -36,6 +36,7 @@ pub enum ContractError {
     InsufficientRole = 20,
     RoleAlreadyGranted = 21,
     RoleNotFound = 22,
+    RateLimitExceeded = 23,
 }
 
 /// --------------------
@@ -179,6 +180,8 @@ pub enum DataKey {
     SubjectConsents(Address),
     // RBAC: (address, role) -> RoleAssignment
     RoleAssignment(Address, Role),
+    // Rate limiting: (address, ledger_sequence) -> u32 count
+    RateLimit(Address, u32),
 }
 
 #[contract]
@@ -186,6 +189,28 @@ pub struct AccessControl;
 
 #[contractimpl]
 impl AccessControl {
+    // -------------------------------------------------------------------------
+    // Rate limiting
+    // -------------------------------------------------------------------------
+
+    const MAX_CONSENT_OPS_PER_BLOCK: u32 = 10;
+
+    /// Increment the per-caller per-block consent operation counter and return
+    /// `RateLimitExceeded` if the limit is breached.
+    fn check_rate_limit(env: &Env, caller: &Address) -> Result<(), ContractError> {
+        let seq = env.ledger().sequence();
+        let key = DataKey::RateLimit(caller.clone(), seq);
+        let count: u32 = env.storage().temporary().get(&key).unwrap_or(0);
+        if count >= Self::MAX_CONSENT_OPS_PER_BLOCK {
+            return Err(ContractError::RateLimitExceeded);
+        }
+        // TTL of 1 ledger is enough — the entry is only meaningful for the
+        // current sequence number.
+        env.storage().temporary().set(&key, &(count + 1));
+        env.storage().temporary().extend_ttl(&key, 1, 1);
+        Ok(())
+    }
+
     // -------------------------------------------------------------------------
     // Internal role helpers
     // -------------------------------------------------------------------------
@@ -857,6 +882,8 @@ impl AccessControl {
     ) -> Result<u64, ContractError> {
         subject.require_auth();
 
+        Self::check_rate_limit(&env, &subject)?;
+
         if scope_mask == 0 {
             return Err(ContractError::InvalidScopeMask);
         }
@@ -925,6 +952,8 @@ impl AccessControl {
         purpose_code: String,
     ) -> Result<u64, ContractError> {
         subject.require_auth();
+
+        Self::check_rate_limit(&env, &subject)?;
 
         let key = DataKey::Consent(subject.clone(), grantee.clone(), purpose_code.clone());
         let mut record: ConsentRecord = env

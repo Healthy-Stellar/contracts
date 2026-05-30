@@ -120,6 +120,17 @@ pub struct HospitalConfig {
     pub emergency_protocols: Vec<EmergencyProtocol>,
 }
 
+/// Audit event payload emitted by every admin mutation.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuditEvent {
+    pub caller: Address,
+    pub timestamp: u64,
+    pub field: String,
+    pub old_value: HospitalConfig,
+    pub new_value: HospitalConfig,
+}
+
 #[contracttype]
 pub enum DataKey {
     Hospital(Address),
@@ -169,6 +180,25 @@ impl HospitalRegistry {
             },
             emergency_protocols: Vec::new(env),
         }
+    }
+
+    /// Emit a before/after audit event for a config mutation.
+    fn emit_audit(
+        env: &Env,
+        caller: &Address,
+        field: &str,
+        old: HospitalConfig,
+        new: HospitalConfig,
+    ) {
+        let event = AuditEvent {
+            caller: caller.clone(),
+            timestamp: env.ledger().timestamp(),
+            field: String::from_str(env, field),
+            old_value: old,
+            new_value: new,
+        };
+        env.events()
+            .publish((symbol_short!("audit"), caller.clone()), event);
     }
 
     pub fn register_hospital(
@@ -253,12 +283,17 @@ impl HospitalRegistry {
         wallet.require_auth();
         Self::assert_active_hospital(&env, &wallet)?;
 
+        let old: HospitalConfig = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HospitalConfig(wallet.clone()))
+            .unwrap_or_else(|| Self::default_config(&env));
+
         env.storage()
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
 
-        env.events()
-            .publish((symbol_short!("cfg_set"), wallet), symbol_short!("success"));
+        Self::emit_audit(&env, &wallet, "config", old, config);
         Ok(())
     }
 
@@ -280,12 +315,12 @@ impl HospitalRegistry {
         if departments.is_empty() && !config.departments.is_empty() {
             return Err(ContractError::EmptyFieldUpdate);
         }
+        let old = config.clone();
         config.departments = departments;
         env.storage()
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
-        env.events()
-            .publish((symbol_short!("upd_dept"), wallet), symbol_short!("success"));
+        Self::emit_audit(&env, &wallet, "departments", old, config);
         Ok(())
     }
 
@@ -300,12 +335,12 @@ impl HospitalRegistry {
         if locations.is_empty() && !config.locations.is_empty() {
             return Err(ContractError::EmptyFieldUpdate);
         }
+        let old = config.clone();
         config.locations = locations;
         env.storage()
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
-        env.events()
-            .publish((symbol_short!("upd_loc"), wallet), symbol_short!("success"));
+        Self::emit_audit(&env, &wallet, "locations", old, config);
         Ok(())
     }
 
@@ -320,12 +355,12 @@ impl HospitalRegistry {
         if equipment.is_empty() && !config.equipment.is_empty() {
             return Err(ContractError::EmptyFieldUpdate);
         }
+        let old = config.clone();
         config.equipment = equipment;
         env.storage()
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
-        env.events()
-            .publish((symbol_short!("upd_eq"), wallet), symbol_short!("success"));
+        Self::emit_audit(&env, &wallet, "equipment", old, config);
         Ok(())
     }
 
@@ -337,12 +372,12 @@ impl HospitalRegistry {
         wallet.require_auth();
         Self::assert_active_hospital(&env, &wallet)?;
         let mut config = Self::get_hospital_config(env.clone(), wallet.clone())?;
+        let old = config.clone();
         config.policies = policies;
         env.storage()
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
-        env.events()
-            .publish((symbol_short!("upd_pol"), wallet), symbol_short!("success"));
+        Self::emit_audit(&env, &wallet, "policies", old, config);
         Ok(())
     }
 
@@ -354,12 +389,12 @@ impl HospitalRegistry {
         wallet.require_auth();
         Self::assert_active_hospital(&env, &wallet)?;
         let mut config = Self::get_hospital_config(env.clone(), wallet.clone())?;
+        let old = config.clone();
         config.alerts = alerts;
         env.storage()
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
-        env.events()
-            .publish((symbol_short!("upd_alrt"), wallet), symbol_short!("success"));
+        Self::emit_audit(&env, &wallet, "alerts", old, config);
         Ok(())
     }
 
@@ -371,12 +406,12 @@ impl HospitalRegistry {
         wallet.require_auth();
         Self::assert_active_hospital(&env, &wallet)?;
         let mut config = Self::get_hospital_config(env.clone(), wallet.clone())?;
+        let old = config.clone();
         config.insurance_providers = insurance_providers;
         env.storage()
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
-        env.events()
-            .publish((symbol_short!("upd_ins"), wallet), symbol_short!("success"));
+        Self::emit_audit(&env, &wallet, "insurance", old, config);
         Ok(())
     }
 
@@ -388,12 +423,12 @@ impl HospitalRegistry {
         wallet.require_auth();
         Self::assert_active_hospital(&env, &wallet)?;
         let mut config = Self::get_hospital_config(env.clone(), wallet.clone())?;
+        let old = config.clone();
         config.billing = billing;
         env.storage()
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
-        env.events()
-            .publish((symbol_short!("upd_bill"), wallet), symbol_short!("success"));
+        Self::emit_audit(&env, &wallet, "billing", old, config);
         Ok(())
     }
 
@@ -405,12 +440,12 @@ impl HospitalRegistry {
         wallet.require_auth();
         Self::assert_active_hospital(&env, &wallet)?;
         let mut config = Self::get_hospital_config(env.clone(), wallet.clone())?;
+        let old = config.clone();
         config.emergency_protocols = protocols;
         env.storage()
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
-        env.events()
-            .publish((symbol_short!("upd_emg"), wallet), symbol_short!("success"));
+        Self::emit_audit(&env, &wallet, "emergency", old, config);
         Ok(())
     }
 }

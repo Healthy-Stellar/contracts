@@ -1,9 +1,17 @@
 #![no_std]
 
 use soroban_sdk::{
-    Address, BytesN, Env, String, Symbol, Vec, contract, contracterror, contractimpl, contracttype,
+    Address, BytesN, Env, String, Symbol, Vec, contract, contracterror, contractimpl,
+    contracttype, contractclient,
 };
 use shared::temporal;
+
+// ── Provider-registry client ──────────────────────────────────────────────────
+
+#[contractclient(name = "ProviderRegistryClient")]
+pub trait ProviderRegistryInterface {
+    fn is_provider(env: Env, provider: Address) -> bool;
+}
 
 /// Maximum number of transfer records retained per prescription.
 /// Attempting to exceed this returns `Error::TransferHistoryFull`.
@@ -37,6 +45,10 @@ pub enum Error {
     InvalidValidityWindow = 21,
     /// Timestamp arithmetic would overflow u64
     TimestampOverflow = 22,
+    /// Provider is not registered or active in the provider-registry
+    ProviderNotRegistered = 23,
+    /// Transfer history has reached the maximum allowed entries
+    TransferHistoryFull = 24,
 }
 
 #[contracttype]
@@ -129,6 +141,8 @@ pub enum DataKey {
     RegistryProposal(u64),
     SnapshotCounter,
     CatalogSnapshot(u64),
+    /// Address of the provider-registry contract used for cross-contract verification.
+    ProviderRegistry,
 }
 
 #[contracttype]
@@ -216,6 +230,18 @@ pub struct PrescriptionContract;
 
 #[contractimpl]
 impl PrescriptionContract {
+    /// Store the provider-registry contract address for cross-contract verification.
+    /// Must be called once before issue_prescription is used.
+    pub fn initialize(env: Env, provider_registry: Address) -> Result<(), Error> {
+        if env.storage().persistent().has(&DataKey::ProviderRegistry) {
+            return Err(Error::AlreadyExists);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::ProviderRegistry, &provider_registry);
+        Ok(())
+    }
+
     pub fn issue_prescription(
         env: Env,
         provider_id: Address,
@@ -223,6 +249,18 @@ impl PrescriptionContract {
         req: IssueRequest,
     ) -> Result<u64, Error> {
         provider_id.require_auth();
+
+        // #345: verify provider is registered and active in the provider-registry.
+        if let Some(registry_addr) = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&DataKey::ProviderRegistry)
+        {
+            let client = ProviderRegistryClient::new(&env, &registry_addr);
+            if !client.is_provider(&provider_id) {
+                return Err(Error::ProviderNotRegistered);
+            }
+        }
 
         // #215 – valid_until must be in the future and within a 1-year window
         temporal::must_be_future(&env, req.valid_until)
