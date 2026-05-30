@@ -9,14 +9,17 @@ pub enum DataKey {
     DmeCounter,
     RecallCounter,
     MaintenanceCounter,
+    WarrantyCounter,
     DeviceRecord(u64),
     ImplantRecord(u64),
     DmeRecord(u64),
     RecallInfo(u64),
     MaintenanceRecord(u64),
+    WarrantyRecord(u64),
     PatientImplants(Address),
     DeviceImplants(u64),
     DeviceRecalls(u64),
+    DeviceWarranties(u64),
     PerformanceReports(u64),
 }
 
@@ -29,6 +32,9 @@ pub enum Error {
     DeviceNotActive = 3,
     InvalidInput = 4,
     AlreadyInitialized = 5,
+    WarrantyExpired = 6,
+    MaintenanceOverdue = 7,
+    OutOfWarranty = 8,
 }
 
 #[contracttype]
@@ -44,6 +50,9 @@ pub struct DeviceRecord {
     pub manufacturing_date: u64,
     pub expiration_date: Option<u64>,
     pub device_specs_hash: BytesN<32>,
+    pub warranty_expiration_date: Option<u64>,
+    pub next_scheduled_maintenance: Option<u64>,
+    pub maintenance_interval_days: Option<u64>,
 }
 
 #[contracttype]
@@ -110,4 +119,16 @@ pub struct RecallInfo {
     pub action_required: String,
     pub resolution_deadline: Option<u64>,
     pub emergency_scope: Option<String>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WarrantyRecord {
+    pub warranty_id: u64,
+    pub device_id: u64,
+    pub warranty_start_date: u64,
+    pub warranty_expiration_date: u64,
+    pub warranty_provider: Address,
+    pub coverage_details_hash: BytesN<32>,
+    pub is_active: bool,
 }

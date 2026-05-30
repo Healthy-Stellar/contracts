@@ -22,6 +22,8 @@ pub enum Error {
     PrivilegeNotFound = 8,
     AlreadySuspended = 9,
     NotSuspended = 10,
+    CredentialExpired = 11,
+    RecredentialingInProgress = 12,
 }
 
 #[contracttype]
@@ -33,6 +35,8 @@ pub enum CredentialingStatus {
     Approved,
     Denied,
     DeferredForMoreInfo,
+    RecredentialingInProgress,
+    RecredentialingExpired,
 }
 
 #[contracttype]
@@ -192,6 +196,7 @@ pub enum DataKey {
     ProviderFacilityRecredentialings(Address, Address),
     ProviderFacilitySuspensions(Address, Address),
     ProviderFacilityReinstatements(Address, Address),
+    ActiveRecredentialingCases(Address, Address),
 }
 
 #[contract]
@@ -799,6 +804,218 @@ impl HealthcareCredentialingSystem {
                 facility_id,
             ))
             .unwrap_or(Vec::new(&env))
+    }
+
+    /// Check if any privilege for a provider at a facility has expired.
+    /// Returns true if any privilege has expired, triggering recredentialing requirement.
+    pub fn check_credential_expiry(
+        env: Env,
+        provider_id: Address,
+        facility_id: Address,
+        current_time: u64,
+    ) -> Result<bool, Error> {
+        let privileges: Vec<Privilege> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProviderFacilityPrivileges(
+                provider_id.clone(),
+                facility_id.clone(),
+            ))
+            .unwrap_or(Vec::new(&env));
+
+        let mut has_expired = false;
+        let mut idx: u32 = 0;
+        while idx < privileges.len() {
+            if let Some(priv_) = privileges.get(idx) {
+                if current_time >= priv_.expiration_date {
+                    has_expired = true;
+                    break;
+                }
+            }
+            idx += 1;
+        }
+
+        Ok(has_expired)
+    }
+
+    /// Initiate a recredentialing case when credentials are expiring.
+    /// This creates a new credentialing case specifically for recredentialing.
+    pub fn initiate_recredentialing_case(
+        env: Env,
+        provider_id: Address,
+        facility_id: Address,
+        initiating_authority: Address,
+        current_time: u64,
+        recredentialing_deadline: u64,
+    ) -> Result<u64, Error> {
+        initiating_authority.require_auth();
+
+        // Check if there's already an active recredentialing case
+        if let Some(active_case_id) = env
+            .storage()
+            .persistent()
+            .get::<_, u64>(&DataKey::ActiveRecredentialingCases(
+                provider_id.clone(),
+                facility_id.clone(),
+            ))
+        {
+            if let Ok(case) = get_case(&env, active_case_id) {
+                if case.status != CredentialingStatus::Denied
+                    && case.status != CredentialingStatus::Approved
+                {
+                    return Err(Error::RecredentialingInProgress);
+                }
+            }
+        }
+
+        let current: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CaseCounter)
+            .unwrap_or(0);
+        let case_id = current + 1;
+        env.storage()
+            .instance()
+            .set(&DataKey::CaseCounter, &case_id);
+
+        let case = CredentialingCase {
+            case_id,
+            provider_id: provider_id.clone(),
+            facility_id: facility_id.clone(),
+            case_type: Symbol::new(&env, "reappointment"),
+            status: CredentialingStatus::RecredentialingInProgress,
+            initiated_date: current_time,
+            target_completion_date: recredentialing_deadline,
+            verifications_complete: 0,
+            verifications_required: REQUIRED_CREDENTIALS,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Case(case_id), &case);
+        env.storage().persistent().set(
+            &DataKey::ActiveRecredentialingCases(provider_id.clone(), facility_id.clone()),
+            &case_id,
+        );
+
+        Ok(case_id)
+    }
+
+    /// Enforce recredentialing deadline by suspending privileges if deadline passed
+    /// and recredentialing not completed.
+    pub fn enforce_recredentialing_deadline(
+        env: Env,
+        provider_id: Address,
+        facility_id: Address,
+        enforcement_authority: Address,
+        current_time: u64,
+    ) -> Result<(), Error> {
+        enforcement_authority.require_auth();
+
+        // Get the active recredentialing case
+        let active_case_id = env
+            .storage()
+            .persistent()
+            .get::<_, u64>(&DataKey::ActiveRecredentialingCases(
+                provider_id.clone(),
+                facility_id.clone(),
+            ))
+            .ok_or(Error::CaseNotFound)?;
+
+        let case = get_case(&env, active_case_id)?;
+
+        // Check if deadline has passed and recredentialing not completed
+        if current_time >= case.target_completion_date
+            && case.status != CredentialingStatus::Approved
+        {
+            // Suspend all privileges
+            let mut privileges: Vec<Privilege> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::ProviderFacilityPrivileges(
+                    provider_id.clone(),
+                    facility_id.clone(),
+                ))
+                .ok_or(Error::PrivilegeNotFound)?;
+
+            let expired_marker = String::from_str(&env, "EXPIRED_PENDING_RECREDENTIALING");
+            let mut idx: u32 = 0;
+            while idx < privileges.len() {
+                if let Some(mut priv_) = privileges.get(idx) {
+                    priv_.restrictions = add_unique_marker(priv_.restrictions, &expired_marker);
+                    privileges.set(idx, priv_);
+                }
+                idx += 1;
+            }
+
+            env.storage().persistent().set(
+                &DataKey::ProviderFacilityPrivileges(provider_id.clone(), facility_id.clone()),
+                &privileges,
+            );
+
+            // Update case status
+            let mut updated_case = case;
+            updated_case.status = CredentialingStatus::RecredentialingExpired;
+            env.storage()
+                .persistent()
+                .set(&DataKey::Case(active_case_id), &updated_case);
+        }
+
+        Ok(())
+    }
+
+    /// Complete a recredentialing case and restore privileges if all requirements met.
+    pub fn complete_recredentialing(
+        env: Env,
+        case_id: u64,
+        credentialing_committee: Address,
+        new_expiration_date: u64,
+    ) -> Result<(), Error> {
+        credentialing_committee.require_auth();
+        let mut case = get_case(&env, case_id)?;
+
+        if case.case_type != Symbol::new(&env, "reappointment") {
+            return Err(Error::InvalidStatusTransition);
+        }
+
+        if case.verifications_complete < case.verifications_required {
+            return Err(Error::InvalidStatusTransition);
+        }
+
+        // Update privileges with new expiration date
+        let mut privileges: Vec<Privilege> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProviderFacilityPrivileges(
+                case.provider_id.clone(),
+                case.facility_id.clone(),
+            ))
+            .ok_or(Error::PrivilegeNotFound)?;
+
+        let expired_marker = String::from_str(&env, "EXPIRED_PENDING_RECREDENTIALING");
+        let mut idx: u32 = 0;
+        while idx < privileges.len() {
+            if let Some(mut priv_) = privileges.get(idx) {
+                priv_.expiration_date = new_expiration_date;
+                priv_.restrictions = remove_marker(&env, priv_.restrictions, &expired_marker);
+                privileges.set(idx, priv_);
+            }
+            idx += 1;
+        }
+
+        case.status = CredentialingStatus::Approved;
+        env.storage().persistent().set(
+            &DataKey::ProviderFacilityPrivileges(
+                case.provider_id.clone(),
+                case.facility_id.clone(),
+            ),
+            &privileges,
+        );
+        env.storage()
+            .persistent()
+            .set(&DataKey::Case(case_id), &case);
+
+        Ok(())
     }
 }
 
