@@ -1553,13 +1553,13 @@ impl MedicalRegistry {
 
         let timestamp = env.ledger().timestamp();
 
-        // Append old current to history
-        let old_version = RecordVersion {
-            encrypted_ref: record_data.current_ref.clone(),
+        // Append new version to history, then update current_ref
+        let new_version = RecordVersion {
+            encrypted_ref: new_encrypted_ref.clone(),
             updated_by: caller.clone(),
             updated_at: timestamp,
         };
-        record_data.history.push_back(old_version);
+        record_data.history.push_back(new_version);
         record_data.current_ref = new_encrypted_ref;
         record_data.policy = policy;
         record_data.latest_version += 1;
