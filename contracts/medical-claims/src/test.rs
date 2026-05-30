@@ -329,3 +329,90 @@ fn test_non_admin_cannot_register_insurer() {
     let result = client.try_register_insurer(&fake_admin, &new_insurer);
     assert_eq!(result, Err(Ok(Error::NotAuthorized)));
 }
+
+// ─── Issue #329 ── Appeal level boundary validation ───────────────────────
+
+fn setup_adjudicated_claim(env: &Env) -> (MedicalClaimsSystemClient<'static>, Address, u64) {
+    let (client, _, provider, patient, insurer) = setup(env);
+
+    let claim_id = client.submit_claim(
+        &provider,
+        &patient,
+        &insurer,
+        &1,
+        &1000,
+        &make_services(env),
+        &Vec::new(env),
+        &BytesN::from_array(env, &[0u8; 32]),
+        &policy(env),
+        &15000,
+    );
+
+    // Adjudicate with zero approved/responsibility so amounts validate.
+    client.adjudicate_claim(
+        &claim_id,
+        &insurer,
+        &Vec::new(env),
+        &Vec::new(env),
+        &0,
+        &0,
+    );
+
+    (client, provider, claim_id)
+}
+
+#[test]
+fn test_appeal_level_3_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, provider, claim_id) = setup_adjudicated_claim(&env);
+
+    // appeal_level = 3 is the maximum valid level and must be accepted.
+    let result = client.try_appeal_denial(
+        &claim_id,
+        &provider,
+        &3,
+        &BytesN::from_array(&env, &[1u8; 32]),
+    );
+    assert!(result.is_ok(), "appeal_level = 3 must be accepted");
+}
+
+#[test]
+fn test_appeal_level_4_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, provider, claim_id) = setup_adjudicated_claim(&env);
+
+    // appeal_level = 4 exceeds the maximum of 3 and must be rejected.
+    let result = client.try_appeal_denial(
+        &claim_id,
+        &provider,
+        &4,
+        &BytesN::from_array(&env, &[2u8; 32]),
+    );
+    assert_eq!(
+        result,
+        Err(Ok(Error::InvalidAppealLevel)),
+        "appeal_level = 4 must be rejected with InvalidAppealLevel"
+    );
+}
+
+#[test]
+fn test_appeal_level_0_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, provider, claim_id) = setup_adjudicated_claim(&env);
+
+    // appeal_level = 0 is not above the initial claim.appeal_level (0) and must be rejected.
+    let result = client.try_appeal_denial(
+        &claim_id,
+        &provider,
+        &0,
+        &BytesN::from_array(&env, &[3u8; 32]),
+    );
+    assert_eq!(
+        result,
+        Err(Ok(Error::InvalidAppealLevel)),
+        "appeal_level = 0 must be rejected with InvalidAppealLevel"
+    );
+}

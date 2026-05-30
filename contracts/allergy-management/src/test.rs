@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use soroban_sdk::{symbol_short, testutils::Address as _, testutils::Ledger, Address, BytesN, Env, String, Symbol, Vec};
+use soroban_sdk::{symbol_short, testutils::{Address as _, Ledger}, Address, Env, String, Symbol, Vec};
 
 use crate::{
     AllergyManagement, AllergyManagementClient, AllergyStatus, Error, RecordAllergyRequest,
@@ -41,7 +41,8 @@ fn create_test_env() -> (
 ) {
     let env = Env::default();
     env.mock_all_auths();
-    env.ledger().set_timestamp(2000);
+    // Set a baseline timestamp so onset_date values like 1000 or 500 are in the past.
+    env.ledger().set_timestamp(10_000);
 
     let admin = Address::generate(&env);
     let patient = Address::generate(&env);
@@ -61,10 +62,14 @@ fn create_test_env() -> (
     let contract_id = env.register(AllergyManagement, ());
     let client = AllergyManagementClient::new(&env, &contract_id);
 
+    let patient_registry = Address::generate(&env);
+    let provider_registry = Address::generate(&env);
+    let hospital_registry = Address::generate(&env);
+    let insurer_registry = Address::generate(&env);
     client.initialize(
         &admin,
         &patient_registry,
-        &provider_registry_id,
+        &provider_registry,
         &hospital_registry,
         &insurer_registry,
     );
@@ -103,12 +108,13 @@ fn test_initialize() {
 fn test_double_initialize() {
     let (env, admin, _, _, client) = create_test_env();
 
-    // Try to initialize again — need all registry addresses
-    let patient_registry = Address::generate(&env);
-    let provider_registry = Address::generate(&env);
-    let hospital_registry = Address::generate(&env);
-    let insurer_registry = Address::generate(&env);
-    let result = client.try_initialize(&admin, &patient_registry, &provider_registry, &hospital_registry, &insurer_registry);
+    let p_reg = Address::generate(&env);
+    let prov_reg = Address::generate(&env);
+    let hosp_reg = Address::generate(&env);
+    let ins_reg = Address::generate(&env);
+
+    // Try to initialize again
+    let result = client.try_initialize(&admin, &p_reg, &prov_reg, &hosp_reg, &ins_reg);
     assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
 }
 
@@ -735,4 +741,110 @@ fn test_food_allergy() {
     assert_eq!(allergy.allergen_type, symbol_short!("food"));
     assert_eq!(allergy.severity, symbol_short!("critical"));
     assert_eq!(allergy.onset_date, Some(500u64));
+}
+
+// ─── Issue #327 ── Guardian authorization scope ───────────────────────────
+
+#[test]
+fn test_guardian_a_cannot_write_allergy_for_patient_b() {
+    let (env, _, patient_a, guardian_a, client) = create_test_env();
+    let patient_b = Address::generate(&env);
+    let guardian_b = Address::generate(&env);
+
+    // Guardian A is authorized only for Patient A.
+    client.grant_access(&patient_a, &guardian_a);
+    // Guardian B is authorized only for Patient B.
+    client.grant_access(&patient_b, &guardian_b);
+
+    let mut reactions = Vec::new(&env);
+    reactions.push_back(String::from_str(&env, "rash"));
+
+    let request = create_allergy_request(
+        &env,
+        "Penicillin",
+        symbol_short!("med"),
+        reactions,
+        symbol_short!("mild"),
+        None,
+        true,
+    );
+
+    // Guardian A must not be able to record an allergy for Patient B.
+    let result = client.try_record_allergy(&patient_b, &guardian_a, &request);
+    assert!(
+        result.is_err(),
+        "Guardian A must not be able to record allergy for Patient B"
+    );
+}
+
+#[test]
+fn test_guardian_a_cannot_update_severity_for_patient_b_allergy() {
+    let (env, _, patient_a, guardian_a, client) = create_test_env();
+    let patient_b = Address::generate(&env);
+    let guardian_b = Address::generate(&env);
+
+    client.grant_access(&patient_a, &guardian_a);
+    client.grant_access(&patient_b, &guardian_b);
+
+    // Guardian B records an allergy for Patient B.
+    let mut reactions = Vec::new(&env);
+    reactions.push_back(String::from_str(&env, "hives"));
+    let request_b = create_allergy_request(
+        &env,
+        "Peanuts",
+        symbol_short!("food"),
+        reactions,
+        symbol_short!("severe"),
+        None,
+        true,
+    );
+    let allergy_id = client.record_allergy(&patient_b, &guardian_b, &request_b);
+
+    // Guardian A must not be able to update the severity of Patient B's allergy.
+    let result = client.try_update_allergy_severity(
+        &allergy_id,
+        &guardian_a,
+        &symbol_short!("mild"),
+        &String::from_str(&env, "unauthorized update attempt"),
+    );
+    assert!(
+        result.is_err(),
+        "Guardian A must not be able to update allergy severity for Patient B"
+    );
+}
+
+#[test]
+fn test_guardian_a_cannot_resolve_patient_b_allergy() {
+    let (env, _, patient_a, guardian_a, client) = create_test_env();
+    let patient_b = Address::generate(&env);
+    let guardian_b = Address::generate(&env);
+
+    client.grant_access(&patient_a, &guardian_a);
+    client.grant_access(&patient_b, &guardian_b);
+
+    // Guardian B records an allergy for Patient B.
+    let mut reactions = Vec::new(&env);
+    reactions.push_back(String::from_str(&env, "swelling"));
+    let request_b = create_allergy_request(
+        &env,
+        "Aspirin",
+        symbol_short!("med"),
+        reactions,
+        symbol_short!("moderate"),
+        None,
+        true,
+    );
+    let allergy_id = client.record_allergy(&patient_b, &guardian_b, &request_b);
+
+    // Guardian A must not be able to resolve Patient B's allergy.
+    let result = client.try_resolve_allergy(
+        &allergy_id,
+        &guardian_a,
+        &env.ledger().timestamp(),
+        &String::from_str(&env, "unauthorized resolution attempt"),
+    );
+    assert!(
+        result.is_err(),
+        "Guardian A must not be able to resolve allergy for Patient B"
+    );
 }
