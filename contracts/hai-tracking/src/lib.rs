@@ -68,6 +68,28 @@ pub struct InfectionRate {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WardRateConfig {
+    /// Rolling window in days (e.g. 7)
+    pub window_days: u32,
+    /// Threshold multiplier x100 (e.g. 200 = 2.0x baseline triggers alert)
+    pub threshold_multiplier_x100: u32,
+    /// Baseline rate per 1000 patient-days x100
+    pub baseline_rate_x100: i64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OutbreakStatus {
+    pub ward_id: String,
+    pub current_rate_x100: i64,
+    pub baseline_rate_x100: i64,
+    pub threshold_multiplier_x100: u32,
+    pub is_outbreak: bool,
+    pub checked_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OutbreakCluster {
     pub outbreak_id: u64,
     pub infection_type: Symbol,
@@ -137,6 +159,8 @@ pub enum DataKey {
     InfectionIds,
     OutbreakIds,
     PrecautionIds,
+    /// (facility_id, ward_id, infection_type) -> WardRateConfig
+    WardRateConfig(Address, String, Symbol),
 }
 
 #[contract]
@@ -575,6 +599,114 @@ impl HAITrackingContract {
         }
 
         out
+    }
+
+    /// Configure rolling-rate alerting for a ward.
+    pub fn configure_ward_rate(
+        env: Env,
+        facility_id: Address,
+        ward_id: String,
+        infection_type: Symbol,
+        window_days: u32,
+        threshold_multiplier_x100: u32,
+        baseline_rate_x100: i64,
+    ) -> Result<(), Error> {
+        facility_id.require_auth();
+        if window_days == 0 || threshold_multiplier_x100 == 0 {
+            return Err(Error::InvalidData);
+        }
+        let config = WardRateConfig {
+            window_days,
+            threshold_multiplier_x100,
+            baseline_rate_x100,
+        };
+        env.storage().persistent().set(
+            &DataKey::WardRateConfig(facility_id, ward_id, infection_type),
+            &config,
+        );
+        Ok(())
+    }
+
+    /// Query current rolling rate vs baseline for a ward and emit OutbreakAlert if threshold exceeded.
+    pub fn get_outbreak_status(
+        env: Env,
+        facility_id: Address,
+        ward_id: String,
+        infection_type: Symbol,
+    ) -> Result<OutbreakStatus, Error> {
+        if !Self::is_valid_infection_type(&env, &infection_type) {
+            return Err(Error::InvalidInfectionType);
+        }
+
+        let config: WardRateConfig = env
+            .storage()
+            .persistent()
+            .get(&DataKey::WardRateConfig(
+                facility_id.clone(),
+                ward_id.clone(),
+                infection_type.clone(),
+            ))
+            .ok_or(Error::NotFound)?;
+
+        let now = env.ledger().timestamp();
+        let window_secs = u64::from(config.window_days) * 86_400;
+        let window_start = now.saturating_sub(window_secs);
+
+        // Count infections in the rolling window for this ward.
+        let infection_ids = Self::get_ids(&env, DataKey::InfectionIds);
+        let mut case_count = 0u32;
+        let mut i = 0u32;
+        while i < infection_ids.len() {
+            if let Some(case_id) = infection_ids.get(i) {
+                if let Ok(case) = Self::get_infection_case_internal(&env, case_id) {
+                    if case.facility_id == facility_id
+                        && case.location == ward_id
+                        && case.infection_type == infection_type
+                        && case.onset_date >= window_start
+                        && case.onset_date <= now
+                    {
+                        case_count += 1;
+                    }
+                }
+            }
+            i += 1;
+        }
+
+        // Rate per 1000 patient-days x100 over the window.
+        // Denominator: window_days * 1000 (placeholder patient-days).
+        let denominator = u64::from(config.window_days) * 1000;
+        let current_rate_x100 = if denominator == 0 {
+            0i64
+        } else {
+            (i64::from(case_count) * 1000 * 100) / denominator as i64
+        };
+
+        let threshold = (config.baseline_rate_x100
+            .saturating_mul(i64::from(config.threshold_multiplier_x100)))
+            / 100;
+        let is_outbreak = current_rate_x100 > threshold;
+
+        if is_outbreak {
+            env.events().publish(
+                (Symbol::new(&env, "outbreak_alert"), facility_id.clone()),
+                (
+                    ward_id.clone(),
+                    infection_type.clone(),
+                    current_rate_x100,
+                    config.baseline_rate_x100,
+                    now,
+                ),
+            );
+        }
+
+        Ok(OutbreakStatus {
+            ward_id,
+            current_rate_x100,
+            baseline_rate_x100: config.baseline_rate_x100,
+            threshold_multiplier_x100: config.threshold_multiplier_x100,
+            is_outbreak,
+            checked_at: now,
+        })
     }
 
     pub fn get_active_isolations(env: Env, patient_id: Address) -> Vec<IsolationPrecaution> {
