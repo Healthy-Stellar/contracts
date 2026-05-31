@@ -255,6 +255,68 @@ fn test_record_dnr_order() {
 }
 
 #[test]
+fn test_configured_emergency_contact_can_read_profile() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, EmergencyMedicalInfo);
+    let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let contact = Address::generate(&env);
+    env.mock_all_auths();
+
+    client.set_emergency_profile(
+        &patient,
+        &Symbol::new(&env, "O_POS"),
+        &hash(&env, 21),
+        &Vec::new(&env),
+        &Vec::new(&env),
+        &create_test_emergency_contacts(&env),
+        &None,
+    );
+
+    client.set_recovery_config(&patient, &contact, &Vec::new(&env), &0);
+    let profile = client.emergency_read(&patient, &contact);
+
+    assert_eq!(profile.blood_type, Symbol::new(&env, "O_POS"));
+}
+
+#[test]
+fn test_guardian_threshold_rekeys_emergency_profile() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, EmergencyMedicalInfo);
+    let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let contact = Address::generate(&env);
+    let guardian_1 = Address::generate(&env);
+    let guardian_2 = Address::generate(&env);
+    let new_owner = Address::generate(&env);
+    env.mock_all_auths();
+
+    client.set_emergency_profile(
+        &patient,
+        &Symbol::new(&env, "AB_NEG"),
+        &hash(&env, 22),
+        &Vec::new(&env),
+        &Vec::new(&env),
+        &create_test_emergency_contacts(&env),
+        &None,
+    );
+
+    let mut guardians = Vec::new(&env);
+    guardians.push_back(guardian_1.clone());
+    guardians.push_back(guardian_2.clone());
+    client.set_recovery_config(&patient, &contact, &guardians, &2);
+
+    client.propose_recovery(&patient, &guardian_1, &new_owner);
+    assert!(client.has_emergency_profile(&patient));
+
+    client.propose_recovery(&patient, &guardian_2, &new_owner);
+    assert!(!client.has_emergency_profile(&patient));
+    assert!(client.has_emergency_profile(&new_owner));
+}
+
+#[test]
 fn test_dnr_with_advance_directives() {
     let env = Env::default();
     let contract_id = env.register_contract(None, EmergencyMedicalInfo);
