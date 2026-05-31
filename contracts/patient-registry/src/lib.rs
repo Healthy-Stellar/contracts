@@ -5,7 +5,8 @@ use shared::incident_tracking::{
     capture_incident, get_incidents_by_correlation_id as shared_get_by_corr, IncidentSeverity,
 };
 use shared::privacy::{
-    validate_encrypted_ref, validate_policy_metadata, EncryptedEnvelopeRef, PolicyMetadata,
+    validate_encrypted_ref, validate_nonzero_hash, validate_policy_metadata, EncryptedEnvelopeRef,
+    PolicyMetadata,
 };
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token,
@@ -16,6 +17,8 @@ use ttl_config::critical::{LEDGER_BUMP_AMOUNT, LEDGER_THRESHOLD};
 pub mod merkle;
 pub mod validation;
 pub const NEW_RECORD_TOPIC: &str = "new_record";
+pub const ARCHIVE_LEDGER_THRESHOLD: u32 = 100_000;
+pub const ARCHIVE_LEDGER_BUMP_AMOUNT: u32 = 518_400;
 
 /// --------------------
 /// Patient Status
@@ -110,6 +113,8 @@ pub enum DataKey {
     GlobalTypeIndex(Symbol),
     /// Soft-delete tombstone for a record (value: timestamp of deletion).
     DeletedRecord(u64),
+    /// Archived record lookup keyed by global record ID.
+    ArchivedRecord(u64),
     /// Merkle root for a patient's records.
     /// Merkle root over the patient's ordered record IDs (see `merkle` module).
     MerkleRoot(Address),
@@ -192,6 +197,16 @@ pub struct RecordData {
     pub history: Vec<RecordVersion>,
     pub latest_version: u64,
     pub policy: PolicyMetadata,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArchivedRecordRef {
+    pub patient: Address,
+    pub record_id: u64,
+    pub record_type: Symbol,
+    pub cid_hash: BytesN<32>,
+    pub archived_at_ledger: u32,
 }
 
 #[contracttype]
@@ -1727,6 +1742,126 @@ impl MedicalRegistry {
         }
 
         Ok(selected)
+    }
+
+    /// Extend TTL for active patient record keys without changing record data.
+    pub fn extend_record_ttl(env: Env, patient: Address) -> Result<(), ContractError> {
+        Self::require_patient_exists(&env, &patient)?;
+        Self::bump_patient_keys(&env, &patient);
+
+        let ids_key = DataKey::PatientRecordIds(patient.clone());
+        let ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&ids_key)
+            .unwrap_or(Vec::new(&env));
+        for record_id in ids.iter() {
+            let key = DataKey::MedicalRecord(record_id);
+            if env.storage().persistent().has(&key) {
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP_AMOUNT);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Archive a hot medical record by replacing on-chain detail with a CID hash.
+    pub fn archive_record(
+        env: Env,
+        patient: Address,
+        record_id: u64,
+        cid_hash: BytesN<32>,
+    ) -> Result<ArchivedRecordRef, ContractError> {
+        patient.require_auth();
+        validate_nonzero_hash(&cid_hash).map_err(|_| ContractError::InvalidCID)?;
+
+        let record_key = DataKey::MedicalRecord(record_id);
+        let record_data: RecordData = env
+            .storage()
+            .persistent()
+            .get(&record_key)
+            .ok_or(ContractError::NotFound)?;
+        if record_data.patient != patient {
+            return Err(ContractError::NotAuthorized);
+        }
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::ArchivedRecord(record_id))
+        {
+            return Err(ContractError::AlreadyDeleted);
+        }
+
+        let archived = ArchivedRecordRef {
+            patient: patient.clone(),
+            record_id,
+            record_type: record_data.record_type.clone(),
+            cid_hash,
+            archived_at_ledger: env.ledger().sequence(),
+        };
+        let archive_key = DataKey::ArchivedRecord(record_id);
+        env.storage().persistent().set(&archive_key, &archived);
+        env.storage().persistent().extend_ttl(
+            &archive_key,
+            ARCHIVE_LEDGER_THRESHOLD,
+            ARCHIVE_LEDGER_BUMP_AMOUNT,
+        );
+
+        env.storage().persistent().remove(&record_key);
+        env.storage()
+            .persistent()
+            .set(&DataKey::DeletedRecord(record_id), &env.ledger().timestamp());
+
+        let records_key = DataKey::MedicalRecords(patient.clone());
+        let records: Vec<MedicalRecord> = env
+            .storage()
+            .persistent()
+            .get(&records_key)
+            .unwrap_or(Vec::new(&env));
+        let mut active_records = Vec::new(&env);
+        for record in records.iter() {
+            if record.record_id != record_id {
+                active_records.push_back(record);
+            }
+        }
+        env.storage()
+            .persistent()
+            .set(&records_key, &active_records);
+
+        let ids_key = DataKey::PatientRecordIds(patient.clone());
+        let ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&ids_key)
+            .unwrap_or(Vec::new(&env));
+        let mut active_ids = Vec::new(&env);
+        for id in ids.iter() {
+            if id != record_id {
+                active_ids.push_back(id);
+            }
+        }
+        env.storage().persistent().set(&ids_key, &active_ids);
+        Self::update_merkle_root(&env, &patient, &active_ids);
+        Self::bump_patient_keys(&env, &patient);
+
+        env.events().publish(
+            (symbol_short!("archived"), patient),
+            (record_id, archived.cid_hash.clone()),
+        );
+        Ok(archived)
+    }
+
+    /// Retrieve the archival pointer used by off-chain storage/indexers.
+    pub fn get_archived_ref(
+        env: Env,
+        record_id: u64,
+    ) -> Result<ArchivedRecordRef, ContractError> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ArchivedRecord(record_id))
+            .ok_or(ContractError::NotFound)
     }
 
     // =====================================================
