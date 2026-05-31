@@ -207,3 +207,148 @@ mod tests {
         assert!(!client.verify_record_integrity(&patient, &record_id, &short_hash));
     }
 }
+
+#[cfg(test)]
+mod cross_contract_correlation_tests {
+    use crate::{HealthRecords, HealthRecordsClient};
+    use patient_registry::{MedicalRegistry, MedicalRegistryClient};
+    use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String};
+
+    fn corr_id(env: &Env, seed: u8) -> BytesN<32> {
+        BytesN::from_array(env, &[seed; 32])
+    }
+
+    fn setup_both(
+        env: &Env,
+    ) -> (
+        HealthRecordsClient<'static>,
+        MedicalRegistryClient<'static>,
+    ) {
+        let hr_id = env.register(HealthRecords, ());
+        let pr_id = env.register(MedicalRegistry, ());
+        (
+            HealthRecordsClient::new(env, &hr_id),
+            MedicalRegistryClient::new(env, &pr_id),
+        )
+    }
+
+    /// Scenario 1: same correlation ID links one incident in each contract.
+    #[test]
+    fn test_correlated_incidents_appear_in_both_contracts() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (hr, pr) = setup_both(&env);
+        let reporter = Address::generate(&env);
+        let cid = corr_id(&env, 0xAA);
+
+        let hr_incident = hr.report_incident(
+            &reporter,
+            &1u32,
+            &String::from_str(&env, "hr: unauthorized access"),
+            &Some(cid.clone()),
+        );
+        let pr_incident = pr.report_incident(
+            &reporter,
+            &1u32,
+            &String::from_str(&env, "pr: patient not found"),
+            &Some(cid.clone()),
+        );
+
+        // Each contract's own storage holds the incident under the correlation index.
+        let hr_ids = hr.get_incidents_by_correlation_id(&cid);
+        let pr_ids = pr.get_incidents_by_correlation_id(&cid);
+
+        assert_eq!(hr_ids.len(), 1);
+        assert_eq!(hr_ids.get(0).unwrap(), hr_incident);
+
+        assert_eq!(pr_ids.len(), 1);
+        assert_eq!(pr_ids.get(0).unwrap(), pr_incident);
+    }
+
+    /// Scenario 2: multiple incidents across both contracts share one correlation ID.
+    #[test]
+    fn test_multiple_incidents_same_correlation_id() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (hr, pr) = setup_both(&env);
+        let reporter = Address::generate(&env);
+        let cid = corr_id(&env, 0xBB);
+
+        hr.report_incident(
+            &reporter,
+            &2u32,
+            &String::from_str(&env, "hr: consent revoked"),
+            &Some(cid.clone()),
+        );
+        hr.report_incident(
+            &reporter,
+            &3u32,
+            &String::from_str(&env, "hr: integrity check failed"),
+            &Some(cid.clone()),
+        );
+        pr.report_incident(
+            &reporter,
+            &2u32,
+            &String::from_str(&env, "pr: duplicate registration"),
+            &Some(cid.clone()),
+        );
+
+        assert_eq!(hr.get_incidents_by_correlation_id(&cid).len(), 2);
+        assert_eq!(pr.get_incidents_by_correlation_id(&cid).len(), 1);
+    }
+
+    /// Scenario 3: incidents without a correlation ID are not returned by the query.
+    #[test]
+    fn test_uncorrelated_incidents_not_returned() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (hr, pr) = setup_both(&env);
+        let reporter = Address::generate(&env);
+        let cid = corr_id(&env, 0xCC);
+
+        // Fire incidents with no correlation ID.
+        hr.report_incident(
+            &reporter,
+            &9u32,
+            &String::from_str(&env, "hr: unrelated error"),
+            &None,
+        );
+        pr.report_incident(
+            &reporter,
+            &9u32,
+            &String::from_str(&env, "pr: unrelated error"),
+            &None,
+        );
+
+        // The correlation index for `cid` must be empty.
+        assert_eq!(hr.get_incidents_by_correlation_id(&cid).len(), 0);
+        assert_eq!(pr.get_incidents_by_correlation_id(&cid).len(), 0);
+    }
+
+    /// Scenario 4: different correlation IDs are kept isolated from each other.
+    #[test]
+    fn test_different_correlation_ids_are_isolated() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (hr, _pr) = setup_both(&env);
+        let reporter = Address::generate(&env);
+        let cid_a = corr_id(&env, 0x01);
+        let cid_b = corr_id(&env, 0x02);
+
+        hr.report_incident(
+            &reporter,
+            &1u32,
+            &String::from_str(&env, "incident for A"),
+            &Some(cid_a.clone()),
+        );
+        hr.report_incident(
+            &reporter,
+            &2u32,
+            &String::from_str(&env, "incident for B"),
+            &Some(cid_b.clone()),
+        );
+
+        assert_eq!(hr.get_incidents_by_correlation_id(&cid_a).len(), 1);
+        assert_eq!(hr.get_incidents_by_correlation_id(&cid_b).len(), 1);
+    }
+}

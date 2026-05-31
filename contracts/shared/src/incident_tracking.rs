@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contracttype, Address, Bytes, Env, String, Symbol, Vec};
+use soroban_sdk::{contracttype, Address, Bytes, BytesN, Env, String, Symbol, Vec};
 
 /// Severity levels for incidents
 #[contracttype]
@@ -47,6 +47,7 @@ pub struct Incident {
     pub evidence_count: u32,
     pub resolved: bool,
     pub resolution_note: Option<String>,
+    pub correlation_id: Option<BytesN<32>>,
 }
 
 /// Evidence attachment to incident
@@ -56,6 +57,7 @@ pub struct IncidentEvidence {
     pub incident_id: u64,
     pub evidence_index: u32,
     pub evidence: Evidence,
+    pub correlation_id: Option<BytesN<32>>,
 }
 
 /// Storage keys for incident tracking
@@ -67,6 +69,7 @@ pub enum IncidentKey {
     IncidentEvidence(u64, u32),
     OpenIncidents,             // Vec<u64> - IDs of unresolved incidents
     ContractIncidents(String), // Contract-specific incident list
+    CorrelationIndex(BytesN<32>), // correlation_id -> Vec<u64> incident IDs
 }
 
 /// Constants for incident tracking
@@ -81,6 +84,7 @@ pub fn capture_incident(
     error_code: u32,
     description: String,
     reporter: Address,
+    correlation_id: Option<BytesN<32>>,
 ) -> u64 {
     let incident_id: u64 = env
         .storage()
@@ -103,6 +107,7 @@ pub fn capture_incident(
         evidence_count: 0,
         resolved: false,
         resolution_note: None,
+        correlation_id: correlation_id.clone(),
     };
 
     env.storage()
@@ -130,6 +135,26 @@ pub fn capture_incident(
     env.storage().persistent().set(
         &IncidentKey::ContractIncidents(contract),
         &contract_incidents,
+    );
+
+    // Index by correlation_id if provided
+    if let Some(ref cid) = correlation_id {
+        let mut correlated: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&IncidentKey::CorrelationIndex(cid.clone()))
+            .unwrap_or(Vec::new(env));
+        correlated.push_back(incident_id);
+        env.storage().persistent().set(
+            &IncidentKey::CorrelationIndex(cid.clone()),
+            &correlated,
+        );
+    }
+
+    // Emit event with correlation_id for off-chain aggregation
+    env.events().publish(
+        (Symbol::new(env, "incident"), Symbol::new(env, "captured")),
+        (incident_id, correlation_id),
     );
 
     incident_id
@@ -165,6 +190,7 @@ pub fn attach_evidence(
         incident_id,
         evidence_index,
         evidence,
+        correlation_id: incident.correlation_id.clone(),
     };
 
     env.storage().persistent().set(
@@ -233,4 +259,12 @@ pub fn get_evidence(env: &Env, incident_id: u64, evidence_index: u32) -> Result<
         .get(&IncidentKey::IncidentEvidence(incident_id, evidence_index))
         .ok_or(())?;
     Ok(incident_evidence.evidence)
+}
+
+/// Get all incident IDs linked to a correlation ID
+pub fn get_incidents_by_correlation_id(env: &Env, correlation_id: BytesN<32>) -> Vec<u64> {
+    env.storage()
+        .persistent()
+        .get(&IncidentKey::CorrelationIndex(correlation_id))
+        .unwrap_or(Vec::new(env))
 }

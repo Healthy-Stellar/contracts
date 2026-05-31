@@ -207,6 +207,7 @@ impl AllergyManagement {
             error_code,
             description,
             reporter.clone(),
+            None,
         );
 
         let severity_symbol = match severity {

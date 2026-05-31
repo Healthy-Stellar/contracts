@@ -1,6 +1,9 @@
 #![no_std]
 #![allow(deprecated)]
 
+use shared::incident_tracking::{
+    capture_incident, get_incidents_by_correlation_id as shared_get_by_corr, IncidentSeverity,
+};
 use shared::privacy::{
     validate_encrypted_ref, validate_policy_metadata, EncryptedEnvelopeRef, PolicyMetadata,
 };
@@ -2093,6 +2096,39 @@ impl MedicalRegistry {
             .unwrap_or(Vec::new(&env));
 
         Ok(index.len() as u64)
+    }
+
+    // =====================================================
+    //              INCIDENT TRACKING
+    // =====================================================
+
+    /// Capture an incident for this contract, optionally linking it to a
+    /// cross-contract correlation ID.  Returns the new incident ID.
+    pub fn report_incident(
+        env: Env,
+        reporter: Address,
+        error_code: u32,
+        description: String,
+        correlation_id: Option<BytesN<32>>,
+    ) -> u64 {
+        reporter.require_auth();
+        capture_incident(
+            &env,
+            IncidentSeverity::High,
+            String::from_str(&env, "patient-registry"),
+            error_code,
+            description,
+            reporter,
+            correlation_id,
+        )
+    }
+
+    /// Return all incident IDs that share the given correlation ID.
+    pub fn get_incidents_by_correlation_id(
+        env: Env,
+        correlation_id: BytesN<32>,
+    ) -> Vec<u64> {
+        shared_get_by_corr(&env, correlation_id)
     }
 
     // =====================================================
