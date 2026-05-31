@@ -7,7 +7,7 @@ mod types;
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Symbol, Vec};
 use types::{
     DataKey, DeviceRecord, DmePrescription, Error, ImplantRecord, MaintenanceRecord,
-    PerformanceReport, RecallInfo,
+    PerformanceReport, RecallInfo, WarrantyRecord,
 };
 
 #[contract]
@@ -38,6 +38,8 @@ impl MedicalDeviceRegistry {
         manufacturing_date: u64,
         expiration_date: Option<u64>,
         device_specs_hash: BytesN<32>,
+        warranty_expiration_date: Option<u64>,
+        maintenance_interval_days: Option<u64>,
     ) -> Result<u64, Error> {
         manufacturer_id.require_auth();
 
@@ -51,6 +53,12 @@ impl MedicalDeviceRegistry {
             .instance()
             .set(&DataKey::DeviceCounter, &new_id);
 
+        let next_scheduled_maintenance = if let Some(interval) = maintenance_interval_days {
+            Some(manufacturing_date + interval * 86400)
+        } else {
+            None
+        };
+
         let device = DeviceRecord {
             device_id: new_id,
             device_udi,
@@ -62,6 +70,9 @@ impl MedicalDeviceRegistry {
             manufacturing_date,
             expiration_date,
             device_specs_hash,
+            warranty_expiration_date,
+            next_scheduled_maintenance,
+            maintenance_interval_days,
         };
         env.storage()
             .persistent()
@@ -538,5 +549,175 @@ impl MedicalDeviceRegistry {
         }
 
         Ok(())
+    }
+
+    /// Register warranty coverage for a device.
+    pub fn register_warranty(
+        env: Env,
+        device_id: u64,
+        warranty_provider: Address,
+        warranty_start_date: u64,
+        warranty_expiration_date: u64,
+        coverage_details_hash: BytesN<32>,
+    ) -> Result<u64, Error> {
+        warranty_provider.require_auth();
+
+        // Verify device exists
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::DeviceRecord(device_id))
+        {
+            return Err(Error::RecordNotFound);
+        }
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::WarrantyCounter)
+            .unwrap_or(0);
+        let warranty_id = count + 1;
+        env.storage()
+            .instance()
+            .set(&DataKey::WarrantyCounter, &warranty_id);
+
+        let warranty = WarrantyRecord {
+            warranty_id,
+            device_id,
+            warranty_start_date,
+            warranty_expiration_date,
+            warranty_provider,
+            coverage_details_hash,
+            is_active: true,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::WarrantyRecord(warranty_id), &warranty);
+
+        let mut warranties: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DeviceWarranties(device_id))
+            .unwrap_or(Vec::new(&env));
+        warranties.push_back(warranty_id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::DeviceWarranties(device_id), &warranties);
+
+        Ok(warranty_id)
+    }
+
+    /// Check if a device warranty is still valid.
+    pub fn check_warranty_status(
+        env: Env,
+        device_id: u64,
+        current_time: u64,
+    ) -> Result<bool, Error> {
+        let warranties: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DeviceWarranties(device_id))
+            .unwrap_or(Vec::new(&env));
+
+        if warranties.is_empty() {
+            return Ok(false);
+        }
+
+        // Check if any active warranty covers the current time
+        for warranty_id in warranties {
+            if let Some(warranty) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, WarrantyRecord>(&DataKey::WarrantyRecord(warranty_id))
+            {
+                if warranty.is_active
+                    && warranty.warranty_start_date <= current_time
+                    && current_time < warranty.warranty_expiration_date
+                {
+                    return Ok(true);
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
+    /// Check if scheduled maintenance is overdue for a device.
+    pub fn check_maintenance_due(
+        env: Env,
+        device_id: u64,
+        current_time: u64,
+    ) -> Result<bool, Error> {
+        let device: DeviceRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DeviceRecord(device_id))
+            .ok_or(Error::RecordNotFound)?;
+
+        if let Some(next_maintenance) = device.next_scheduled_maintenance {
+            return Ok(current_time >= next_maintenance);
+        }
+
+        Ok(false)
+    }
+
+    /// Schedule next maintenance after current maintenance is completed.
+    pub fn schedule_next_maintenance(
+        env: Env,
+        device_id: u64,
+        maintenance_completed_date: u64,
+    ) -> Result<(), Error> {
+        let mut device: DeviceRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DeviceRecord(device_id))
+            .ok_or(Error::RecordNotFound)?;
+
+        if let Some(interval) = device.maintenance_interval_days {
+            device.next_scheduled_maintenance =
+                Some(maintenance_completed_date + interval * 86400);
+            env.storage()
+                .persistent()
+                .set(&DataKey::DeviceRecord(device_id), &device);
+            Ok(())
+        } else {
+            Err(Error::InvalidInput)
+        }
+    }
+
+    /// Flag devices that are out of warranty (warranty expired and no active coverage).
+    pub fn get_out_of_warranty_devices(
+        env: Env,
+        device_ids: Vec<u64>,
+        current_time: u64,
+    ) -> Result<Vec<u64>, Error> {
+        let mut out_of_warranty = Vec::new(&env);
+
+        for device_id in device_ids {
+            let device: DeviceRecord = env
+                .storage()
+                .persistent()
+                .get(&DataKey::DeviceRecord(device_id))
+                .ok_or(Error::RecordNotFound)?;
+
+            // Check if warranty has expired
+            let warranty_valid = if let Some(warranty_exp) = device.warranty_expiration_date {
+                current_time < warranty_exp
+            } else {
+                false
+            };
+
+            if !warranty_valid {
+                // Also check active warranties
+                let has_active_warranty =
+                    Self::check_warranty_status(&env, device_id, current_time).unwrap_or(false);
+                if !has_active_warranty {
+                    out_of_warranty.push_back(device_id);
+                }
+            }
+        }
+
+        Ok(out_of_warranty)
     }
 }

@@ -6,11 +6,12 @@ publish = false
 description = "Trait and placeholder for future zero-knowledge medical eligibility verification on Soroban."
 
 [lib]
-crate-type = ["rlib"]
+crate-type = ["lib", "cdylib"]
 doctest = false
 
 [dependencies]
 soroban-sdk = { workspace = true }
+zk-eligibility = { path = "../zk-eligibility" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }

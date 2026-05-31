@@ -277,7 +277,7 @@ impl UpgradeGovernance {
             .get::<DataKey, bool>(&DataKey::ApprovedArtifactMetadata(
                 proposal.artifact_metadata_hash.clone(),
             ))
-            .unwrap_or(false);
+            .ok_or(Error::UnapprovedArtifactMetadata)?;
         if !approved {
             return Err(Error::UnapprovedArtifactMetadata);
         }

@@ -61,6 +61,8 @@ pub enum DataKey {
     VerifierKey(u32),
     /// Nullifier: proof hash → bool (prevents replay).
     Nullifier(BytesN<32>),
+    /// Cached subject eligibility after a successful proof.
+    Eligibility(Address),
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -215,6 +217,9 @@ impl ZkEligibility {
 
         // ── Record nullifier ──────────────────────────────────────────────────
         env.storage().persistent().set(&nullifier_key, &true);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Eligibility(subject.clone()), &true);
 
         env.events().publish(
             (symbol_short!("zk_ok"), subject, bundle.schema_version),
@@ -236,6 +241,14 @@ impl ZkEligibility {
         env.storage()
             .persistent()
             .has(&DataKey::Nullifier(proof_hash))
+    }
+
+    /// Check whether a subject has a cached successful eligibility proof.
+    pub fn is_eligible(env: Env, subject: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Eligibility(subject))
+            .unwrap_or(false)
     }
 
     // ── guards ────────────────────────────────────────────────────────────────

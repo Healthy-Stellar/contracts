@@ -14,4 +14,5 @@ shared-contracts = { path = "..", package = "Contracts" }
 soroban-sdk = { workspace = true }
 
 [dev-dependencies]
+patient-registry = { path = "../patient-registry" }
 soroban-sdk = { workspace = true, features = ["testutils"] }

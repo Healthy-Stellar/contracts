@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contracttype, Address, Env};
+use soroban_sdk::{contracttype, vec, Address, Env, IntoVal, Symbol};
 
 /// Actor types for verification
 #[contracttype]
@@ -24,13 +24,21 @@ pub struct VerificationCache {
 #[contracttype]
 pub enum VerificationKey {
     Cache(ActorType, Address),
+    /// Registry contract addresses stored by the host contract during initialization.
+    PatientRegistry,
+    ProviderRegistry,
+    HospitalRegistry,
+    InsurerRegistry,
 }
 
 /// Cache duration in ledger seconds (e.g., 24 hours)
 pub const CACHE_DURATION: u64 = 86400;
 
-/// Verify if an address is a registered actor of the given type
-/// Uses caching to reduce cross-contract calls
+/// Verify if an address is a registered actor of the given type.
+/// Uses caching to reduce cross-contract calls.
+/// Registry addresses must be stored in instance storage under the
+/// `VerificationKey::{Patient,Provider,Hospital,Insurer}Registry` keys
+/// before this function is called.
 pub fn verify_actor(env: &Env, actor_type: ActorType, address: &Address) -> bool {
     // Check cache first
     let cache_key = VerificationKey::Cache(actor_type.clone(), address.clone());
@@ -62,26 +70,54 @@ pub fn verify_actor(env: &Env, actor_type: ActorType, address: &Address) -> bool
     verified
 }
 
-fn verify_patient(_env: &Env, _address: &Address) -> bool {
-    // Cross-contract call to patient-registry
-    // For now, we'll assume the contract addresses are known or passed
-    // In a real implementation, this would use contract.invoke()
-    // Since we can't do cross-contract calls easily here, we'll return true for demo
-    // In practice, this would check patient-registry.is_patient_registered()
-    true // TODO: Implement actual cross-contract call
+fn verify_patient(env: &Env, address: &Address) -> bool {
+    let registry: Address = match env
+        .storage()
+        .instance()
+        .get::<VerificationKey, Address>(&VerificationKey::PatientRegistry)
+    {
+        Some(r) => r,
+        None => return false,
+    };
+    let args = vec![env, address.clone().into_val(env)];
+    env.invoke_contract(&registry, &Symbol::new(env, "is_patient_registered"), args)
 }
 
-fn verify_provider(_env: &Env, _address: &Address) -> bool {
-    // Cross-contract call to provider-registry
-    true // TODO: Implement actual cross-contract call
+fn verify_provider(env: &Env, address: &Address) -> bool {
+    let registry: Address = match env
+        .storage()
+        .instance()
+        .get::<VerificationKey, Address>(&VerificationKey::ProviderRegistry)
+    {
+        Some(r) => r,
+        None => return false,
+    };
+    let args = vec![env, address.clone().into_val(env)];
+    env.invoke_contract(&registry, &Symbol::new(env, "is_provider"), args)
 }
 
-fn verify_hospital(_env: &Env, _address: &Address) -> bool {
-    // Cross-contract call to hospital-registry
-    true // TODO: Implement actual cross-contract call
+fn verify_hospital(env: &Env, address: &Address) -> bool {
+    let registry: Address = match env
+        .storage()
+        .instance()
+        .get::<VerificationKey, Address>(&VerificationKey::HospitalRegistry)
+    {
+        Some(r) => r,
+        None => return false,
+    };
+    let args = vec![env, address.clone().into_val(env)];
+    env.invoke_contract(&registry, &Symbol::new(env, "is_hospital_active"), args)
 }
 
-fn verify_insurer(_env: &Env, _address: &Address) -> bool {
-    // Cross-contract call to insurer-registry
-    true // TODO: Implement actual cross-contract call
+fn verify_insurer(env: &Env, address: &Address) -> bool {
+    let registry: Address = match env
+        .storage()
+        .instance()
+        .get::<VerificationKey, Address>(&VerificationKey::InsurerRegistry)
+    {
+        Some(r) => r,
+        None => return false,
+    };
+    let args = vec![env, address.clone().into_val(env)];
+    env.invoke_contract(&registry, &Symbol::new(env, "is_insurer_active"), args)
 }

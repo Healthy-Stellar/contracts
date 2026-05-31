@@ -1,11 +1,14 @@
 #![no_std]
 
+use shared::incident_tracking::{
+    capture_incident, get_incidents_by_correlation_id as shared_get_by_corr, IncidentSeverity,
+};
 use shared::privacy::{
     validate_encrypted_ref, validate_policy_metadata, EncryptedEnvelopeRef, PolicyMetadata,
 };
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, xdr::ToXdr, Address, Bytes, BytesN, Env,
-    String,
+    String, Vec,
 };
 
 #[contracttype]
@@ -193,7 +196,38 @@ impl HealthRecords {
         let recomputed_bytes: Bytes = recomputed.into();
         Ok(recomputed_bytes == expected_hash)
     }
+
+    /// Capture an incident for this contract, optionally linking it to a
+    /// cross-contract correlation ID.  Returns the new incident ID.
+    pub fn report_incident(
+        env: Env,
+        reporter: Address,
+        error_code: u32,
+        description: String,
+        correlation_id: Option<BytesN<32>>,
+    ) -> u64 {
+        reporter.require_auth();
+        capture_incident(
+            &env,
+            IncidentSeverity::High,
+            String::from_str(&env, "health-records"),
+            error_code,
+            description,
+            reporter,
+            correlation_id,
+        )
+    }
+
+    /// Return all incident IDs that share the given correlation ID.
+    pub fn get_incidents_by_correlation_id(
+        env: Env,
+        correlation_id: BytesN<32>,
+    ) -> Vec<u64> {
+        shared_get_by_corr(&env, correlation_id)
+    }
 }
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod cid_fuzz_tests;

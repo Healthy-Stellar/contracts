@@ -58,6 +58,21 @@ pub struct DNROrder {
     pub recorded_at: u64,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveryConfig {
+    pub emergency_contact: Address,
+    pub guardians: Vec<Address>,
+    pub recovery_threshold: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveryProposal {
+    pub new_owner: Address,
+    pub approvals: Vec<Address>,
+}
+
 /// --------------------
 /// Storage Keys
 /// --------------------
@@ -69,6 +84,8 @@ pub enum DataKey {
     EmergencyAccessLog(Address),
     DNROrder(Address),
     EmergencyNotifications(Address),
+    RecoveryConfig(Address),
+    RecoveryProposal(Address),
 }
 
 #[contracterror]
@@ -77,6 +94,7 @@ pub enum DataKey {
 pub enum Error {
     EmergencyProfileNotFound = 1,
     NotAuthorized = 2,
+    InvalidRecoveryThreshold = 3,
 }
 
 #[contract]
@@ -322,6 +340,109 @@ impl EmergencyMedicalInfo {
     pub fn has_emergency_profile(env: Env, patient_id: Address) -> bool {
         let key = DataKey::EmergencyProfile(patient_id);
         env.storage().persistent().has(&key)
+    }
+
+    /// Configure read-only emergency access and optional guardian recovery.
+    pub fn set_recovery_config(
+        env: Env,
+        patient_id: Address,
+        emergency_contact: Address,
+        guardians: Vec<Address>,
+        recovery_threshold: u32,
+    ) -> Result<(), Error> {
+        patient_id.require_auth();
+        if recovery_threshold as u32 > guardians.len() {
+            return Err(Error::InvalidRecoveryThreshold);
+        }
+
+        let config = RecoveryConfig {
+            emergency_contact,
+            guardians,
+            recovery_threshold,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::RecoveryConfig(patient_id), &config);
+        Ok(())
+    }
+
+    /// Read profile as the configured emergency contact or a listed guardian.
+    pub fn emergency_read(
+        env: Env,
+        patient_id: Address,
+        caller: Address,
+    ) -> Result<EmergencyProfile, Error> {
+        caller.require_auth();
+        let config: RecoveryConfig = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RecoveryConfig(patient_id.clone()))
+            .ok_or(Error::NotAuthorized)?;
+
+        if caller != config.emergency_contact && !config.guardians.contains(&caller) {
+            return Err(Error::NotAuthorized);
+        }
+
+        env.storage()
+            .persistent()
+            .get(&DataKey::EmergencyProfile(patient_id))
+            .ok_or(Error::EmergencyProfileNotFound)
+    }
+
+    /// Guardian vote for re-keying the emergency profile to a new patient address.
+    pub fn propose_recovery(
+        env: Env,
+        patient_id: Address,
+        guardian: Address,
+        new_owner: Address,
+    ) -> Result<(), Error> {
+        guardian.require_auth();
+        let config: RecoveryConfig = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RecoveryConfig(patient_id.clone()))
+            .ok_or(Error::NotAuthorized)?;
+
+        if !config.guardians.contains(&guardian) || config.recovery_threshold == 0 {
+            return Err(Error::NotAuthorized);
+        }
+
+        let proposal_key = DataKey::RecoveryProposal(patient_id.clone());
+        let mut proposal: RecoveryProposal =
+            env.storage()
+                .temporary()
+                .get(&proposal_key)
+                .unwrap_or(RecoveryProposal {
+                    new_owner: new_owner.clone(),
+                    approvals: Vec::new(&env),
+                });
+
+        if proposal.new_owner != new_owner {
+            return Err(Error::NotAuthorized);
+        }
+        if !proposal.approvals.contains(&guardian) {
+            proposal.approvals.push_back(guardian);
+        }
+
+        if proposal.approvals.len() >= config.recovery_threshold {
+            let old_profile_key = DataKey::EmergencyProfile(patient_id.clone());
+            let profile: EmergencyProfile = env
+                .storage()
+                .persistent()
+                .get(&old_profile_key)
+                .ok_or(Error::EmergencyProfileNotFound)?;
+            env.storage()
+                .persistent()
+                .set(&DataKey::EmergencyProfile(new_owner.clone()), &profile);
+            env.storage().persistent().remove(&old_profile_key);
+            env.storage().temporary().remove(&proposal_key);
+            env.events()
+                .publish((Symbol::new(&env, "recovered"), patient_id), new_owner);
+        } else {
+            env.storage().temporary().set(&proposal_key, &proposal);
+        }
+
+        Ok(())
     }
 
     fn require_emergency_read_access(

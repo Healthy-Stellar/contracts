@@ -127,6 +127,8 @@ pub enum Error {
     InvalidScheduledTime = 9,
     /// study_date must not be in the future
     InvalidStudyDate = 10,
+    /// A required counter entry was missing from storage
+    CounterUnavailable = 11,
 }
 
 /// --------------------
@@ -571,7 +573,11 @@ impl ImagingRadiology {
         }
         let p = patient_id.clone();
         let total_key = DataKey::PatientOrdersTotal(patient_id.clone());
-        let total: u32 = env.storage().persistent().get(&total_key).unwrap_or(0);
+        let total: u32 = env
+            .storage()
+            .persistent()
+            .get(&total_key)
+            .ok_or(Error::CounterUnavailable)?;
         Ok(pagination::get_paged(
             &env,
             |pg| DataKey::PatientOrdersPage(p.clone(), pg),
@@ -596,7 +602,11 @@ impl ImagingRadiology {
         }
         let prov = provider_id.clone();
         let total_key = DataKey::ProviderOrdersTotal(provider_id.clone());
-        let total: u32 = env.storage().persistent().get(&total_key).unwrap_or(0);
+        let total: u32 = env
+            .storage()
+            .persistent()
+            .get(&total_key)
+            .ok_or(Error::CounterUnavailable)?;
         Ok(pagination::get_paged(
             &env,
             |pg| DataKey::ProviderOrdersPage(prov.clone(), pg),
@@ -640,3 +650,5 @@ impl ImagingRadiology {
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod cid_fuzz_tests;

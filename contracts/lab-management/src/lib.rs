@@ -3,7 +3,6 @@
 
 use soroban_sdk::{
     Address, BytesN, Env, String, Symbol, Vec, contract, contracterror, contractimpl, contracttype,
-    panic_with_error,
 };
 
 #[contracterror]
@@ -85,7 +84,7 @@ impl LabManagementContract {
         provider_id: Address,
         patient_id: Address,
         req: OrderRequest,
-    ) -> u64 {
+    ) -> Result<u64, Error> {
         provider_id.require_auth();
 
         // Read the current counter (u64 throughout — no cast to u32).
@@ -96,9 +95,7 @@ impl LabManagementContract {
             .unwrap_or(0);
 
         // Guard against u64 overflow before incrementing.
-        let next_id = id
-            .checked_add(1)
-            .unwrap_or_else(|| panic_with_error!(&env, Error::OrderIdOverflow));
+        let next_id = id.checked_add(1).ok_or(Error::OrderIdOverflow)?;
 
         env.storage()
             .instance()
@@ -118,20 +115,21 @@ impl LabManagementContract {
         env.storage()
             .persistent()
             .set(&DataKey::LabOrder(id), &order);
-        id
+        Ok(id)
     }
 
-    pub fn assign_lab(env: Env, order_id: u64, lab_id: Address, _eta: u64) {
+    pub fn assign_lab(env: Env, order_id: u64, lab_id: Address, _eta: u64) -> Result<(), Error> {
         let mut order: LabOrder = env
             .storage()
             .persistent()
             .get(&DataKey::LabOrder(order_id))
-            .unwrap_or_else(|| panic_with_error!(&env, Error::NotFound));
+            .ok_or(Error::NotFound)?;
         order.lab_id = Some(lab_id);
         order.status = Symbol::new(&env, "Assigned");
         env.storage()
             .persistent()
             .set(&DataKey::LabOrder(order_id), &order);
+        Ok(())
     }
 
     pub fn submit_results(
@@ -141,7 +139,7 @@ impl LabManagementContract {
         results_hash: BytesN<32>,
         results_summary: Vec<TestResult>,
         qc_passed: bool,
-    ) {
+    ) -> Result<(), Error> {
         lab_id.require_auth();
 
         // VALIDATION PHASE: All validations must pass before any storage writes.
@@ -151,11 +149,10 @@ impl LabManagementContract {
             .storage()
             .persistent()
             .get(&DataKey::LabOrder(order_id))
-            .unwrap_or_else(|| panic_with_error!(&env, Error::NotFound));
+            .ok_or(Error::NotFound)?;
 
         // 2. Perform QC validation (BEFORE any mutations).
-        Self::validate_qc_results(qc_passed, &results_summary)
-            .unwrap_or_else(|e| panic_with_error!(&env, e));
+        Self::validate_qc_results(qc_passed, &results_summary)?;
 
         // MUTATION PHASE: All state changes after validations have passed.
 
@@ -175,6 +172,7 @@ impl LabManagementContract {
         env.storage()
             .persistent()
             .set(&DataKey::LabOrder(order_id), &order);
+        Ok(())
     }
 
     pub fn flag_critical_value(

@@ -3726,3 +3726,234 @@ fn test_merkle_wrong_depth_proof_rejected() {
         "proof with wrong depth must be rejected"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  RECORD VERSIONING TESTS  (#383)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// create → update×3 → get_history must return 4 entries (1 initial + 3 updates).
+#[test]
+fn test_record_history_four_entries_after_three_updates() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _admin, patient, doctor, _v1) = setup_for_ttl(&env);
+
+    let record_id = client.add_medical_record(
+        &patient,
+        &doctor,
+        &encrypted_ref(&env, 1),
+        &Symbol::new(&env, "LAB"),
+        &policy(&env),
+    );
+
+    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 2), &policy(&env));
+    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 3), &policy(&env));
+    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 4), &policy(&env));
+
+    let history = client.get_record_history(&record_id, &patient);
+    assert_eq!(history.len(), 4, "expected 4 history entries (1 initial + 3 updates)");
+}
+
+/// Version IDs (latest_version) must be monotonically increasing and immutable.
+#[test]
+fn test_version_ids_are_monotonically_increasing() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _admin, patient, doctor, _v1) = setup_for_ttl(&env);
+
+    let record_id = client.add_medical_record(
+        &patient,
+        &doctor,
+        &encrypted_ref(&env, 10),
+        &Symbol::new(&env, "LAB"),
+        &policy(&env),
+    );
+
+    // Read latest_version via the contract's internal storage through as_contract
+    let v1: u64 = env.as_contract(&client.address, || {
+        let rd: RecordData = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MedicalRecord(record_id))
+            .unwrap();
+        rd.latest_version
+    });
+    assert_eq!(v1, 1);
+
+    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 11), &policy(&env));
+    let v2: u64 = env.as_contract(&client.address, || {
+        let rd: RecordData = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MedicalRecord(record_id))
+            .unwrap();
+        rd.latest_version
+    });
+    assert_eq!(v2, 2);
+
+    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 12), &policy(&env));
+    let v3: u64 = env.as_contract(&client.address, || {
+        let rd: RecordData = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MedicalRecord(record_id))
+            .unwrap();
+        rd.latest_version
+    });
+    assert_eq!(v3, 3);
+
+    assert!(v1 < v2 && v2 < v3, "version IDs must be strictly increasing");
+}
+
+/// History entries must record the correct encrypted_ref for each version.
+#[test]
+fn test_history_entries_contain_correct_refs() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _admin, patient, doctor, _v1) = setup_for_ttl(&env);
+
+    let record_id = client.add_medical_record(
+        &patient,
+        &doctor,
+        &encrypted_ref(&env, 1),
+        &Symbol::new(&env, "LAB"),
+        &policy(&env),
+    );
+    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 2), &policy(&env));
+    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 3), &policy(&env));
+
+    let history = client.get_record_history(&record_id, &patient);
+    assert_eq!(history.len(), 3);
+
+    assert_eq!(history.get(0).unwrap().encrypted_ref, encrypted_ref(&env, 1));
+    assert_eq!(history.get(1).unwrap().encrypted_ref, encrypted_ref(&env, 2));
+    assert_eq!(history.get(2).unwrap().encrypted_ref, encrypted_ref(&env, 3));
+}
+
+/// current_ref must always reflect the latest update.
+#[test]
+fn test_current_ref_reflects_latest_update() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _admin, patient, doctor, _v1) = setup_for_ttl(&env);
+
+    let record_id = client.add_medical_record(
+        &patient,
+        &doctor,
+        &encrypted_ref(&env, 1),
+        &Symbol::new(&env, "LAB"),
+        &policy(&env),
+    );
+    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 2), &policy(&env));
+    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 3), &policy(&env));
+
+    let current: EncryptedEnvelopeRef = env.as_contract(&client.address, || {
+        let rd: RecordData = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MedicalRecord(record_id))
+            .unwrap();
+        rd.current_ref
+    });
+    assert_eq!(current, encrypted_ref(&env, 3));
+}
+
+/// Concurrent updates from multiple authorized providers — each update is
+/// serialized; history must contain all versions in order.
+#[test]
+fn test_concurrent_updates_from_multiple_providers() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _admin, patient, doctor1, _v1) = setup_for_ttl(&env);
+
+    // Register and authorize a second provider.
+    let doctor2 = Address::generate(&env);
+    client.register_doctor(
+        &doctor2,
+        &String::from_str(&env, "Dr. Carol"),
+        &String::from_str(&env, "Neurology"),
+        &Bytes::from_array(&env, &[4, 5, 6]),
+    );
+    client.grant_access(&patient, &patient, &doctor2);
+
+    let record_id = client.add_medical_record(
+        &patient,
+        &doctor1,
+        &encrypted_ref(&env, 1),
+        &Symbol::new(&env, "LAB"),
+        &policy(&env),
+    );
+
+    // doctor1 updates, then doctor2 updates, then doctor1 again.
+    env.ledger().set_timestamp(1000);
+    client.update_record(&doctor1, &record_id, &encrypted_ref(&env, 2), &policy(&env));
+    env.ledger().set_timestamp(2000);
+    client.update_record(&doctor2, &record_id, &encrypted_ref(&env, 3), &policy(&env));
+    env.ledger().set_timestamp(3000);
+    client.update_record(&doctor1, &record_id, &encrypted_ref(&env, 4), &policy(&env));
+
+    let history = client.get_record_history(&record_id, &patient);
+    assert_eq!(history.len(), 4, "all 4 versions must be in history");
+
+    // Verify updated_by attribution.
+    assert_eq!(history.get(1).unwrap().updated_by, doctor1);
+    assert_eq!(history.get(2).unwrap().updated_by, doctor2);
+    assert_eq!(history.get(3).unwrap().updated_by, doctor1);
+
+    // Verify timestamps are non-decreasing.
+    for i in 1..history.len() {
+        assert!(
+            history.get(i).unwrap().updated_at >= history.get(i - 1).unwrap().updated_at,
+            "timestamps must be non-decreasing"
+        );
+    }
+}
+
+/// Unauthorized caller must not be able to update a record.
+#[test]
+fn test_unauthorized_caller_cannot_update_record() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _admin, patient, doctor, _v1) = setup_for_ttl(&env);
+    let stranger = Address::generate(&env);
+
+    let record_id = client.add_medical_record(
+        &patient,
+        &doctor,
+        &encrypted_ref(&env, 1),
+        &Symbol::new(&env, "LAB"),
+        &policy(&env),
+    );
+
+    let result =
+        client.try_update_record(&stranger, &record_id, &encrypted_ref(&env, 2), &policy(&env));
+    assert!(result.is_err(), "unauthorized caller must be rejected");
+}
+
+/// get_record_history is readable by any address with read permission.
+#[test]
+fn test_get_record_history_readable_by_authorized_doctor() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _admin, patient, doctor, _v1) = setup_for_ttl(&env);
+
+    let record_id = client.add_medical_record(
+        &patient,
+        &doctor,
+        &encrypted_ref(&env, 1),
+        &Symbol::new(&env, "LAB"),
+        &policy(&env),
+    );
+    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 2), &policy(&env));
+
+    // Doctor (authorized) can read history.
+    let history = client.get_record_history(&record_id, &doctor);
+    assert_eq!(history.len(), 2);
+}

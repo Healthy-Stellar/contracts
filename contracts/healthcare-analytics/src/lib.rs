@@ -123,6 +123,7 @@ impl HealthcareAnalytics {
                 5, // Throttling error code
                 String::from_str(&env, "Report job throttled due to resource constraints"),
                 requester.clone(),
+                None,
             );
             // Attach evidence: current resource usage
             let cpu_used: u64 = env.storage().instance().get(&ResourceKey::TotalCpuUsed).unwrap_or(0);
@@ -181,6 +182,7 @@ impl HealthcareAnalytics {
                 8, // Resource overrun error code
                 String::from_str(&env, "Job exceeded resource quota"),
                 job.requested_by.clone(),
+                None,
             );
             let hash: Bytes = env.crypto().sha256(
                 &Bytes::from_slice(&env, b"resource_usage_exceeded_quota")
@@ -228,6 +230,7 @@ impl HealthcareAnalytics {
             9, // Job failure error code
             String::from_str(&env, "Report job failed"),
             requester.clone(),
+            None,
         );
         let hash: Bytes = env.crypto().sha256(
             &Bytes::from_slice(&env, b"report_job_error_log")

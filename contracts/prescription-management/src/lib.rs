@@ -74,6 +74,10 @@ pub enum Error {
     AllergyInteractionDetected = 25,
     /// bypass_allergy_check requires admin role
     AllergyBypassRequiresAdmin = 26,
+    /// Prescription has already been dispensed or transferred, cannot be recalled
+    CannotRecallDispensed = 25,
+    /// Recall reason is required for documentation
+    MissingRecallReason = 26,
 }
 
 #[contracttype]
@@ -187,6 +191,7 @@ pub enum PrescriptionStatus {
     Transferred,
     Cancelled,
     Suspended,
+    Recalled,
 }
 
 #[contracttype]
@@ -256,6 +261,17 @@ pub struct DispenseRequest {
     pub lot: String,
     pub expires_at: u64,
     pub ndc_code: String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecallRecord {
+    pub recall_id: u64,
+    pub prescription_id: u64,
+    pub recalled_by: Address,
+    pub recall_reason: String,
+    pub recall_timestamp: u64,
+    pub clinical_justification: String,
 }
 
 #[contract]
@@ -424,8 +440,12 @@ impl PrescriptionContract {
             return Err(Error::InvalidStatusTransition);
         }
 
-        // Check expiration
-        if env.ledger().timestamp() > p.valid_until {
+        // Check expiration.
+        // Semantics: valid_until is an EXCLUSIVE upper bound — a prescription
+        // is considered expired when ledger timestamp >= valid_until.
+        // This ensures consistent behaviour at UTC midnight boundaries
+        // regardless of sub-second ledger close timing.
+        if env.ledger().timestamp() >= p.valid_until {
             return Err(Error::Expired);
         }
 
@@ -512,8 +532,12 @@ impl PrescriptionContract {
             return Err(Error::InvalidStatusTransition);
         }
 
-        // Check expiration
-        if env.ledger().timestamp() > p.valid_until {
+        // Check expiration.
+        // Semantics: valid_until is an EXCLUSIVE upper bound — a prescription
+        // is considered expired when ledger timestamp >= valid_until.
+        // This ensures consistent behaviour at UTC midnight boundaries
+        // regardless of sub-second ledger close timing.
+        if env.ledger().timestamp() >= p.valid_until {
             return Err(Error::Expired);
         }
 
@@ -1089,8 +1113,12 @@ impl PrescriptionContract {
             return Err(Error::InvalidStatusTransition);
         }
 
-        // Check expiration
-        if env.ledger().timestamp() > p.valid_until {
+        // Check expiration.
+        // Semantics: valid_until is an EXCLUSIVE upper bound — a prescription
+        // is considered expired when ledger timestamp >= valid_until.
+        // This ensures consistent behaviour at UTC midnight boundaries
+        // regardless of sub-second ledger close timing.
+        if env.ledger().timestamp() >= p.valid_until {
             return Err(Error::Expired);
         }
 
@@ -1185,6 +1213,128 @@ impl PrescriptionContract {
         );
 
         Ok(())
+    }
+
+    /// Recall a prescription before it is dispensed.
+    /// This is used when a provider discovers a dosage error, drug interaction, or other safety issue.
+    pub fn recall_prescription(
+        env: Env,
+        prescription_id: u64,
+        provider_id: Address,
+        recall_reason: String,
+        clinical_justification: String,
+    ) -> Result<u64, Error> {
+        provider_id.require_auth();
+
+        if recall_reason == String::from_str(&env, "") {
+            return Err(Error::MissingRecallReason);
+        }
+
+        let mut p: Prescription = env
+            .storage()
+            .persistent()
+            .get(&prescription_id)
+            .ok_or(Error::NotFound)?;
+
+        // Validate provider authorization
+        if p.provider_id != provider_id {
+            return Err(Error::Unauthorized);
+        }
+
+        // Can only recall prescriptions that haven't been dispensed
+        if matches!(
+            p.status,
+            PrescriptionStatus::Dispensed | PrescriptionStatus::PartiallyDispensed
+        ) {
+            if p.quantity_dispensed > 0 {
+                return Err(Error::CannotRecallDispensed);
+            }
+        }
+
+        // Cannot recall if already cancelled, expired, or recalled
+        if matches!(
+            p.status,
+            PrescriptionStatus::Cancelled | PrescriptionStatus::Expired | PrescriptionStatus::Recalled
+        ) {
+            return Err(Error::InvalidStatusTransition);
+        }
+
+        // Generate recall record
+        let recall_id = env
+            .storage()
+            .instance()
+            .get::<_, u64>(&DataKey::RecallCounter)
+            .unwrap_or(0)
+            + 1;
+        env.storage()
+            .instance()
+            .set(&DataKey::RecallCounter, &recall_id);
+
+        let recall = RecallRecord {
+            recall_id,
+            prescription_id,
+            recalled_by: provider_id.clone(),
+            recall_reason: recall_reason.clone(),
+            recall_timestamp: env.ledger().timestamp(),
+            clinical_justification,
+        };
+
+        // Store the recall record
+        env.storage()
+            .persistent()
+            .set(&DataKey::RecallRecord(recall_id), &recall);
+
+        // Link recall to prescription
+        env.storage()
+            .persistent()
+            .set(&DataKey::PrescriptionRecall(prescription_id), &recall_id);
+
+        // Update prescription status to Recalled
+        p.status = PrescriptionStatus::Recalled;
+        env.storage().persistent().set(&prescription_id, &p);
+
+        // Emit recall event — clinical_justification omitted to avoid PII on-chain (#227)
+        env.events().publish(
+            (Symbol::new(&env, "prescription_recalled"),),
+            (prescription_id, provider_id, recall_reason),
+        );
+
+        Ok(recall_id)
+    }
+
+    /// Retrieve recall information for a prescription.
+    pub fn get_prescription_recall(
+        env: Env,
+        prescription_id: u64,
+    ) -> Result<RecallRecord, Error> {
+        let recall_id = env
+            .storage()
+            .persistent()
+            .get::<_, u64>(&DataKey::PrescriptionRecall(prescription_id))
+            .ok_or(Error::NotFound)?;
+
+        env.storage()
+            .persistent()
+            .get(&DataKey::RecallRecord(recall_id))
+            .ok_or(Error::NotFound)
+    }
+
+    /// Check if a prescription has been recalled.
+    pub fn is_prescription_recalled(
+        env: Env,
+        prescription_id: u64,
+    ) -> bool {
+        if let Some(recall_id) = env
+            .storage()
+            .persistent()
+            .get::<_, u64>(&DataKey::PrescriptionRecall(prescription_id))
+        {
+            return env
+                .storage()
+                .persistent()
+                .has(&DataKey::RecallRecord(recall_id));
+        }
+        false
     }
 }
 
