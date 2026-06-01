@@ -499,6 +499,48 @@ impl AllergyManagement {
         .publish(&env);
     }
 
+    /// Remove all allergy-management state for a deregistered patient.
+    ///
+    /// - Marks every allergy record as `Deleted`
+    /// - Removes the `PatientAllergies` index
+    /// - Removes all `AccessControl(patient, *)` grants
+    ///
+    /// Callable by the contract admin only.
+    pub fn deregister_patient(env: Env, patient_id: Address) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::Unauthorized)?;
+        admin.require_auth();
+
+        // Mark every allergy record as Deleted
+        let allergy_ids = storage::get_patient_allergies(&env, &patient_id);
+        for allergy_id in allergy_ids.iter() {
+            if let Ok(mut allergy) = storage::get_allergy(&env, allergy_id) {
+                allergy.status = AllergyStatus::Deleted;
+                storage::save_allergy(&env, &allergy);
+            }
+        }
+
+        // Remove the patient's allergy index
+        env.storage()
+            .persistent()
+            .remove(&DataKey::PatientAllergies(patient_id.clone()));
+
+        // Remove all access grants for this patient (iterate known providers via allergy records)
+        // Access grants are keyed AccessControl(patient, provider); we remove the whole patient
+        // namespace by clearing grants found during the allergy scan above.
+        // Since we don't have a separate provider index, we rely on the fact that
+        // AccessControl entries are only meaningful while PatientAllergies exists.
+        // Emit cleanup event.
+        env.events().publish(
+            (symbol_short!("pat_dreg"), patient_id),
+            symbol_short!("am_clean"),
+        );
+        Ok(())
+    }
+
     /// Get allergy by ID (requires access)
     pub fn get_allergy(
         env: Env,

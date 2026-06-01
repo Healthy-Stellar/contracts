@@ -292,3 +292,90 @@ fn test_date_index_unauthorized_returns_typed_error() {
     let result = client.try_get_records_by_date_range(&stranger, &owner, &0, &999, &0, &10);
     assert_eq!(result, Err(Ok(ContractError::AccessDenied)));
 }
+
+// ---------------------------------------------------------------------------
+// Audit trail: event emission and post-revocation denial
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_grant_access_emits_event() {
+    use soroban_sdk::testutils::Events;
+    use soroban_sdk::{IntoVal, Val, Vec as SdkVec};
+
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register(FinancialRecordContract, ());
+    let client = FinancialRecordContractClient::new(&e, &contract_id);
+
+    let owner = Address::generate(&e);
+    let auditor = Address::generate(&e);
+
+    client.grant_access(&owner, &auditor);
+
+    let events = e.events().all();
+    let expected_topics: SdkVec<Val> =
+        (Symbol::new(&e, "grant"), owner.clone(), auditor.clone()).into_val(&e);
+    assert!(
+        events
+            .iter()
+            .any(|(_id, topics, _data)| topics == expected_topics),
+        "grant event not emitted"
+    );
+}
+
+#[test]
+fn test_revoke_access_emits_event() {
+    use soroban_sdk::testutils::Events;
+    use soroban_sdk::{IntoVal, Val, Vec as SdkVec};
+
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register(FinancialRecordContract, ());
+    let client = FinancialRecordContractClient::new(&e, &contract_id);
+
+    let owner = Address::generate(&e);
+    let auditor = Address::generate(&e);
+
+    client.grant_access(&owner, &auditor);
+    client.revoke_access(&owner, &auditor);
+
+    let events = e.events().all();
+    let expected_topics: SdkVec<Val> =
+        (Symbol::new(&e, "revoke"), owner.clone(), auditor.clone()).into_val(&e);
+    assert!(
+        events
+            .iter()
+            .any(|(_id, topics, _data)| topics == expected_topics),
+        "revoke event not emitted"
+    );
+}
+
+#[test]
+fn test_read_denied_immediately_after_revocation() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register(FinancialRecordContract, ());
+    let client = FinancialRecordContractClient::new(&e, &contract_id);
+
+    let owner = Address::generate(&e);
+    let auditor = Address::generate(&e);
+
+    client.add_financial_record(
+        &owner,
+        &RecordType::Invoice,
+        &encrypted_ref(&e, 3),
+        &policy(&e),
+    );
+
+    client.grant_access(&owner, &auditor);
+    // Confirm access works before revocation.
+    assert_eq!(
+        client.get_financial_records(&auditor, &owner, &0, &10).len(),
+        1
+    );
+
+    client.revoke_access(&owner, &auditor);
+    // Access must be denied in the same block — no delay.
+    let result = client.try_get_financial_records(&auditor, &owner, &0, &10);
+    assert_eq!(result, Err(Ok(ContractError::AccessDenied)));
+}

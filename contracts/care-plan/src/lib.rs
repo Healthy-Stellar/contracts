@@ -411,6 +411,38 @@ impl CarePlanContract {
         Ok(())
     }
 
+    /// Remove all care-plan state for a deregistered patient.
+    ///
+    /// Cancels every active care plan and removes the `PatientPlans` index.
+    /// Callable by the patient themselves.
+    pub fn deregister_patient(env: Env, patient_id: Address) {
+        patient_id.require_auth();
+
+        let plan_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PatientPlans(patient_id.clone()))
+            .unwrap_or(Vec::new(&env));
+
+        for plan_id in plan_ids.iter() {
+            if let Some(mut plan) = load_care_plan(&env, plan_id) {
+                if matches!(plan.status, CarePlanStatus::Active) {
+                    plan.status = CarePlanStatus::Discontinued;
+                    save_care_plan(&env, &plan);
+                }
+            }
+        }
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::PatientPlans(patient_id.clone()));
+
+        env.events().publish(
+            (Symbol::new(&env, "pat_dreg"), patient_id),
+            Symbol::new(&env, "cp_clean"),
+        );
+    }
+
     /// Get a summary of a care plan.
     pub fn get_care_plan_summary(
         env: Env,

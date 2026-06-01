@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use soroban_sdk::{symbol_short, testutils::{Address as _, Ledger}, Address, Env, String, Symbol, Vec};
+use soroban_sdk::{symbol_short, testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke}, Address, BytesN, Env, IntoVal, String, Symbol, Vec};
 
 use crate::{
     AllergyManagement, AllergyManagementClient, AllergyStatus, Error, RecordAllergyRequest,
@@ -847,4 +847,86 @@ fn test_guardian_a_cannot_resolve_patient_b_allergy() {
         result.is_err(),
         "Guardian A must not be able to resolve allergy for Patient B"
     );
+}
+
+// ── deregister_patient tests ──────────────────────────────────────────────────
+
+#[test]
+fn test_deregister_patient_marks_allergies_deleted() {
+    let (env, admin, patient, provider, client) = create_test_env();
+
+    let mut reactions = Vec::new(&env);
+    reactions.push_back(String::from_str(&env, "rash"));
+
+    let request = create_allergy_request(
+        &env,
+        "Penicillin",
+        symbol_short!("med"),
+        reactions,
+        symbol_short!("mild"),
+        None,
+        true,
+    );
+
+    let allergy_id = client.record_allergy(&patient, &provider, &request);
+
+    // Allergy is Active before deregistration
+    client.grant_access(&patient, &provider);
+    let allergy = client.get_allergy(&allergy_id, &patient);
+    assert_eq!(allergy.status, AllergyStatus::Active);
+
+    client.deregister_patient(&patient);
+
+    // Allergy is now Deleted
+    let allergy_after = client.get_allergy(&allergy_id, &patient);
+    assert_eq!(allergy_after.status, AllergyStatus::Deleted);
+}
+
+#[test]
+fn test_deregister_patient_clears_allergy_index() {
+    let (env, admin, patient, provider, client) = create_test_env();
+
+    let mut reactions = Vec::new(&env);
+    reactions.push_back(String::from_str(&env, "hives"));
+
+    let request = create_allergy_request(
+        &env,
+        "Aspirin",
+        symbol_short!("med"),
+        reactions,
+        symbol_short!("moderate"),
+        None,
+        true,
+    );
+
+    client.record_allergy(&patient, &provider, &request);
+
+    // Active allergies exist before deregistration
+    client.grant_access(&patient, &provider);
+    assert_eq!(client.get_active_allergies(&patient, &patient).len(), 1);
+
+    client.deregister_patient(&patient);
+
+    // Index removed — get_active_allergies returns empty
+    assert_eq!(client.get_active_allergies(&patient, &patient).len(), 0);
+}
+
+#[test]
+fn test_deregister_patient_non_admin_rejected() {
+    let (env, _admin, patient, _provider, client) = create_test_env();
+    let attacker = Address::generate(&env);
+
+    let result = client
+        .mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &attacker,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "deregister_patient",
+                args: (&patient,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .try_deregister_patient(&patient);
+
+    assert!(result.is_err());
 }

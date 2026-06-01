@@ -1,0 +1,194 @@
+name: Security Audit
+
+on:
+  schedule:
+    # Run every Monday at 9:00 AM UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    name: Dependency Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run cargo audit
+        id: audit
+        continue-on-error: true
+        run: |
+          cargo audit --json > audit-results.json
+          cargo audit
+
+      - name: Parse audit results
+        if: always()
+        run: |
+          if [ -f audit-results.json ]; then
+            VULNERABILITIES=$(jq '.vulnerabilities.count' audit-results.json)
+            WARNINGS=$(jq '.warnings | length' audit-results.json)
+            
+            echo "## Security Audit Results" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Scan Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- 🔍 Vulnerabilities Found: $VULNERABILITIES" >> $GITHUB_STEP_SUMMARY
+            echo "- ⚠️ Warnings: $WARNINGS" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            if [ "$VULNERABILITIES" -gt 0 ]; then
+              echo "### ⚠️ Vulnerabilities Detected" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo '```json' >> $GITHUB_STEP_SUMMARY
+              jq '.vulnerabilities.list' audit-results.json >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+            else
+              echo "### ✅ No Vulnerabilities Detected" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+
+      - name: Upload audit results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-audit-results
+          path: audit-results.json
+          retention-days: 90
+
+      - name: Create issue on vulnerabilities
+        if: steps.audit.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const auditResults = JSON.parse(fs.readFileSync('audit-results.json', 'utf8'));
+            const vulnCount = auditResults.vulnerabilities.count;
+            
+            if (vulnCount > 0) {
+              const vulnerabilities = auditResults.vulnerabilities.list;
+              
+              let issueBody = '## 🔒 Security Vulnerabilities Detected\n\n';
+              issueBody += `**Scan Date:** ${new Date().toISOString()}\n`;
+              issueBody += `**Total Vulnerabilities:** ${vulnCount}\n\n`;
+              
+              vulnerabilities.forEach((vuln, index) => {
+                issueBody += `### ${index + 1}. ${vuln.advisory.title}\n\n`;
+                issueBody += `- **Package:** ${vuln.package.name} ${vuln.package.version}\n`;
+                issueBody += `- **Severity:** ${vuln.advisory.severity || 'Unknown'}\n`;
+                issueBody += `- **ID:** ${vuln.advisory.id}\n`;
+                issueBody += `- **URL:** ${vuln.advisory.url}\n`;
+                issueBody += `- **Description:** ${vuln.advisory.description}\n\n`;
+                
+                if (vuln.versions && vuln.versions.patched && vuln.versions.patched.length > 0) {
+                  issueBody += `- **Patched Versions:** ${vuln.versions.patched.join(', ')}\n`;
+                }
+                
+                issueBody += '\n---\n\n';
+              });
+              
+              issueBody += '## Action Required\n\n';
+              issueBody += 'Please review and update the affected dependencies to patched versions.\n';
+              
+              // Check if issue already exists
+              const issues = await github.rest.issues.listForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                labels: 'security,dependencies'
+              });
+              
+              const existingIssue = issues.data.find(issue => 
+                issue.title.includes('Security Vulnerabilities Detected')
+              );
+              
+              if (existingIssue) {
+                // Update existing issue
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: existingIssue.number,
+                  body: `## Updated Scan Results\n\n${issueBody}`
+                });
+              } else {
+                // Create new issue
+                await github.rest.issues.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title: `🔒 Security Vulnerabilities Detected - ${vulnCount} issue(s)`,
+                  body: issueBody,
+                  labels: ['security', 'dependencies', 'high-priority']
+                });
+              }
+            }
+
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: moderate
+          deny-licenses: GPL-3.0, AGPL-3.0
+
+  supply-chain:
+    name: Supply Chain Security
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: Check dependencies
+        run: |
+          cargo deny check advisories
+          cargo deny check licenses
+          cargo deny check bans
+          cargo deny check sources
+
+      - name: Generate SBOM
+        run: |
+          cargo tree --format "{p} {l}" > sbom.txt
+          echo "## Software Bill of Materials (SBOM)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          head -n 50 sbom.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.txt
+          retention-days: 90

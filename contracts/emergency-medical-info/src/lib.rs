@@ -88,6 +88,10 @@ pub enum DataKey {
     RecoveryProposal(Address),
 }
 
+/// Maximum number of hashes allowed in `critical_allergy_hashes`.
+/// Inputs exceeding this cap are rejected to prevent unbounded Vec growth.
+pub const MAX_CRITICAL_ALLERGIES: u32 = 50;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -95,6 +99,7 @@ pub enum Error {
     EmergencyProfileNotFound = 1,
     NotAuthorized = 2,
     InvalidRecoveryThreshold = 3,
+    TooManyCriticalAllergies = 4,
 }
 
 #[contract]
@@ -109,21 +114,21 @@ impl EmergencyMedicalInfo {
         env: Env,
         patient_id: Address,
         blood_type: Symbol,
-        allergy_summary_hash: BytesN<32>,
+        critical_allergy_hashes: Vec<BytesN<32>>,
         critical_condition_hashes: Vec<BytesN<32>>,
         current_medication_hashes: Vec<BytesN<32>>,
         emergency_contacts: Vec<EmergencyContact>,
         advance_directives_hash: Option<BytesN<32>>,
-    ) {
+    ) -> Result<(), Error> {
         patient_id.require_auth();
+
+        if critical_allergy_hashes.len() > MAX_CRITICAL_ALLERGIES {
+            return Err(Error::TooManyCriticalAllergies);
+        }
 
         let profile = EmergencyProfile {
             blood_type,
-            critical_allergy_hashes: {
-                let mut allergies = Vec::new(&env);
-                allergies.push_back(allergy_summary_hash);
-                allergies
-            },
+            critical_allergy_hashes,
             active_condition_hashes: critical_condition_hashes,
             current_medication_hashes,
             dnr_status: false,
@@ -144,6 +149,8 @@ impl EmergencyMedicalInfo {
             };
             env.storage().persistent().set(&dnr_key, &dnr);
         }
+
+        Ok(())
     }
 
     /// Add critical alert to patient profile
@@ -408,14 +415,14 @@ impl EmergencyMedicalInfo {
         }
 
         let proposal_key = DataKey::RecoveryProposal(patient_id.clone());
-        let mut proposal: RecoveryProposal =
-            env.storage()
-                .temporary()
-                .get(&proposal_key)
-                .unwrap_or(RecoveryProposal {
-                    new_owner: new_owner.clone(),
-                    approvals: Vec::new(&env),
-                });
+        let mut proposal: RecoveryProposal = env
+            .storage()
+            .temporary()
+            .get(&proposal_key)
+            .unwrap_or(RecoveryProposal {
+                new_owner: new_owner.clone(),
+                approvals: Vec::new(&env),
+            });
 
         if proposal.new_owner != new_owner {
             return Err(Error::NotAuthorized);

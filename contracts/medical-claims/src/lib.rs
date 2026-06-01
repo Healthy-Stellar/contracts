@@ -5,9 +5,9 @@ mod test;
 mod types;
 
 use shared::privacy::{validate_policy_metadata, PolicyMetadata};
-use soroban_sdk::{contract, contractclient, contractimpl, Address, BytesN, Env, String, Vec};
+use soroban_sdk::{contract, contractclient, contractimpl, symbol_short, Address, BytesN, Env, String, Vec};
 use types::{
-    ClaimRecord, ClaimStatus, DataKey, DenialInfo, Error, InsurerPaymentRecord,
+    ClaimRecord, ClaimReconciledEvent, ClaimStatus, DataKey, DenialInfo, Error, InsurerPaymentRecord,
     PatientPaymentRecord, ReconciliationStatus, ServiceLine,
 };
 
@@ -40,10 +40,18 @@ impl MedicalClaimsSystem {
     /// `access_control_id` must be the address of the deployed access-control
     /// contract.  Every `submit_claim` call will cross-contract-call its
     /// `check_consent` function before creating a claim record (#300).
+    ///
+    /// `financial_records_id` is the address of the deployed financial-records
+    /// contract for payment reconciliation (#392).
+    ///
+    /// `reconciliation_threshold` is the time in seconds after which claims
+    /// are considered unreconciled if not matched with payments.
     pub fn initialize(
         env: Env,
         admin: Address,
         access_control_id: Address,
+        financial_records_id: Address,
+        reconciliation_threshold: u64,
     ) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
@@ -53,6 +61,12 @@ impl MedicalClaimsSystem {
         env.storage()
             .instance()
             .set(&DataKey::AccessControlId, &access_control_id);
+        env.storage()
+            .instance()
+            .set(&DataKey::FinancialRecordsId, &financial_records_id);
+        env.storage()
+            .instance()
+            .set(&DataKey::ReconciliationThreshold, &reconciliation_threshold);
         Ok(())
     }
 
@@ -118,7 +132,7 @@ impl MedicalClaimsSystem {
             .ok_or(Error::NotInitialized)?;
 
         let ac_client = AccessControlClient::new(&env, &access_control_id);
-        ac_client
+        let _result = ac_client
             .try_check_consent(
                 &patient_id,
                 &provider_id,
@@ -141,7 +155,7 @@ impl MedicalClaimsSystem {
             claim_id,
             provider_id: provider_id.clone(),
             patient_id: patient_id.clone(),
-            insurer_id,
+            insurer_id: insurer_id.clone(),
             policy_id,
             service_date,
             service_codes,
@@ -155,7 +169,7 @@ impl MedicalClaimsSystem {
             appeal_level: 0,
             insurer_paid_amount: 0,
             patient_paid_amount: 0,
-            reconciliation_status: ReconciliationStatus::Unreconciled,
+            reconciliation_status: ReconciliationStatus::Pending,
         };
 
         env.storage()
@@ -181,6 +195,17 @@ impl MedicalClaimsSystem {
         env.storage()
             .persistent()
             .set(&DataKey::PatientClaims(patient_id), &pat_claims);
+
+        // Track unreconciled claims by insurer
+        let mut insurer_claims: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::InsurerUnreconciledClaims(insurer_id.clone()))
+            .unwrap_or(Vec::new(&env));
+        insurer_claims.push_back(claim_id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::InsurerUnreconciledClaims(insurer_id), &insurer_claims);
 
         Ok(claim_id)
     }
@@ -223,9 +248,9 @@ impl MedicalClaimsSystem {
         claim.insurer_paid_amount = 0;
         claim.patient_paid_amount = 0;
         claim.reconciliation_status = if approved_amount == 0 && patient_responsibility == 0 {
-            ReconciliationStatus::Reconciled
+            ReconciliationStatus::FullyReconciled
         } else {
-            ReconciliationStatus::Unreconciled
+            ReconciliationStatus::Pending
         };
 
         env.storage()
@@ -328,6 +353,9 @@ impl MedicalClaimsSystem {
             payment_date,
             payment_amount,
             payment_reference_hash,
+            reconciled: false,
+            financial_record_owner: None,
+            financial_record_idx: None,
         });
 
         env.storage()
@@ -378,6 +406,9 @@ impl MedicalClaimsSystem {
         payments.push_back(PatientPaymentRecord {
             payment_date,
             payment_amount,
+            reconciled: false,
+            financial_record_owner: None,
+            financial_record_idx: None,
         });
 
         env.storage()
@@ -461,11 +492,11 @@ impl MedicalClaimsSystem {
         let patient_due = Self::checked_sub(patient_responsibility, claim.patient_paid_amount)?;
 
         claim.reconciliation_status = if insurer_due == 0 && patient_due == 0 {
-            ReconciliationStatus::Reconciled
+            ReconciliationStatus::FullyReconciled
         } else if claim.insurer_paid_amount > 0 || claim.patient_paid_amount > 0 {
-            ReconciliationStatus::PartiallyReconciled
+            ReconciliationStatus::PartiallyPaid
         } else {
-            ReconciliationStatus::Unreconciled
+            ReconciliationStatus::Pending
         };
 
         Ok((insurer_due, patient_due))
@@ -479,5 +510,228 @@ impl MedicalClaimsSystem {
         lhs.checked_sub(rhs)
             .filter(|value| *value >= 0)
             .ok_or(Error::InvalidAmount)
+    }
+
+    /// Reconcile a claim with a payment record from the financial-records contract.
+    /// Links a payment to a claim and updates reconciliation status.
+    /// This operation is transactional - both claim and payment records update or neither does.
+    pub fn reconcile_claim(
+        env: Env,
+        claim_id: u64,
+        payment_idx: u32,
+        is_insurer_payment: bool,
+        financial_record_owner: Address,
+        financial_record_idx: u32,
+        caller: Address,
+    ) -> Result<(), Error> {
+        caller.require_auth();
+
+        let mut claim = Self::load_claim(&env, claim_id)?;
+
+        // Verify caller is authorized (insurer for insurer payments, patient for patient payments)
+        if is_insurer_payment {
+            Self::require_insurer(&env, &caller)?;
+            if claim.insurer_id != caller {
+                return Err(Error::NotAuthorized);
+            }
+        } else {
+            if claim.patient_id != caller {
+                return Err(Error::NotAuthorized);
+            }
+        }
+
+        // Get and update the payment record
+        if is_insurer_payment {
+            let mut payments: Vec<InsurerPaymentRecord> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::ClaimPayment(claim_id))
+                .ok_or(Error::PaymentNotFound)?;
+
+            if payment_idx >= payments.len() {
+                return Err(Error::PaymentNotFound);
+            }
+
+            let mut payment = payments.get(payment_idx).ok_or(Error::PaymentNotFound)?;
+            if payment.reconciled {
+                return Err(Error::PaymentAlreadyReconciled);
+            }
+
+            payment.reconciled = true;
+            payment.financial_record_owner = Some(financial_record_owner.clone());
+            payment.financial_record_idx = Some(financial_record_idx);
+
+            payments.set(payment_idx, payment.clone());
+            env.storage()
+                .persistent()
+                .set(&DataKey::ClaimPayment(claim_id), &payments);
+
+            // Emit reconciliation event
+            let approved_amount = claim.approved_amount.unwrap_or(0);
+            let outstanding = Self::checked_sub(approved_amount, claim.insurer_paid_amount)?;
+
+            env.events().publish(
+                (symbol_short!("reconcile"), claim_id),
+                ClaimReconciledEvent {
+                    claim_id,
+                    payment_amount: payment.payment_amount,
+                    claim_amount: approved_amount,
+                    outstanding_balance: outstanding,
+                    reconciliation_status: claim.reconciliation_status.clone(),
+                },
+            );
+        } else {
+            let mut payments: Vec<PatientPaymentRecord> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::PatientPayment(claim_id))
+                .ok_or(Error::PaymentNotFound)?;
+
+            if payment_idx >= payments.len() {
+                return Err(Error::PaymentNotFound);
+            }
+
+            let mut payment = payments.get(payment_idx).ok_or(Error::PaymentNotFound)?;
+            if payment.reconciled {
+                return Err(Error::PaymentAlreadyReconciled);
+            }
+
+            payment.reconciled = true;
+            payment.financial_record_owner = Some(financial_record_owner.clone());
+            payment.financial_record_idx = Some(financial_record_idx);
+
+            payments.set(payment_idx, payment.clone());
+            env.storage()
+                .persistent()
+                .set(&DataKey::PatientPayment(claim_id), &payments);
+
+            // Emit reconciliation event
+            let patient_responsibility = claim.patient_responsibility.unwrap_or(0);
+            let outstanding = Self::checked_sub(patient_responsibility, claim.patient_paid_amount)?;
+
+            env.events().publish(
+                (symbol_short!("reconcile"), claim_id),
+                ClaimReconciledEvent {
+                    claim_id,
+                    payment_amount: payment.payment_amount,
+                    claim_amount: patient_responsibility,
+                    outstanding_balance: outstanding,
+                    reconciliation_status: claim.reconciliation_status.clone(),
+                },
+            );
+        }
+
+        // Update insurer unreconciled claims list if fully reconciled
+        if claim.reconciliation_status == ReconciliationStatus::FullyReconciled {
+            Self::remove_from_unreconciled_list(&env, &claim.insurer_id, claim_id);
+        }
+
+        Ok(())
+    }
+
+    /// Mark a claim as disputed for reconciliation purposes.
+    /// Used when there's a discrepancy between claim and payment amounts.
+    pub fn mark_claim_disputed(
+        env: Env,
+        claim_id: u64,
+        caller: Address,
+    ) -> Result<(), Error> {
+        caller.require_auth();
+
+        let mut claim = Self::load_claim(&env, claim_id)?;
+
+        // Only insurer or provider can mark as disputed
+        if caller != claim.insurer_id && caller != claim.provider_id {
+            return Err(Error::NotAuthorized);
+        }
+
+        claim.reconciliation_status = ReconciliationStatus::Disputed;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Claim(claim_id), &claim);
+
+        Ok(())
+    }
+
+    /// Get all unreconciled claims for a specific insurer that are older than
+    /// the configured threshold.
+    pub fn get_unreconciled_claims(
+        env: Env,
+        insurer_id: Address,
+    ) -> Result<Vec<u64>, Error> {
+        insurer_id.require_auth();
+        Self::require_insurer(&env, &insurer_id)?;
+
+        let threshold: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ReconciliationThreshold)
+            .unwrap_or(86400); // Default 24 hours
+
+        let current_time = env.ledger().timestamp();
+        let cutoff_time = current_time.saturating_sub(threshold);
+
+        let all_claims: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::InsurerUnreconciledClaims(insurer_id.clone()))
+            .unwrap_or(Vec::new(&env));
+
+        let mut unreconciled = Vec::new(&env);
+
+        for claim_id in all_claims.iter() {
+            if let Ok(claim) = Self::load_claim(&env, claim_id) {
+                // Check if claim is still unreconciled and older than threshold
+                if claim.reconciliation_status != ReconciliationStatus::FullyReconciled
+                    && claim.service_date <= cutoff_time
+                {
+                    unreconciled.push_back(claim_id);
+                }
+            }
+        }
+
+        Ok(unreconciled)
+    }
+
+    /// Update the reconciliation threshold (admin only).
+    pub fn set_reconciliation_threshold(
+        env: Env,
+        admin: Address,
+        threshold: u64,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        if admin != stored_admin {
+            return Err(Error::NotAuthorized);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::ReconciliationThreshold, &threshold);
+        Ok(())
+    }
+
+    /// Helper function to remove a claim from the unreconciled list
+    fn remove_from_unreconciled_list(env: &Env, insurer_id: &Address, claim_id: u64) {
+        let claims: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::InsurerUnreconciledClaims(insurer_id.clone()))
+            .unwrap_or(Vec::new(env));
+
+        let mut new_claims = Vec::new(env);
+        for id in claims.iter() {
+            if id != claim_id {
+                new_claims.push_back(id);
+            }
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::InsurerUnreconciledClaims(insurer_id.clone()), &new_claims);
     }
 }

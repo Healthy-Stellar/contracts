@@ -172,7 +172,7 @@ impl NutritionCareContract {
     ) -> Result<u64, Error> {
         dietitian_id.require_auth();
 
-        load_assessment(&env, assessment_id).ok_or(Error::AssessmentNotFound)?;
+        let assessment = load_assessment(&env, assessment_id).ok_or(Error::AssessmentNotFound)?;
 
         let care_plan_id = next_care_plan_id(&env);
 
@@ -188,6 +188,15 @@ impl NutritionCareContract {
         };
 
         save_care_plan(&env, &plan);
+
+        // Initialize plan version to 1 (#393)
+        env.storage()
+            .persistent()
+            .set(&DataKey::PlanVersion(care_plan_id), &1u64);
+
+        // Authorize the creating dietitian and the patient (#393)
+        add_authorized_provider(&env, care_plan_id, &dietitian_id);
+        add_authorized_provider(&env, care_plan_id, &assessment.patient_id);
 
         env.events().publish(
             (Symbol::new(&env, "care_plan_created"),),
@@ -475,6 +484,163 @@ impl NutritionCareContract {
     }
 
     // ------------------------------------------------------------------
+    // 11. link_outcome (#393)
+    // ------------------------------------------------------------------
+
+    /// Link a clinical outcome measurement to a nutrition care plan.
+    ///
+    /// Tracks measurable outcomes like weight, lab values (HbA1c, cholesterol),
+    /// and vitals over time. Outcomes are tied to specific plan versions to
+    /// support plan updates and correlation tracking.
+    ///
+    /// `outcome_value_x100` – value × 100 for precision (e.g., 70.5 kg → 7050)
+    ///
+    /// Only providers with write access to the patient can record outcomes.
+    pub fn link_outcome(
+        env: Env,
+        care_plan_id: u64,
+        provider_id: Address,
+        outcome_metric: String,
+        outcome_value_x100: i64,
+        measured_at: u64,
+    ) -> Result<u64, Error> {
+        provider_id.require_auth();
+
+        // Verify care plan exists
+        load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
+
+        // Verify provider is authorized
+        if !is_provider_authorized(&env, care_plan_id, &provider_id) {
+            return Err(Error::ProviderNotAuthorized);
+        }
+
+        // Validate outcome metric (extensible list)
+        let valid_metrics = [
+            String::from_str(&env, "weight_kg"),
+            String::from_str(&env, "bmi"),
+            String::from_str(&env, "hba1c"),
+            String::from_str(&env, "cholesterol_total"),
+            String::from_str(&env, "cholesterol_ldl"),
+            String::from_str(&env, "cholesterol_hdl"),
+            String::from_str(&env, "triglycerides"),
+            String::from_str(&env, "blood_pressure_systolic"),
+            String::from_str(&env, "blood_pressure_diastolic"),
+            String::from_str(&env, "glucose_fasting"),
+            String::from_str(&env, "albumin"),
+            String::from_str(&env, "prealbumin"),
+            String::from_str(&env, "waist_circumference"),
+        ];
+
+        let mut is_valid = false;
+        for valid in valid_metrics.iter() {
+            if &outcome_metric == valid {
+                is_valid = true;
+                break;
+            }
+        }
+
+        if !is_valid {
+            return Err(Error::InvalidOutcomeMetric);
+        }
+
+        let outcome_id = next_outcome_id(&env);
+        let plan_version = get_plan_version(&env, care_plan_id);
+
+        let outcome = ClinicalOutcome {
+            outcome_id,
+            care_plan_id,
+            plan_version,
+            provider_id: provider_id.clone(),
+            outcome_metric: outcome_metric.clone(),
+            outcome_value_x100,
+            measured_at,
+            recorded_at: env.ledger().timestamp(),
+        };
+
+        save_clinical_outcome(&env, &outcome);
+        append_plan_outcome(&env, care_plan_id, outcome_id);
+
+        // Emit event
+        env.events().publish(
+            (Symbol::new(&env, "nutrition_outcome_recorded"),),
+            NutritionOutcomeRecordedEvent {
+                outcome_id,
+                care_plan_id,
+                plan_version,
+                outcome_metric,
+                outcome_value_x100,
+                measured_at,
+            },
+        );
+
+        Ok(outcome_id)
+    }
+
+    // ------------------------------------------------------------------
+    // 12. update_care_plan_version (#393)
+    // ------------------------------------------------------------------
+
+    /// Increment the care plan version when the plan is updated.
+    ///
+    /// This allows tracking which outcomes correspond to which version
+    /// of the care plan, enabling correlation analysis.
+    pub fn update_care_plan_version(
+        env: Env,
+        care_plan_id: u64,
+        dietitian_id: Address,
+    ) -> Result<u64, Error> {
+        dietitian_id.require_auth();
+
+        let plan = load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
+
+        // Verify dietitian is authorized
+        if plan.dietitian_id != dietitian_id {
+            return Err(Error::Unauthorized);
+        }
+
+        increment_plan_version(&env, care_plan_id);
+        let new_version = get_plan_version(&env, care_plan_id);
+
+        env.events().publish(
+            (Symbol::new(&env, "plan_version_updated"),),
+            (care_plan_id, new_version),
+        );
+
+        Ok(new_version)
+    }
+
+    // ------------------------------------------------------------------
+    // 13. authorize_provider (#393)
+    // ------------------------------------------------------------------
+
+    /// Grant a provider write access to record outcomes for a care plan.
+    ///
+    /// Only the original dietitian can authorize additional providers.
+    pub fn authorize_provider(
+        env: Env,
+        care_plan_id: u64,
+        dietitian_id: Address,
+        provider_id: Address,
+    ) -> Result<(), Error> {
+        dietitian_id.require_auth();
+
+        let plan = load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
+
+        if plan.dietitian_id != dietitian_id {
+            return Err(Error::Unauthorized);
+        }
+
+        add_authorized_provider(&env, care_plan_id, &provider_id);
+
+        env.events().publish(
+            (Symbol::new(&env, "provider_authorized"),),
+            (care_plan_id, provider_id),
+        );
+
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
     // Query helpers
     // ------------------------------------------------------------------
 
@@ -529,5 +695,36 @@ impl NutritionCareContract {
     /// Retrieve the latest outcome evaluation for a care plan.
     pub fn get_outcome_evaluation(env: Env, care_plan_id: u64) -> Result<OutcomeEvaluation, Error> {
         load_outcome_evaluation(&env, care_plan_id).ok_or(Error::CarePlanNotFound)
+    }
+
+    /// Retrieve all clinical outcomes linked to a care plan (#393).
+    ///
+    /// Returns outcomes in chronologically ordered sequence (by recorded_at).
+    pub fn get_plan_outcomes(env: Env, care_plan_id: u64) -> Vec<ClinicalOutcome> {
+        let outcome_ids = load_plan_outcomes(&env, care_plan_id);
+        let mut outcomes = Vec::new(&env);
+
+        for id in outcome_ids.iter() {
+            if let Some(outcome) = load_clinical_outcome(&env, id) {
+                outcomes.push_back(outcome);
+            }
+        }
+
+        outcomes
+    }
+
+    /// Retrieve a specific clinical outcome by ID (#393).
+    pub fn get_clinical_outcome(env: Env, outcome_id: u64) -> Result<ClinicalOutcome, Error> {
+        load_clinical_outcome(&env, outcome_id).ok_or(Error::OutcomeNotFound)
+    }
+
+    /// Get the current version of a care plan (#393).
+    pub fn get_plan_version(env: Env, care_plan_id: u64) -> u64 {
+        get_plan_version(&env, care_plan_id)
+    }
+
+    /// Check if a provider is authorized to record outcomes for a care plan (#393).
+    pub fn is_provider_authorized(env: Env, care_plan_id: u64, provider_id: Address) -> bool {
+        is_provider_authorized(&env, care_plan_id, &provider_id)
     }
 }

@@ -1034,3 +1034,82 @@ fn test_full_care_plan_workflow() {
     assert!(summary.barriers.get(0).unwrap().resolved);
     assert!(summary.last_review_date.is_some());
 }
+
+// ── deregister_patient tests ──────────────────────────────────────────────────
+
+#[test]
+fn test_deregister_patient_discontinues_active_plans() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(CarePlanContract, ());
+    let client = CarePlanContractClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let provider = Address::generate(&env);
+
+    let mut conditions = Vec::new(&env);
+    conditions.push_back(String::from_str(&env, "Hypertension"));
+    let mut goals = Vec::new(&env);
+    goals.push_back(String::from_str(&env, "Lower BP"));
+
+    let plan_id = client.create_care_plan(
+        &patient,
+        &provider,
+        &Symbol::new(&env, "chronic"),
+        &conditions,
+        &goals,
+        &1_000_000u64,
+        &30u32,
+    );
+
+    // Plan is Active before deregistration
+    let summary = client.get_care_plan_summary(&plan_id, &patient);
+    assert_eq!(summary.care_plan_id, plan_id);
+
+    client.deregister_patient(&patient);
+
+    // PatientPlans index removed — plan itself is Discontinued
+    let plan = env.as_contract(&contract_id, || {
+        load_care_plan(&env, plan_id).unwrap()
+    });
+    assert!(matches!(plan.status, CarePlanStatus::Discontinued));
+}
+
+#[test]
+fn test_deregister_patient_removes_patient_plans_index() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(CarePlanContract, ());
+    let client = CarePlanContractClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let provider = Address::generate(&env);
+
+    let mut conditions = Vec::new(&env);
+    conditions.push_back(String::from_str(&env, "Diabetes"));
+    let mut goals = Vec::new(&env);
+    goals.push_back(String::from_str(&env, "Control glucose"));
+
+    client.create_care_plan(
+        &patient,
+        &provider,
+        &Symbol::new(&env, "chronic"),
+        &conditions,
+        &goals,
+        &1_000_000u64,
+        &30u32,
+    );
+
+    client.deregister_patient(&patient);
+
+    // PatientPlans index is gone
+    let ids: Vec<u64> = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PatientPlans(patient.clone()))
+            .unwrap_or(Vec::new(&env))
+    });
+    assert_eq!(ids.len(), 0);
+}

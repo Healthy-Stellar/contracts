@@ -441,6 +441,83 @@ fn test_register_did_update_replaces_value() {
     assert_eq!(stored, did_v2);
 }
 
+// ---------------------------------------------------------------------------
+// DID format validation — RFC 3986 / W3C DID spec compliance
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_did_missing_method_rejected() {
+    // "did:" with no method segment
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    client.initialize(&admin);
+
+    let result = client.try_register_did(&user, &Bytes::from_slice(&env, b"did:"));
+    assert_eq!(result, Err(Ok(ContractError::InvalidDidFormat)));
+}
+
+#[test]
+fn test_did_empty_method_rejected() {
+    // "did::identifier" — empty method between the two colons
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    client.initialize(&admin);
+
+    let result = client.try_register_did(&user, &Bytes::from_slice(&env, b"did::identifier"));
+    assert_eq!(result, Err(Ok(ContractError::InvalidDidFormat)));
+}
+
+#[test]
+fn test_did_uppercase_method_rejected() {
+    // W3C DID spec §3.1: method must be lowercase
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    client.initialize(&admin);
+
+    let result = client.try_register_did(&user, &Bytes::from_slice(&env, b"did:Stellar:abc"));
+    assert_eq!(result, Err(Ok(ContractError::InvalidDidFormat)));
+}
+
+#[test]
+fn test_did_invalid_char_in_method_rejected() {
+    // Space in method segment
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    client.initialize(&admin);
+
+    let result = client.try_register_did(&user, &Bytes::from_slice(&env, b"did:bad method:id"));
+    assert_eq!(result, Err(Ok(ContractError::InvalidDidFormat)));
+}
+
+#[test]
+fn test_did_missing_identifier_rejected() {
+    // "did:stellar:" — method present but identifier empty
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    client.initialize(&admin);
+
+    let result = client.try_register_did(&user, &Bytes::from_slice(&env, b"did:stellar:"));
+    assert_eq!(result, Err(Ok(ContractError::InvalidDidFormat)));
+}
+
+#[test]
+fn test_did_valid_methods_accepted() {
+    // did:stellar: and did:key: are both valid DID methods
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let u1 = Address::generate(&env);
+    let u2 = Address::generate(&env);
+    client.initialize(&admin);
+
+    client.register_did(&u1, &Bytes::from_slice(&env, b"did:stellar:GABC123"));
+    client.register_did(&u2, &Bytes::from_slice(&env, b"did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"));
+}
+
 #[test]
 fn test_grant_access_grantor_not_registered() {
     let (env, client) = setup();
@@ -641,7 +718,7 @@ fn test_role_expires() {
 
     let env = Env::default();
     env.mock_all_auths();
-    let (admin, client) = setup(&env);
+    let (admin, client) = setup_rbac(&env);
 
     let reviewer = Address::generate(&env);
     // Grant role that expires at timestamp 100.
@@ -659,7 +736,7 @@ fn test_expired_role_can_be_regranted() {
 
     let env = Env::default();
     env.mock_all_auths();
-    let (admin, client) = setup(&env);
+    let (admin, client) = setup_rbac(&env);
 
     let reviewer = Address::generate(&env);
     client.grant_role(&admin, &reviewer, &Role::PayerReviewer, &100);
@@ -676,7 +753,7 @@ fn test_expired_role_can_be_regranted() {
 fn test_get_role_assignment() {
     let env = Env::default();
     env.mock_all_auths();
-    let (admin, client) = setup(&env);
+    let (admin, client) = setup_rbac(&env);
 
     let provider = Address::generate(&env);
     client.grant_role(&admin, &provider, &Role::Provider, &999);
@@ -690,7 +767,7 @@ fn test_get_role_assignment() {
 fn test_get_role_assignment_not_found() {
     let env = Env::default();
     env.mock_all_auths();
-    let (_admin, client) = setup(&env);
+    let (_admin, client) = setup_rbac(&env);
 
     let nobody = Address::generate(&env);
     let result = client.try_get_role_assignment(&nobody, &Role::Auditor);
@@ -703,7 +780,7 @@ fn test_get_role_assignment_not_found() {
 fn test_deactivate_entity_by_admin_role() {
     let env = Env::default();
     env.mock_all_auths();
-    let (admin, client) = setup(&env);
+    let (admin, client) = setup_rbac(&env);
 
     let hospital = Address::generate(&env);
     client.register_entity(
@@ -721,7 +798,7 @@ fn test_deactivate_entity_by_admin_role() {
 fn test_deactivate_entity_by_granted_admin_role() {
     let env = Env::default();
     env.mock_all_auths();
-    let (admin, client) = setup(&env);
+    let (admin, client) = setup_rbac(&env);
 
     // Grant Admin role to a second address.
     let second_admin = Address::generate(&env);
@@ -743,7 +820,7 @@ fn test_deactivate_entity_by_granted_admin_role() {
 fn test_deactivate_entity_non_admin_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let (_admin, client) = setup(&env);
+    let (_admin, client) = setup_rbac(&env);
 
     let hospital = Address::generate(&env);
     let non_admin = Address::generate(&env);
@@ -764,7 +841,7 @@ fn test_deactivate_entity_non_admin_rejected() {
 fn test_revoke_access_by_payer_reviewer_role() {
     let env = Env::default();
     env.mock_all_auths();
-    let (admin, client) = setup(&env);
+    let (admin, client) = setup_rbac(&env);
 
     let hospital = Address::generate(&env);
     let doctor = Address::generate(&env);
@@ -784,7 +861,7 @@ fn test_revoke_access_by_payer_reviewer_role() {
     );
 
     let resource = String::from_str(&env, "patient-records");
-    client.grant_access(&hospital, &doctor, &resource, &0);
+    client.grant_access(&hospital, &doctor, &resource, &0, &None);
 
     // Grant PayerReviewer role to payer.
     client.grant_role(&admin, &payer, &Role::PayerReviewer, &0);
@@ -798,7 +875,7 @@ fn test_revoke_access_by_payer_reviewer_role() {
 fn test_revoke_access_by_unprivileged_non_grantor_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let (admin, client) = setup(&env);
+    let (admin, client) = setup_rbac(&env);
 
     let hospital = Address::generate(&env);
     let doctor = Address::generate(&env);
@@ -824,7 +901,7 @@ fn test_revoke_access_by_unprivileged_non_grantor_rejected() {
     );
 
     let resource = String::from_str(&env, "patient-records");
-    client.grant_access(&hospital, &doctor, &resource, &0);
+    client.grant_access(&hospital, &doctor, &resource, &0, &None);
 
     // `other` has no role and is not the grantor.
     let result = client.try_revoke_access(&other, &doctor, &resource);
@@ -832,4 +909,36 @@ fn test_revoke_access_by_unprivileged_non_grantor_rejected() {
 
     // Silence unused-variable warning for admin.
     let _ = admin;
+}
+
+// ---------------------------------------------------------------------------
+// #223: consent expiry enforcement
+// ---------------------------------------------------------------------------
+#[test]
+fn test_check_consent_expired() {
+    use soroban_sdk::testutils::Ledger;
+
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let patient = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let purpose = String::from_str(&env, "treatment");
+
+    // Grant consent that expires at ledger timestamp 100.
+    client.grant_consent(
+        &patient,
+        &provider,
+        &0x01u32, // read
+        &purpose,
+        &String::from_str(&env, "explicit_consent"),
+        &100,
+    );
+
+    // Advance ledger past the expiry.
+    env.ledger().set_timestamp(101);
+
+    let result = client.try_check_consent(&patient, &provider, &purpose, &0x01u32);
+    assert_eq!(result, Err(Ok(ContractError::ConsentExpired)));
 }

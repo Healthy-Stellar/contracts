@@ -663,3 +663,178 @@ fn test_time_series_support() {
     assert_eq!(all.count, 4);
     assert_eq!(all.average, 127);
 }
+
+// ========================
+// Degradation policy tests
+// ========================
+
+fn setup_with_admin() -> (Env, HealthcareAnalyticsClient<'static>, Address) {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(HealthcareAnalytics, ());
+    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    (env, client, admin)
+}
+
+#[test]
+fn test_request_report_full_quality_when_not_throttled() {
+    let (env, client, _admin) = setup_with_admin();
+    let requester = Address::generate(&env);
+
+    let accepted = client
+        .request_report(
+            &requester,
+            &String::from_str(&env, "quality_metrics"),
+            &shared::resource_management::JobPriority::Normal,
+            &500_000,
+            &50_000,
+            &DegradationPolicy::Fail,
+        )
+        .unwrap();
+
+    assert_eq!(accepted.result_quality, ResultQuality::Full);
+    assert_eq!(
+        client.get_job_result_quality(&accepted.job_id),
+        ResultQuality::Full
+    );
+}
+
+#[test]
+fn test_request_report_fail_policy_when_throttled() {
+    let (env, client, admin) = setup_with_admin();
+    let requester = Address::generate(&env);
+
+    // throttle_threshold = 0 means always throttled
+    client
+        .set_resource_limits(&admin, &1, &1, &1, &0)
+        .unwrap();
+
+    let result = client.request_report(
+        &requester,
+        &String::from_str(&env, "adverse_event"),
+        &shared::resource_management::JobPriority::Normal,
+        &1_000_000,
+        &100_000,
+        &DegradationPolicy::Fail,
+    );
+
+    assert_eq!(result, Err(Ok(Error::JobThrottled)));
+}
+
+#[test]
+fn test_request_report_approximate_policy_when_throttled() {
+    let (env, client, admin) = setup_with_admin();
+    let requester = Address::generate(&env);
+
+    client
+        .set_resource_limits(&admin, &1, &1, &1, &0)
+        .unwrap();
+
+    let accepted = client
+        .request_report(
+            &requester,
+            &String::from_str(&env, "quality_metrics"),
+            &shared::resource_management::JobPriority::Normal,
+            &1_000_000,
+            &100_000,
+            &DegradationPolicy::Approximate,
+        )
+        .unwrap();
+
+    assert_eq!(accepted.result_quality, ResultQuality::Truncated);
+    assert_eq!(
+        client.get_job_result_quality(&accepted.job_id),
+        ResultQuality::Truncated
+    );
+}
+
+#[test]
+fn test_request_report_sample_policy_when_throttled() {
+    let (env, client, admin) = setup_with_admin();
+    let requester = Address::generate(&env);
+
+    client
+        .set_resource_limits(&admin, &1, &1, &1, &0)
+        .unwrap();
+
+    let accepted = client
+        .request_report(
+            &requester,
+            &String::from_str(&env, "quality_metrics"),
+            &shared::resource_management::JobPriority::Normal,
+            &1_000_000,
+            &100_000,
+            &DegradationPolicy::Sample,
+        )
+        .unwrap();
+
+    assert_eq!(accepted.result_quality, ResultQuality::Sampled);
+    assert_eq!(
+        client.get_job_result_quality(&accepted.job_id),
+        ResultQuality::Sampled
+    );
+fn test_cpu_quota_accumulates_across_jobs() {
+    let (env, client, admin) = setup_with_admin();
+    let requester = Address::generate(&env);
+
+    // Budget: 1_000 CPU, throttle at 80% → threshold is 800
+    client.set_resource_limits(&admin, &1_000, &1_000_000, &5, &80);
+
+    // First job: 400 CPU — below threshold, accepted
+    let job1 = client.request_report(
+        &requester,
+        &String::from_str(&env, "report_a"),
+        &JobPriority::Normal,
+        &400,
+        &50,
+    );
+    client.execute_next_report();
+    client.complete_report(&job1, &400, &50);
+
+    // Second job: another 400 CPU — still below threshold (total 800, not > 800)
+    let job2 = client.request_report(
+        &requester,
+        &String::from_str(&env, "report_b"),
+        &JobPriority::Normal,
+        &400,
+        &50,
+    );
+    client.execute_next_report();
+    client.complete_report(&job2, &400, &50);
+
+    // Now TotalCpuUsed = 800; 800*100/1000 = 80, which is NOT > 80, so one more is still ok.
+    // Push it over: complete a tiny job that adds 1 more CPU unit.
+    let job3 = client.request_report(
+        &requester,
+        &String::from_str(&env, "report_c"),
+        &JobPriority::Normal,
+        &1,
+        &1,
+    );
+    client.execute_next_report();
+    client.complete_report(&job3, &1, &1);
+
+    // TotalCpuUsed = 801; 801*100/1000 = 80 (integer), still not > 80.
+    // Add one more to make it 901 total.
+    let job4 = client.request_report(
+        &requester,
+        &String::from_str(&env, "report_d"),
+        &JobPriority::Normal,
+        &100,
+        &1,
+    );
+    client.execute_next_report();
+    client.complete_report(&job4, &100, &1);
+
+    // TotalCpuUsed = 901; 901*100/1000 = 90 > 80 → throttled
+    let result = client.try_request_report(
+        &requester,
+        &String::from_str(&env, "report_e"),
+        &JobPriority::Normal,
+        &10,
+        &10,
+    );
+    assert_eq!(result, Err(Ok(Error::JobThrottled)));
+}

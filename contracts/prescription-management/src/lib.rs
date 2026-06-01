@@ -1,10 +1,10 @@
 #![no_std]
 
-use soroban_sdk::{
-    Address, BytesN, Env, String, Symbol, Vec, contract, contracterror, contractimpl,
-    contracttype, contractclient,
-};
 use shared::temporal;
+use soroban_sdk::{
+    Address, BytesN, Env, String, Symbol, Vec, contract, contractclient, contracterror,
+    contractimpl, contracttype,
+};
 
 // ── Allergy-management client ─────────────────────────────────────────────────
 
@@ -37,6 +37,12 @@ pub trait ProviderRegistryInterface {
 /// Maximum number of transfer records retained per prescription.
 /// Attempting to exceed this returns `Error::TransferHistoryFull`.
 pub const MAX_TRANSFER_HISTORY: u32 = 100;
+
+pub const SECONDS_PER_HOUR: u64 = 3600;
+/// 30-day window used when extending a prescription's validity on refill.
+pub const REFILL_WINDOW_SECS: u64 = 30 * 24 * SECONDS_PER_HOUR;
+/// Divisor applied to a prescription's total quantity for schedule-2 per-dispense limits.
+pub const MIN_REFILL_QUANTITY_DIVISOR: u32 = 2;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -303,9 +309,7 @@ impl PrescriptionContract {
         env.storage()
             .persistent()
             .set(&DataKey::AllergyRegistry, &allergy_registry);
-        env.storage()
-            .persistent()
-            .set(&DataKey::Admin, &admin);
+        env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage()
             .persistent()
             .set(&DataKey::AllergyStrictMode, &strict_mode);
@@ -467,7 +471,7 @@ impl PrescriptionContract {
         // Controlled substance checks
         if p.is_controlled {
             if let Some(schedule) = p.schedule {
-                if schedule == 2 && req.quantity > p.quantity / 2 {
+                if schedule == 2 && req.quantity > p.quantity / MIN_REFILL_QUANTITY_DIVISOR {
                     return Err(Error::ControlledSubstanceViolation);
                 }
             }
@@ -1005,7 +1009,7 @@ impl PrescriptionContract {
     ) -> Result<(), Error> {
         provider_id.require_auth();
 
-        if override_reason == String::from_str(&env, "") {
+        if is_blank(&override_reason) {
             return Err(Error::MissingOverrideReason);
         }
 
@@ -1148,7 +1152,7 @@ impl PrescriptionContract {
         let new_valid_until = env
             .ledger()
             .timestamp()
-            .checked_add(30u64 * 24 * 60 * 60)
+            .checked_add(REFILL_WINDOW_SECS)
             .ok_or(Error::InvalidValidityWindow)?;
         if new_valid_until > p.valid_until {
             p.valid_until = new_valid_until;
@@ -1254,7 +1258,9 @@ impl PrescriptionContract {
         // Cannot recall if already cancelled, expired, or recalled
         if matches!(
             p.status,
-            PrescriptionStatus::Cancelled | PrescriptionStatus::Expired | PrescriptionStatus::Recalled
+            PrescriptionStatus::Cancelled
+                | PrescriptionStatus::Expired
+                | PrescriptionStatus::Recalled
         ) {
             return Err(Error::InvalidStatusTransition);
         }
@@ -1303,10 +1309,7 @@ impl PrescriptionContract {
     }
 
     /// Retrieve recall information for a prescription.
-    pub fn get_prescription_recall(
-        env: Env,
-        prescription_id: u64,
-    ) -> Result<RecallRecord, Error> {
+    pub fn get_prescription_recall(env: Env, prescription_id: u64) -> Result<RecallRecord, Error> {
         let recall_id = env
             .storage()
             .persistent()
@@ -1320,10 +1323,7 @@ impl PrescriptionContract {
     }
 
     /// Check if a prescription has been recalled.
-    pub fn is_prescription_recalled(
-        env: Env,
-        prescription_id: u64,
-    ) -> bool {
+    pub fn is_prescription_recalled(env: Env, prescription_id: u64) -> bool {
         if let Some(recall_id) = env
             .storage()
             .persistent()
@@ -1522,6 +1522,13 @@ fn is_valid_severity(env: &Env, severity: &Symbol) -> bool {
 
 fn requires_documentation(env: &Env, severity: &Symbol) -> bool {
     *severity == Symbol::new(env, "major") || *severity == Symbol::new(env, "contraindicated")
+}
+
+fn is_blank(s: &String) -> bool {
+    s.is_empty()
+        || s.to_bytes()
+            .iter()
+            .all(|b| b == b' ' || b == b'\t' || b == b'\n' || b == b'\r')
 }
 
 fn contains_string(values: &Vec<String>, needle: &String) -> bool {

@@ -1030,18 +1030,112 @@ impl AccessControl {
     }
 
     // -----------------------------------------------------------------------
+    // Patient deregistration hook
+    // -----------------------------------------------------------------------
+
+    /// Remove all access-control state for a deregistered patient.
+    ///
+    /// Clears:
+    /// - `Entity` record
+    /// - `AccessList` (all permissions granted to the patient)
+    /// - `SubjectConsents` index + every `Consent` record where the patient is
+    ///   the subject
+    /// - `Did` registration
+    ///
+    /// Only callable by the stored admin.
+    pub fn deregister_patient(env: Env, patient: Address) -> Result<(), ContractError> {
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .ok_or(ContractError::ContractNotInitialized)?;
+        admin.require_auth();
+
+        // Remove entity record
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Entity(patient.clone()));
+
+        // Remove access list
+        env.storage()
+            .persistent()
+            .remove(&DataKey::AccessList(patient.clone()));
+
+        // Remove DID
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Did(patient.clone()));
+
+        // Remove all consent records where patient is the subject
+        let idx_key = DataKey::SubjectConsents(patient.clone());
+        let consent_index: Vec<ConsentIndexEntry> = env
+            .storage()
+            .persistent()
+            .get(&idx_key)
+            .unwrap_or(Vec::new(&env));
+
+        for i in 0..consent_index.len() {
+            if let Some(entry) = consent_index.get(i) {
+                env.storage().persistent().remove(&DataKey::Consent(
+                    patient.clone(),
+                    entry.grantee,
+                    entry.purpose_code,
+                ));
+            }
+        }
+        env.storage().persistent().remove(&idx_key);
+
+        env.events().publish(
+            (symbol_short!("pat_dreg"), patient),
+            symbol_short!("ac_clean"),
+        );
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
 
     fn validate_did(did: &Bytes) -> Result<(), ContractError> {
-        if did.len() < 4 {
+        // Minimum: "did:a:b" = 7 bytes
+        if did.len() < 7 {
             return Err(ContractError::InvalidDidFormat);
         }
-        let d = did.get(0).unwrap_or_default();
-        let i = did.get(1).unwrap_or_default();
-        let d2 = did.get(2).unwrap_or_default();
-        let colon = did.get(3).unwrap_or_default();
-        if d != b'd' || i != b'i' || d2 != b'd' || colon != b':' {
+        // Must start with "did:"
+        if did.get(0).unwrap_or_default() != b'd'
+            || did.get(1).unwrap_or_default() != b'i'
+            || did.get(2).unwrap_or_default() != b'd'
+            || did.get(3).unwrap_or_default() != b':'
+        {
+            return Err(ContractError::InvalidDidFormat);
+        }
+        // Find the second colon separating method from identifier.
+        // Method must be [a-z0-9]+ (W3C DID spec §3.1).
+        let mut second_colon: Option<u32> = None;
+        let len = did.len();
+        let mut i = 4u32;
+        while i < len {
+            let ch = did.get(i).unwrap_or_default();
+            if ch == b':' {
+                second_colon = Some(i);
+                break;
+            }
+            // Method chars must be lowercase alpha or digit
+            if !ch.is_ascii_lowercase() && !ch.is_ascii_digit() {
+                return Err(ContractError::InvalidDidFormat);
+            }
+            i += 1;
+        }
+        let method_end = match second_colon {
+            Some(pos) => pos,
+            None => return Err(ContractError::InvalidDidFormat), // no second colon
+        };
+        // Method must be non-empty (method_end > 4)
+        if method_end == 4 {
+            return Err(ContractError::InvalidDidFormat);
+        }
+        // Identifier (everything after the second colon) must be non-empty
+        if method_end + 1 >= len {
             return Err(ContractError::InvalidDidFormat);
         }
         Ok(())

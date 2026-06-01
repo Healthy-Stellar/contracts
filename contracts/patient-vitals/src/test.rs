@@ -340,3 +340,76 @@ fn test_alert_after_cooldown_expires() {
     assert_eq!(alerts.len(), 2, "new alert must be created after cooldown expires");
     assert_eq!(alerts.get(1).unwrap().alert_time, t1);
 }
+
+// ── deregister_patient tests ──────────────────────────────────────────────────
+
+#[test]
+fn test_deregister_patient_clears_vitals_history() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PatientVitalsContract);
+    let client = PatientVitalsContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let recorder = Address::generate(&env);
+
+    let vitals = VitalSigns {
+        blood_pressure_systolic: Some(120),
+        blood_pressure_diastolic: Some(80),
+        heart_rate: Some(72),
+        temperature: None,
+        respiratory_rate: None,
+        oxygen_saturation: None,
+        blood_glucose: None,
+        weight: None,
+    };
+
+    client.record_vital_signs(&patient_id, &recorder, &1_000_000u64, &vitals);
+
+    // History exists before deregistration
+    let trends = client.get_vital_trends(
+        &patient_id,
+        &Symbol::new(&env, "heart_rate"),
+        &0u64,
+        &u64::MAX,
+    );
+    assert_eq!(trends.len(), 1);
+
+    client.deregister_patient(&patient_id);
+
+    // History cleared after deregistration
+    let trends_after = client.get_vital_trends(
+        &patient_id,
+        &Symbol::new(&env, "heart_rate"),
+        &0u64,
+        &u64::MAX,
+    );
+    assert_eq!(trends_after.len(), 0);
+}
+
+#[test]
+fn test_deregister_patient_clears_alerts() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PatientVitalsContract);
+    let client = PatientVitalsContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let vital_type = Symbol::new(&env, "heart_rate");
+
+    client.trigger_vital_alert(
+        &patient_id,
+        &vital_type,
+        &String::from_str(&env, "150"),
+        &Symbol::new(&env, "high"),
+        &1_000_000u64,
+    );
+
+    assert_eq!(client.get_alerts(&patient_id, &vital_type).len(), 1);
+
+    client.deregister_patient(&patient_id);
+
+    assert_eq!(client.get_alerts(&patient_id, &vital_type).len(), 0);
+}

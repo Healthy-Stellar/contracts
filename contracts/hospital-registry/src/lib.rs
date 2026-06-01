@@ -6,6 +6,13 @@ use soroban_sdk::{
     String, Vec,
 };
 
+/// Maximum number of departments a hospital configuration may contain.
+pub const MAX_DEPARTMENTS: u32 = 200;
+/// Maximum number of locations a hospital configuration may contain.
+pub const MAX_LOCATIONS: u32 = 50;
+/// Maximum number of equipment resources a hospital configuration may contain.
+pub const MAX_EQUIPMENT: u32 = 100;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -17,6 +24,8 @@ pub enum ContractError {
     CredentialRevoked = 5,
     /// An empty vector was passed for a field that previously had values
     EmptyFieldUpdate = 6,
+    /// A config vector exceeds its maximum allowed length
+    ConfigLimitExceeded = 7,
 }
 
 #[contracttype]
@@ -283,6 +292,16 @@ impl HospitalRegistry {
         wallet.require_auth();
         Self::assert_active_hospital(&env, &wallet)?;
 
+        if config.departments.len() > MAX_DEPARTMENTS {
+            return Err(ContractError::ConfigLimitExceeded);
+        }
+        if config.locations.len() > MAX_LOCATIONS {
+            return Err(ContractError::ConfigLimitExceeded);
+        }
+        if config.equipment.len() > MAX_EQUIPMENT {
+            return Err(ContractError::ConfigLimitExceeded);
+        }
+
         let old: HospitalConfig = env
             .storage()
             .persistent()
@@ -315,6 +334,9 @@ impl HospitalRegistry {
         if departments.is_empty() && !config.departments.is_empty() {
             return Err(ContractError::EmptyFieldUpdate);
         }
+        if departments.len() > MAX_DEPARTMENTS {
+            return Err(ContractError::ConfigLimitExceeded);
+        }
         let old = config.clone();
         config.departments = departments;
         env.storage()
@@ -335,6 +357,9 @@ impl HospitalRegistry {
         if locations.is_empty() && !config.locations.is_empty() {
             return Err(ContractError::EmptyFieldUpdate);
         }
+        if locations.len() > MAX_LOCATIONS {
+            return Err(ContractError::ConfigLimitExceeded);
+        }
         let old = config.clone();
         config.locations = locations;
         env.storage()
@@ -354,6 +379,9 @@ impl HospitalRegistry {
         let mut config = Self::get_hospital_config(env.clone(), wallet.clone())?;
         if equipment.is_empty() && !config.equipment.is_empty() {
             return Err(ContractError::EmptyFieldUpdate);
+        }
+        if equipment.len() > MAX_EQUIPMENT {
+            return Err(ContractError::ConfigLimitExceeded);
         }
         let old = config.clone();
         config.equipment = equipment;
