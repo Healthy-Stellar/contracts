@@ -1,8 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN,
-    Env, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env,
+    Vec,
 };
 
 mod test;
@@ -18,28 +18,31 @@ pub const TIMELOCK_DELAY: u64 = 24 * 60 * 60;
 #[repr(u32)]
 pub enum Error {
     AlreadyInitialized = 1,
-    NotInitialized     = 2,
-    InvalidThreshold   = 3,
-    NotASigner         = 4,
-    ProposalNotFound   = 5,
-    AlreadyExecuted    = 6,
-    Expired            = 7,
-    AlreadyVoted       = 8,
-    ThresholdNotMet    = 9,
+    NotInitialized = 2,
+    InvalidThreshold = 3,
+    NotASigner = 4,
+    ProposalNotFound = 5,
+    AlreadyExecuted = 6,
+    Expired = 7,
+    AlreadyVoted = 8,
+    ThresholdNotMet = 9,
     /// Timelock has not elapsed yet.
-    TimelockActive     = 10,
+    TimelockActive = 10,
     /// Proposal was cancelled.
-    Cancelled          = 11,
+    Cancelled = 11,
     /// Caller is not authorised to cancel (must be a signer).
-    NotAuthorized      = 12,
+    NotAuthorized = 12,
     /// Release metadata does not hash to the declared metadata hash.
     InvalidReleaseMetadata = 13,
     /// Release metadata hash is not in the approved artifact registry.
     UnapprovedArtifactMetadata = 14,
-    ProposalExists     = 15,
-    AlreadySigner      = 16,
-    ThresholdBreached  = 17,
-    AlreadyFinalized   = 18,
+    ProposalExists = 15,
+    AlreadySigner = 16,
+    ThresholdBreached = 17,
+    AlreadyFinalized = 18,
+    /// Proposed WASM requires a minimum schema version newer than what is stored on-chain.
+    /// Run `migrate_schema` to advance the schema before proposing the upgrade.
+    IncompatibleSchemaVersion = 19,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -53,6 +56,8 @@ pub enum DataKey {
     Proposal(u64),
     ApprovedArtifactMetadata(BytesN<32>),
     SignerProposal,
+    /// Current on-chain schema version — compared against `UpgradeProposal::min_compatible_schema`.
+    SchemaVersion,
 }
 
 #[contracttype]
@@ -105,6 +110,9 @@ pub struct UpgradeProposal {
     /// Domain tag: SHA-256(contract_address ++ "upgrade-governance" ++ proposal_id).
     /// Stored so callers can verify the binding off-chain.
     pub domain_tag: BytesN<32>,
+    /// Minimum on-chain schema version the new WASM is compatible with.
+    /// `execute_upgrade` rejects proposals where this exceeds the stored `SchemaVersion`.
+    pub min_compatible_schema: u32,
 }
 
 #[contracttype]
@@ -133,6 +141,9 @@ impl UpgradeGovernance {
             .set(&DataKey::Threshold, &threshold);
         env.storage().persistent().set(&DataKey::NextId, &0u64);
         env.storage().persistent().set(&DataKey::Initialized, &true);
+        env.storage()
+            .persistent()
+            .set(&DataKey::SchemaVersion, &1u32);
         Ok(())
     }
 
@@ -142,15 +153,21 @@ impl UpgradeGovernance {
         new_wasm_hash: BytesN<32>,
         release_metadata: ReleaseMetadata,
         artifact_metadata_hash: BytesN<32>,
+        min_compatible_schema: u32,
     ) -> Result<u64, Error> {
         Self::assert_initialized(&env)?;
         proposer.require_auth();
         Self::assert_signer(&env, &proposer)?;
-        Self::validate_release_metadata(
-            &env,
-            &release_metadata,
-            &artifact_metadata_hash,
-        )?;
+        Self::validate_release_metadata(&env, &release_metadata, &artifact_metadata_hash)?;
+
+        let current_schema: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SchemaVersion)
+            .unwrap_or(1);
+        if min_compatible_schema > current_schema {
+            return Err(Error::IncompatibleSchemaVersion);
+        }
 
         let proposal_id: u64 = env
             .storage()
@@ -172,6 +189,7 @@ impl UpgradeGovernance {
             approved_at: 0,
             status: ProposalStatus::Active,
             domain_tag,
+            min_compatible_schema,
         };
 
         env.storage()
@@ -196,13 +214,12 @@ impl UpgradeGovernance {
         Self::assert_initialized(&env)?;
         caller.require_auth();
         Self::assert_signer(&env, &caller)?;
-        env.storage()
-            .persistent()
-            .set(&DataKey::ApprovedArtifactMetadata(artifact_metadata_hash.clone()), &true);
-        env.events().publish(
-            (symbol_short!("meta_appr"), caller),
-            artifact_metadata_hash,
+        env.storage().persistent().set(
+            &DataKey::ApprovedArtifactMetadata(artifact_metadata_hash.clone()),
+            &true,
         );
+        env.events()
+            .publish((symbol_short!("meta_appr"), caller), artifact_metadata_hash);
         Ok(())
     }
 
@@ -231,8 +248,10 @@ impl UpgradeGovernance {
         if proposal.status == ProposalStatus::Active && proposal.votes.len() >= threshold {
             proposal.status = ProposalStatus::Approved;
             proposal.approved_at = env.ledger().timestamp();
-            env.events()
-                .publish((symbol_short!("approved"), proposal_id), proposal.votes.len());
+            env.events().publish(
+                (symbol_short!("approved"), proposal_id),
+                proposal.votes.len(),
+            );
         }
 
         env.storage()
@@ -257,10 +276,10 @@ impl UpgradeGovernance {
             .ok_or(Error::ProposalNotFound)?;
 
         match proposal.status {
-            ProposalStatus::Executed  => return Err(Error::AlreadyExecuted),
+            ProposalStatus::Executed => return Err(Error::AlreadyExecuted),
             ProposalStatus::Cancelled => return Err(Error::Cancelled),
-            ProposalStatus::Active    => return Err(Error::ThresholdNotMet),
-            ProposalStatus::Approved  => {}
+            ProposalStatus::Active => return Err(Error::ThresholdNotMet),
+            ProposalStatus::Approved => {}
         }
 
         if env.ledger().timestamp() > proposal.proposed_at + VOTING_WINDOW {
@@ -315,7 +334,7 @@ impl UpgradeGovernance {
             .ok_or(Error::ProposalNotFound)?;
 
         match proposal.status {
-            ProposalStatus::Executed  => return Err(Error::AlreadyExecuted),
+            ProposalStatus::Executed => return Err(Error::AlreadyExecuted),
             ProposalStatus::Cancelled => return Err(Error::Cancelled),
             // Allow cancellation of both Active and Approved proposals.
             _ => {}
@@ -328,6 +347,53 @@ impl UpgradeGovernance {
 
         env.events()
             .publish((symbol_short!("cancelled"), proposal_id), caller);
+        Ok(())
+    }
+
+    /// Return the current on-chain schema version.
+    pub fn get_schema_version(env: Env) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::SchemaVersion)
+            .unwrap_or(1)
+    }
+
+    /// Advance the on-chain schema version from `from_version` to `to_version`.
+    ///
+    /// # Migration pattern
+    /// 1. Deploy the new WASM via `propose_upgrade` / `execute_upgrade`.
+    /// 2. Call `migrate_schema` once to advance the stored version so subsequent
+    ///    upgrade proposals can declare the new minimum.
+    ///
+    /// Requires a signer to authorise. Rejects if the stored version does not
+    /// match `from_version` to prevent accidental double-migration.
+    pub fn migrate_schema(
+        env: Env,
+        caller: Address,
+        from_version: u32,
+        to_version: u32,
+    ) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        caller.require_auth();
+        Self::assert_signer(&env, &caller)?;
+
+        let stored: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SchemaVersion)
+            .unwrap_or(1);
+        if stored != from_version {
+            return Err(Error::IncompatibleSchemaVersion);
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::SchemaVersion, &to_version);
+
+        env.events().publish(
+            (symbol_short!("sch_migr"), caller),
+            (from_version, to_version),
+        );
         Ok(())
     }
 
@@ -470,11 +536,11 @@ impl UpgradeGovernance {
 
             env.storage().persistent().set(&DataKey::Signers, &signers);
             proposal.status = SignerProposalStatus::Executed;
-            env.storage()
-                .persistent()
-                .remove(&DataKey::SignerProposal);
-            env.events()
-                .publish((symbol_short!("sg_exec"), proposal.kind.clone()), proposal.target.clone());
+            env.storage().persistent().remove(&DataKey::SignerProposal);
+            env.events().publish(
+                (symbol_short!("sg_exec"), proposal.kind.clone()),
+                proposal.target.clone(),
+            );
         } else {
             env.storage()
                 .persistent()
@@ -571,7 +637,7 @@ impl UpgradeGovernance {
             .ok_or(Error::ProposalNotFound)?;
 
         match proposal.status {
-            ProposalStatus::Executed  => return Err(Error::AlreadyExecuted),
+            ProposalStatus::Executed => return Err(Error::AlreadyExecuted),
             ProposalStatus::Cancelled => return Err(Error::Cancelled),
             _ => {}
         }
