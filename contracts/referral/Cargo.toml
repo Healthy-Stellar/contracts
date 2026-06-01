@@ -12,6 +12,8 @@ testutils = ["soroban-sdk/testutils"]
 
 [dependencies]
 soroban-sdk = { workspace = true }
+shared = { workspace = true }
+shared-contracts = { path = "..", package = "Contracts" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }

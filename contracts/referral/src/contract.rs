@@ -1,4 +1,6 @@
 use crate::types::{DataKey, Error, Referral, ReferralStatus};
+use shared::privacy::validate_nonzero_address;
+use shared_contracts::safe_increment;
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Symbol, Vec};
 
 #[contract]
@@ -17,14 +19,12 @@ impl ReferralContract {
         clinical_summary_hash: BytesN<32>,
         requested_services: Vec<String>,
     ) -> Result<u64, Error> {
+        validate_nonzero_address(&referring_provider).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&patient_id).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&referred_to).map_err(|_| Error::InvalidAddress)?;
         referring_provider.require_auth();
 
-        let referral_id: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::ReferralCount)
-            .unwrap_or(0)
-            + 1;
+        let referral_id = safe_increment(&env, &DataKey::ReferralCount);
 
         let referral = Referral {
             referral_id,
@@ -43,9 +43,6 @@ impl ReferralContract {
         env.storage()
             .persistent()
             .set(&DataKey::Referral(referral_id), &referral);
-        env.storage()
-            .instance()
-            .set(&DataKey::ReferralCount, &referral_id);
 
         // Emit events for extended data that is not stored in the state struct to save space
         env.events().publish(
@@ -62,6 +59,7 @@ impl ReferralContract {
         receiving_provider: Address,
         estimated_appointment_date: Option<u64>,
     ) -> Result<(), Error> {
+        validate_nonzero_address(&receiving_provider).map_err(|_| Error::InvalidAddress)?;
         receiving_provider.require_auth();
 
         let mut referral: Referral = env
@@ -99,6 +97,10 @@ impl ReferralContract {
         decline_reason: String,
         suggest_alternative: Option<Address>,
     ) -> Result<(), Error> {
+        validate_nonzero_address(&receiving_provider).map_err(|_| Error::InvalidAddress)?;
+        if let Some(alt) = &suggest_alternative {
+            validate_nonzero_address(alt).map_err(|_| Error::InvalidAddress)?;
+        }
         receiving_provider.require_auth();
 
         let mut referral: Referral = env
@@ -135,6 +137,7 @@ impl ReferralContract {
         status: Symbol,
         status_note: Option<String>,
     ) -> Result<(), Error> {
+        validate_nonzero_address(&provider_id).map_err(|_| Error::InvalidAddress)?;
         provider_id.require_auth();
 
         let mut referral: Referral = env
@@ -186,6 +189,7 @@ impl ReferralContract {
         recommendations: String,
         followup_required: bool,
     ) -> Result<(), Error> {
+        validate_nonzero_address(&receiving_provider).map_err(|_| Error::InvalidAddress)?;
         receiving_provider.require_auth();
 
         let mut referral: Referral = env
@@ -231,6 +235,7 @@ impl ReferralContract {
         summary_type: Symbol,
         summary_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        validate_nonzero_address(&from_provider).map_err(|_| Error::InvalidAddress)?;
         from_provider.require_auth();
 
         let referral: Referral = env
@@ -259,6 +264,7 @@ impl ReferralContract {
         requesting_provider: Address,
         information_needed: Vec<String>,
     ) -> Result<(), Error> {
+        validate_nonzero_address(&requesting_provider).map_err(|_| Error::InvalidAddress)?;
         requesting_provider.require_auth();
 
         let referral: Referral = env

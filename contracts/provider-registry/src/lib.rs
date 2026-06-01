@@ -1,6 +1,7 @@
 #![no_std]
 #![allow(deprecated)]
 
+use shared::privacy::validate_nonzero_address;
 use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror, symbol_short, Address, BytesN, Env,
     String,
@@ -19,6 +20,7 @@ pub enum Error {
     Unauthorized       = 3,
     NotAProvider       = 4,
     RecordNotFound     = 5,
+    InvalidAddress     = 6,
 }
 
 #[contracttype]
@@ -67,6 +69,7 @@ pub struct ProviderRegistry;
 impl ProviderRegistry {
     pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
         Self::assert_not_initialized(&env)?;
+        validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
         admin.require_auth();
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage().persistent().set(&DataKey::Initialized, &true);
@@ -87,6 +90,9 @@ impl ProviderRegistry {
         revocation_reference: BytesN<32>,
     ) -> Result<(), Error> {
         Self::assert_initialized(&env)?;
+        validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&issuer).map_err(|_| Error::InvalidAddress)?;
         Self::assert_admin(&env, &admin)?;
         let profile = ProviderProfile {
             name,
@@ -112,6 +118,8 @@ impl ProviderRegistry {
 
     pub fn revoke_provider(env: Env, admin: Address, provider: Address) -> Result<(), Error> {
         Self::assert_initialized(&env)?;
+        validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
         Self::assert_admin(&env, &admin)?;
         let key = DataKey::Provider(provider.clone());
         let mut profile: ProviderProfile = env
@@ -145,6 +153,7 @@ impl ProviderRegistry {
         env: Env,
         provider: Address,
     ) -> Result<ProviderProfile, Error> {
+        validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
         env.storage()
             .persistent()
             .get(&DataKey::Provider(provider))
@@ -158,6 +167,7 @@ impl ProviderRegistry {
         data: String,
     ) -> Result<(), Error> {
         Self::assert_initialized(&env)?;
+        validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
         provider.require_auth();
         if !Self::is_provider(env.clone(), provider.clone()) {
             return Err(Error::NotAProvider);

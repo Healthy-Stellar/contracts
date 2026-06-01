@@ -5,6 +5,7 @@ use soroban_sdk::{
     contract, contractevent, contractimpl, Address, BytesN, Env, String, Symbol, Vec,
 };
 use shared::{events::EVENT_VERSION, temporal};
+use shared_contracts::safe_increment;
 
 mod types;
 use types::*;
@@ -46,12 +47,7 @@ impl DentalRecordsContract {
     ) -> Result<u64, Error> {
         patient_id.require_auth();
 
-        let mut count: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::ChartCount)
-            .unwrap_or(0);
-        count += 1;
+        let count = safe_increment(&env, &DataKey::ChartCount);
 
         let chart = DentalChart {
             patient_id,
@@ -63,7 +59,6 @@ impl DentalRecordsContract {
         env.storage()
             .persistent()
             .set(&DataKey::Chart(count), &chart);
-        env.storage().instance().set(&DataKey::ChartCount, &count);
 
         Ok(count)
     }
@@ -139,12 +134,7 @@ impl DentalRecordsContract {
         dentist_id.require_auth();
         patient_id.require_auth();
 
-        let mut count: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::PlanCount)
-            .unwrap_or(0);
-        count += 1;
+        let count = safe_increment(&env, &DataKey::PlanCount);
 
         let plan = TreatmentPlan {
             patient_id,
@@ -156,7 +146,6 @@ impl DentalRecordsContract {
         };
 
         env.storage().persistent().set(&DataKey::Plan(count), &plan);
-        env.storage().instance().set(&DataKey::PlanCount, &count);
 
         Ok(count)
     }
@@ -180,12 +169,7 @@ impl DentalRecordsContract {
             .ok_or(Error::NotFound)?;
         plan.patient_id.require_auth();
 
-        let mut count: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::AppointmentCount)
-            .unwrap_or(0);
-        count += 1;
+        let count = safe_increment(&env, &DataKey::AppointmentCount);
 
         let appt = Appointment {
             treatment_plan_id,
@@ -197,9 +181,6 @@ impl DentalRecordsContract {
         };
 
         env.storage().persistent().set(&DataKey::Appt(count), &appt);
-        env.storage()
-            .instance()
-            .set(&DataKey::AppointmentCount, &count);
 
         ProcedureScheduled {
             version: EVENT_VERSION,
@@ -274,12 +255,7 @@ impl DentalRecordsContract {
         temporal::not_future(&env, image_date)
             .map_err(|_| Error::InvalidPastDate)?;
 
-        let mut count: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::RadiographCount)
-            .unwrap_or(0);
-        count += 1;
+        let count = safe_increment(&env, &DataKey::RadiographCount);
 
         let radio = Radiograph {
             patient_id,
@@ -293,9 +269,6 @@ impl DentalRecordsContract {
         env.storage()
             .persistent()
             .set(&DataKey::Radio(count), &radio);
-        env.storage()
-            .instance()
-            .set(&DataKey::RadiographCount, &count);
 
         RadiographRecorded {
             version: EVENT_VERSION,
@@ -318,12 +291,7 @@ impl DentalRecordsContract {
         patient_id.require_auth();
         orthodontist_id.require_auth();
 
-        let mut count: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::OrthoCount)
-            .unwrap_or(0);
-        count += 1;
+        let count = safe_increment(&env, &DataKey::OrthoCount);
 
         let ortho = OrthodonticTreatment {
             patient_id,
@@ -337,7 +305,6 @@ impl DentalRecordsContract {
         env.storage()
             .persistent()
             .set(&DataKey::Ortho(count), &ortho);
-        env.storage().instance().set(&DataKey::OrthoCount, &count);
 
         Ok(count)
     }
@@ -382,8 +349,7 @@ impl DentalRecordsContract {
     ) -> Result<u64, Error> {
         dentist_id.require_auth();
 
-        let mut count: u64 = env.storage().instance().get(&DataKey::RxCount).unwrap_or(0);
-        count += 1;
+        let count = safe_increment(&env, &DataKey::RxCount);
 
         let rx = MedicationPrescription {
             patient_id,
@@ -394,7 +360,6 @@ impl DentalRecordsContract {
         };
 
         env.storage().persistent().set(&DataKey::Rx(count), &rx);
-        env.storage().instance().set(&DataKey::RxCount, &count);
 
         Ok(count)
     }

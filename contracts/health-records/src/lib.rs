@@ -4,7 +4,7 @@ use shared::incident_tracking::{
     capture_incident, get_incidents_by_correlation_id as shared_get_by_corr, IncidentSeverity,
 };
 use shared::privacy::{
-    validate_encrypted_ref, validate_policy_metadata, EncryptedEnvelopeRef, PolicyMetadata,
+    validate_encrypted_ref, validate_nonzero_address, validate_policy_metadata, EncryptedEnvelopeRef, PolicyMetadata,
 };
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, xdr::ToXdr, Address, Bytes, BytesN, Env,
@@ -40,6 +40,7 @@ pub enum Error {
     ConsentNotGranted = 3,
     InvalidEncryptedEnvelope = 4,
     InvalidPolicyMetadata = 5,
+    InvalidAddress = 6,
 }
 
 fn compute_hash(
@@ -77,19 +78,25 @@ pub struct HealthRecords;
 #[contractimpl]
 impl HealthRecords {
     /// Patient grants a provider consent to create/access their records.
-    pub fn grant_consent(env: Env, patient: Address, provider: Address) {
+    pub fn grant_consent(env: Env, patient: Address, provider: Address) -> Result<(), Error> {
+        validate_nonzero_address(&patient).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
         patient.require_auth();
         env.storage()
             .persistent()
             .set(&DataKey::Consent(patient, provider), &true);
+        Ok(())
     }
 
     /// Patient revokes a provider's consent.
-    pub fn revoke_consent(env: Env, patient: Address, provider: Address) {
+    pub fn revoke_consent(env: Env, patient: Address, provider: Address) -> Result<(), Error> {
+        validate_nonzero_address(&patient).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
         patient.require_auth();
         env.storage()
             .persistent()
             .set(&DataKey::Consent(patient, provider), &false);
+        Ok(())
     }
 
     /// Create a record. Requires both patient and provider auth, plus prior patient consent.
@@ -101,6 +108,8 @@ impl HealthRecords {
         record_type: String,
         policy: PolicyMetadata,
     ) -> Result<u64, Error> {
+        validate_nonzero_address(&patient).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
         patient.require_auth();
         provider.require_auth();
         validate_encrypted_ref(&encrypted_ref).map_err(|_| Error::InvalidEncryptedEnvelope)?;
@@ -145,6 +154,7 @@ impl HealthRecords {
 
     /// Retrieve a record. Caller must be the patient or a consented provider.
     pub fn get_record(env: Env, caller: Address, record_id: u64) -> Result<MedicalRecord, Error> {
+        validate_nonzero_address(&caller).map_err(|_| Error::InvalidAddress)?;
         caller.require_auth();
 
         let record: MedicalRecord = env
@@ -167,6 +177,7 @@ impl HealthRecords {
         record_id: u64,
         expected_hash: Bytes,
     ) -> Result<bool, Error> {
+        validate_nonzero_address(&caller).map_err(|_| Error::InvalidAddress)?;
         caller.require_auth();
 
         let record: MedicalRecord =
@@ -205,9 +216,10 @@ impl HealthRecords {
         error_code: u32,
         description: String,
         correlation_id: Option<BytesN<32>>,
-    ) -> u64 {
+    ) -> Result<u64, Error> {
+        validate_nonzero_address(&reporter).map_err(|_| Error::InvalidAddress)?;
         reporter.require_auth();
-        capture_incident(
+        Ok(capture_incident(
             &env,
             IncidentSeverity::High,
             String::from_str(&env, "health-records"),
@@ -215,7 +227,7 @@ impl HealthRecords {
             description,
             reporter,
             correlation_id,
-        )
+        ))
     }
 
     /// Return all incident IDs that share the given correlation ID.
