@@ -956,3 +956,532 @@ fn test_full_nutrition_care_workflow() {
     let supplements = client.get_supplements(&care_plan_id);
     assert_eq!(supplements.len(), 1);
 }
+
+// -----------------------------------------------------------------------
+// link_outcome (#393)
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_link_outcome_success() {
+    let (env, patient, dietitian, _) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    let outcome_id = client.link_outcome(
+        &care_plan_id,
+        &dietitian,
+        &String::from_str(&env, "weight_kg"),
+        &6950i64,
+        &1_500_000u64,
+    );
+
+    assert_eq!(outcome_id, 1);
+}
+
+#[test]
+fn test_link_outcome_multiple_metrics() {
+    let (env, patient, dietitian, _) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    let metrics = [
+        ("weight_kg", 7050i64),
+        ("bmi", 2290i64),
+        ("hba1c", 720i64),
+        ("cholesterol_total", 18500i64),
+    ];
+
+    for (metric, value) in metrics.iter() {
+        client.link_outcome(
+            &care_plan_id,
+            &dietitian,
+            &String::from_str(&env, metric),
+            value,
+            &1_500_000u64,
+        );
+    }
+
+    let outcomes = client.get_plan_outcomes(&care_plan_id);
+    assert_eq!(outcomes.len(), 4);
+}
+
+#[test]
+fn test_link_outcome_invalid_metric() {
+    let (env, patient, dietitian, _) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    let result = client.try_link_outcome(
+        &care_plan_id,
+        &dietitian,
+        &String::from_str(&env, "invalid_metric"),
+        &100i64,
+        &1_500_000u64,
+    );
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_link_outcome_unauthorized_provider() {
+    let (env, patient, dietitian, _) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    let unauthorized = Address::generate(&env);
+    let result = client.try_link_outcome(
+        &care_plan_id,
+        &unauthorized,
+        &String::from_str(&env, "weight_kg"),
+        &7000i64,
+        &1_500_000u64,
+    );
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_link_outcome_care_plan_not_found() {
+    let (env, _, dietitian, _) = setup();
+    let client = register(&env);
+
+    let result = client.try_link_outcome(
+        &999,
+        &dietitian,
+        &String::from_str(&env, "weight_kg"),
+        &7000i64,
+        &1_500_000u64,
+    );
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_link_outcome_patient_authorized() {
+    let (env, patient, dietitian, _) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    // Patient should be authorized by default
+    let outcome_id = client.link_outcome(
+        &care_plan_id,
+        &patient,
+        &String::from_str(&env, "weight_kg"),
+        &7100i64,
+        &1_500_000u64,
+    );
+
+    assert_eq!(outcome_id, 1);
+}
+
+// -----------------------------------------------------------------------
+// get_plan_outcomes (#393)
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_get_plan_outcomes_chronological_order() {
+    let (env, patient, dietitian, _) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    // Record outcomes at different times
+    let timestamps = [1_000_000u64, 1_100_000u64, 1_200_000u64];
+    for ts in timestamps.iter() {
+        client.link_outcome(
+            &care_plan_id,
+            &dietitian,
+            &String::from_str(&env, "weight_kg"),
+            &7000i64,
+            ts,
+        );
+    }
+
+    let outcomes = client.get_plan_outcomes(&care_plan_id);
+    assert_eq!(outcomes.len(), 3);
+
+    // Verify chronological order
+    assert_eq!(outcomes.get(0).unwrap().measured_at, 1_000_000u64);
+    assert_eq!(outcomes.get(1).unwrap().measured_at, 1_100_000u64);
+    assert_eq!(outcomes.get(2).unwrap().measured_at, 1_200_000u64);
+}
+
+#[test]
+fn test_get_plan_outcomes_empty() {
+    let (env, patient, dietitian, _) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    let outcomes = client.get_plan_outcomes(&care_plan_id);
+    assert_eq!(outcomes.len(), 0);
+}
+
+#[test]
+fn test_get_plan_outcomes_linked_to_plan_version() {
+    let (env, patient, dietitian, _) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    // Record outcome for version 1
+    client.link_outcome(
+        &care_plan_id,
+        &dietitian,
+        &String::from_str(&env, "weight_kg"),
+        &7000i64,
+        &1_000_000u64,
+    );
+
+    // Update plan version
+    client.update_care_plan_version(&care_plan_id, &dietitian);
+
+    // Record outcome for version 2
+    client.link_outcome(
+        &care_plan_id,
+        &dietitian,
+        &String::from_str(&env, "weight_kg"),
+        &6900i64,
+        &1_100_000u64,
+    );
+
+    let outcomes = client.get_plan_outcomes(&care_plan_id);
+    assert_eq!(outcomes.len(), 2);
+    assert_eq!(outcomes.get(0).unwrap().plan_version, 1);
+    assert_eq!(outcomes.get(1).unwrap().plan_version, 2);
+}
+
+// -----------------------------------------------------------------------
+// get_clinical_outcome (#393)
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_get_clinical_outcome_success() {
+    let (env, patient, dietitian, _) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    let outcome_id = client.link_outcome(
+        &care_plan_id,
+        &dietitian,
+        &String::from_str(&env, "hba1c"),
+        &650i64,
+        &1_500_000u64,
+    );
+
+    let outcome = client.get_clinical_outcome(&outcome_id);
+    assert_eq!(outcome.outcome_id, outcome_id);
+    assert_eq!(outcome.care_plan_id, care_plan_id);
+    assert_eq!(outcome.outcome_value_x100, 650);
+    assert_eq!(outcome.outcome_metric, String::from_str(&env, "hba1c"));
+}
+
+#[test]
+fn test_get_clinical_outcome_not_found() {
+    let (env, _, _, _) = setup();
+    let client = register(&env);
+
+    let result = client.try_get_clinical_outcome(&999);
+    assert!(result.is_err());
+}
+
+// -----------------------------------------------------------------------
+// update_care_plan_version (#393)
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_update_care_plan_version_success() {
+    let (env, patient, dietitian, _) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    let version1 = client.get_plan_version(&care_plan_id);
+    assert_eq!(version1, 1);
+
+    let new_version = client.update_care_plan_version(&care_plan_id, &dietitian);
+    assert_eq!(new_version, 2);
+
+    let version2 = client.get_plan_version(&care_plan_id);
+    assert_eq!(version2, 2);
+}
+
+#[test]
+fn test_update_care_plan_version_multiple_times() {
+    let (env, patient, dietitian, _) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    for expected in 2..=5 {
+        let version = client.update_care_plan_version(&care_plan_id, &dietitian);
+        assert_eq!(version, expected);
+    }
+
+    let final_version = client.get_plan_version(&care_plan_id);
+    assert_eq!(final_version, 5);
+}
+
+#[test]
+fn test_update_care_plan_version_unauthorized() {
+    let (env, patient, dietitian, _) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    let unauthorized = Address::generate(&env);
+    let result = client.try_update_care_plan_version(&care_plan_id, &unauthorized);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_update_care_plan_version_not_found() {
+    let (env, _, dietitian, _) = setup();
+    let client = register(&env);
+
+    let result = client.try_update_care_plan_version(&999, &dietitian);
+    assert!(result.is_err());
+}
+
+// -----------------------------------------------------------------------
+// authorize_provider (#393)
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_authorize_provider_success() {
+    let (env, patient, dietitian, provider) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    // Initially provider is not authorized
+    assert!(!client.is_provider_authorized(&care_plan_id, &provider));
+
+    // Authorize provider
+    client.authorize_provider(&care_plan_id, &dietitian, &provider);
+
+    // Now provider should be authorized
+    assert!(client.is_provider_authorized(&care_plan_id, &provider));
+}
+
+#[test]
+fn test_authorize_provider_can_link_outcome() {
+    let (env, patient, dietitian, provider) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    // Authorize provider
+    client.authorize_provider(&care_plan_id, &dietitian, &provider);
+
+    // Provider should now be able to link outcomes
+    let outcome_id = client.link_outcome(
+        &care_plan_id,
+        &provider,
+        &String::from_str(&env, "glucose_fasting"),
+        &9500i64,
+        &1_500_000u64,
+    );
+
+    assert_eq!(outcome_id, 1);
+}
+
+#[test]
+fn test_authorize_provider_unauthorized_dietitian() {
+    let (env, patient, dietitian, provider) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    let unauthorized = Address::generate(&env);
+    let result = client.try_authorize_provider(&care_plan_id, &unauthorized, &provider);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_authorize_provider_care_plan_not_found() {
+    let (env, _, dietitian, provider) = setup();
+    let client = register(&env);
+
+    let result = client.try_authorize_provider(&999, &dietitian, &provider);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_authorize_provider_idempotent() {
+    let (env, patient, dietitian, provider) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    // Authorize same provider multiple times
+    client.authorize_provider(&care_plan_id, &dietitian, &provider);
+    client.authorize_provider(&care_plan_id, &dietitian, &provider);
+    client.authorize_provider(&care_plan_id, &dietitian, &provider);
+
+    // Should still be authorized
+    assert!(client.is_provider_authorized(&care_plan_id, &provider));
+}
+
+// -----------------------------------------------------------------------
+// is_provider_authorized (#393)
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_is_provider_authorized_dietitian_always_authorized() {
+    let (env, patient, dietitian, _) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    // Dietitian who created the plan should be authorized
+    assert!(client.is_provider_authorized(&care_plan_id, &dietitian));
+}
+
+#[test]
+fn test_is_provider_authorized_patient_always_authorized() {
+    let (env, patient, dietitian, _) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    // Patient should be authorized by default
+    assert!(client.is_provider_authorized(&care_plan_id, &patient));
+}
+
+#[test]
+fn test_is_provider_authorized_unauthorized_by_default() {
+    let (env, patient, dietitian, _) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    let random_provider = Address::generate(&env);
+    assert!(!client.is_provider_authorized(&care_plan_id, &random_provider));
+}
+
+// -----------------------------------------------------------------------
+// Full outcome tracking workflow (#393)
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_full_outcome_tracking_workflow() {
+    let (env, patient, dietitian, provider) = setup();
+    let client = register(&env);
+
+    // Step 1: Create care plan
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+    assert_eq!(client.get_plan_version(&care_plan_id), 1);
+
+    // Step 2: Authorize additional provider
+    client.authorize_provider(&care_plan_id, &dietitian, &provider);
+
+    // Step 3: Record baseline outcomes (version 1)
+    client.link_outcome(
+        &care_plan_id,
+        &dietitian,
+        &String::from_str(&env, "weight_kg"),
+        &8500i64,
+        &1_000_000u64,
+    );
+
+    client.link_outcome(
+        &care_plan_id,
+        &provider,
+        &String::from_str(&env, "hba1c"),
+        &850i64,
+        &1_000_000u64,
+    );
+
+    client.link_outcome(
+        &care_plan_id,
+        &patient,
+        &String::from_str(&env, "blood_pressure_systolic"),
+        &14500i64,
+        &1_000_000u64,
+    );
+
+    // Step 4: Update care plan
+    let version2 = client.update_care_plan_version(&care_plan_id, &dietitian);
+    assert_eq!(version2, 2);
+
+    // Step 5: Record follow-up outcomes (version 2)
+    client.link_outcome(
+        &care_plan_id,
+        &dietitian,
+        &String::from_str(&env, "weight_kg"),
+        &8200i64,
+        &1_500_000u64,
+    );
+
+    client.link_outcome(
+        &care_plan_id,
+        &provider,
+        &String::from_str(&env, "hba1c"),
+        &720i64,
+        &1_500_000u64,
+    );
+
+    // Step 6: Verify outcomes
+    let outcomes = client.get_plan_outcomes(&care_plan_id);
+    assert_eq!(outcomes.len(), 5);
+
+    // Verify version tracking
+    let mut version1_count = 0u32;
+    let mut version2_count = 0u32;
+    for outcome in outcomes.iter() {
+        if outcome.plan_version == 1 {
+            version1_count += 1;
+        } else if outcome.plan_version == 2 {
+            version2_count += 1;
+        }
+    }
+    assert_eq!(version1_count, 3);
+    assert_eq!(version2_count, 2);
+
+    // Verify weight improvement
+    let mut weight_values = Vec::new(&env);
+    for outcome in outcomes.iter() {
+        if outcome.outcome_metric == String::from_str(&env, "weight_kg") {
+            weight_values.push_back(outcome.outcome_value_x100);
+        }
+    }
+    assert_eq!(weight_values.len(), 2);
+    assert_eq!(weight_values.get(0).unwrap(), 8500);
+    assert_eq!(weight_values.get(1).unwrap(), 8200);
+
+    // Verify HbA1c improvement
+    let mut hba1c_values = Vec::new(&env);
+    for outcome in outcomes.iter() {
+        if outcome.outcome_metric == String::from_str(&env, "hba1c") {
+            hba1c_values.push_back(outcome.outcome_value_x100);
+        }
+    }
+    assert_eq!(hba1c_values.len(), 2);
+    assert_eq!(hba1c_values.get(0).unwrap(), 850);
+    assert_eq!(hba1c_values.get(1).unwrap(), 720);
+}
+
+#[test]
+fn test_outcome_tracking_all_valid_metrics() {
+    let (env, patient, dietitian, _) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    let metrics = [
+        "weight_kg",
+        "bmi",
+        "hba1c",
+        "cholesterol_total",
+        "cholesterol_ldl",
+        "cholesterol_hdl",
+        "triglycerides",
+        "blood_pressure_systolic",
+        "blood_pressure_diastolic",
+        "glucose_fasting",
+        "albumin",
+        "prealbumin",
+        "waist_circumference",
+    ];
+
+    for metric in metrics.iter() {
+        let outcome_id = client.link_outcome(
+            &care_plan_id,
+            &dietitian,
+            &String::from_str(&env, metric),
+            &10000i64,
+            &1_500_000u64,
+        );
+        assert!(outcome_id > 0);
+    }
+
+    let outcomes = client.get_plan_outcomes(&care_plan_id);
+    assert_eq!(outcomes.len(), metrics.len() as u32);
+}

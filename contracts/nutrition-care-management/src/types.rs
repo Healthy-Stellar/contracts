@@ -17,6 +17,9 @@ pub enum Error {
     AssessmentAlreadyHasMalnutritionRisk = 7,
     WeightRecordingFailed = 8,
     InvalidActivityLevel = 9,
+    OutcomeNotFound = 10,
+    InvalidOutcomeMetric = 11,
+    ProviderNotAuthorized = 12,
 }
 
 // -----------------------------------------------------------------------
@@ -202,6 +205,34 @@ pub struct OutcomeEvaluation {
     pub evaluated_at: u64,
 }
 
+/// Clinical outcome metric linked to a nutrition care plan (#393).
+/// Tracks measurable outcomes like weight, lab values, vitals over time.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClinicalOutcome {
+    pub outcome_id: u64,
+    pub care_plan_id: u64,
+    pub plan_version: u64,
+    pub provider_id: Address,
+    pub outcome_metric: String,
+    /// Value stored as integer × 100 for precision (e.g., 70.5 kg → 7050)
+    pub outcome_value_x100: i64,
+    pub measured_at: u64,
+    pub recorded_at: u64,
+}
+
+/// Event emitted when a nutrition outcome is recorded (#393).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NutritionOutcomeRecordedEvent {
+    pub outcome_id: u64,
+    pub care_plan_id: u64,
+    pub plan_version: u64,
+    pub outcome_metric: String,
+    pub outcome_value_x100: i64,
+    pub measured_at: u64,
+}
+
 // -----------------------------------------------------------------------
 // Storage keys
 // -----------------------------------------------------------------------
@@ -215,6 +246,8 @@ pub enum DataKey {
     CarePlanCounter,
     /// Auto-increment counter for diet orders.
     DietOrderCounter,
+    /// Auto-increment counter for clinical outcomes (#393).
+    OutcomeCounter,
 
     /// assessment_id → NutritionAssessment
     Assessment(u64),
@@ -240,4 +273,12 @@ pub enum DataKey {
     PatientAssessments(Address),
     /// patient_id → Vec<u64> (diet order ids)
     PatientDietOrders(Address),
+    /// care_plan_id → Vec<u64> (outcome ids) (#393)
+    PlanOutcomes(u64),
+    /// outcome_id → ClinicalOutcome (#393)
+    ClinicalOutcome(u64),
+    /// care_plan_id → u64 (current plan version) (#393)
+    PlanVersion(u64),
+    /// care_plan_id → Vec<Address> (authorized providers) (#393)
+    AuthorizedProviders(u64),
 }
