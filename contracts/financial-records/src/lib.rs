@@ -2,7 +2,7 @@
 use shared::privacy::{
     validate_encrypted_ref, validate_policy_metadata, EncryptedEnvelopeRef, PolicyMetadata,
 };
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, vec, Address, Env, Vec};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, symbol_short, vec, Address, Env, Vec};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -250,14 +250,18 @@ impl FinancialRecordContract {
         owner.require_auth();
         e.storage()
             .persistent()
-            .set(&DataKey::Access(owner, authorized), &true);
+            .set(&DataKey::Access(owner.clone(), authorized.clone()), &true);
+        e.events()
+            .publish((symbol_short!("grant"), owner, authorized), ());
     }
 
     pub fn revoke_access(e: Env, owner: Address, authorized: Address) {
         owner.require_auth();
         e.storage()
             .persistent()
-            .remove(&DataKey::Access(owner, authorized));
+            .remove(&DataKey::Access(owner.clone(), authorized.clone()));
+        e.events()
+            .publish((symbol_short!("revoke"), owner, authorized), ());
     }
 
     fn check_access(e: &Env, caller: &Address, owner: &Address) -> Result<(), ContractError> {
