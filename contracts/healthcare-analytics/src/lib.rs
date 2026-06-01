@@ -14,6 +14,42 @@ use shared::incident_tracking::{
 };
 
 /// --------------------
+/// Degradation Policy
+/// --------------------
+
+/// Controls how `request_report` behaves when system resources are constrained.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DegradationPolicy {
+    /// Fail hard — return `Error::JobThrottled` (default, preserves previous behaviour).
+    Fail,
+    /// Accept with halved resource quota; returns `ResultQuality::Truncated`.
+    Approximate,
+    /// Accept at 50 % sampling rate; returns `ResultQuality::Sampled`.
+    Sample,
+}
+
+/// Indicates the completeness of a report job's results.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ResultQuality {
+    /// Full fidelity — no degradation applied.
+    Full,
+    /// Partial results due to resource cap; some records omitted.
+    Truncated,
+    /// Results derived from a statistical sample; extrapolation applied.
+    Sampled,
+}
+
+/// Returned by `request_report` to surface the accepted job and its quality tier.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReportJobAccepted {
+    pub job_id: u64,
+    pub result_quality: ResultQuality,
+}
+
+/// --------------------
 /// Data Structures
 /// --------------------
 
@@ -64,6 +100,8 @@ pub enum DataKey {
     QualityMetric(u64),
     QualityMetricsByProvider(Address),
     Admin,
+    /// Stores the `ResultQuality` for a report job accepted under a degraded policy.
+    JobResultQuality(u64),
 }
 
 /// --------------------
@@ -101,8 +139,17 @@ impl HealthcareAnalytics {
         Ok(())
     }
 
-    /// Request a report generation job
-    /// Returns job_id if accepted, or error if throttled/insufficient resources
+    /// Request a report generation job.
+    ///
+    /// When the system is under resource pressure the caller can choose a
+    /// `degradation_mode` instead of always failing:
+    /// - `Fail`        — return `JobThrottled` (legacy behaviour).
+    /// - `Approximate` — accept with a halved resource quota; results may be
+    ///                    truncated. Returns `ResultQuality::Truncated`.
+    /// - `Sample`      — accept at 50 % sampling rate; results are extrapolated.
+    ///                    Returns `ResultQuality::Sampled`.
+    ///
+    /// A `rep_degr` event is emitted whenever a degraded mode is applied.
     pub fn request_report(
         env: Env,
         requester: Address,
@@ -110,46 +157,136 @@ impl HealthcareAnalytics {
         priority: JobPriority,
         estimated_cpu: u64,
         estimated_memory: u64,
-    ) -> Result<u64, Error> {
+        degradation_mode: DegradationPolicy,
+    ) -> Result<ReportJobAccepted, Error> {
         requester.require_auth();
 
-        // Check if system is throttled
-        if should_throttle_job(&env) {
-            // Capture incident for throttling
-            let incident_id = capture_incident(
-                &env,
-                IncidentSeverity::High,
-                String::from_str(&env, "healthcare-analytics"),
-                5, // Throttling error code
-                String::from_str(&env, "Report job throttled due to resource constraints"),
-                requester.clone(),
-                None,
-            );
-            // Attach evidence: current resource usage
-            let cpu_used: u64 = env.storage().instance().get(&ResourceKey::TotalCpuUsed).unwrap_or(0);
-            let memory_used: u64 = env.storage().instance().get(&ResourceKey::TotalMemoryUsed).unwrap_or(0);
-            let hash: Bytes = env.crypto().sha256(
-                &Bytes::from_slice(&env, b"current_resource_usage_snapshot")
-            ).into();
-            let _ = attach_evidence(&env, incident_id, EvidenceType::StateSnapshot, hash, requester.clone());
-            return Err(Error::JobThrottled);
+        let throttled = should_throttle_job(&env);
+
+        if throttled {
+            match degradation_mode {
+                DegradationPolicy::Fail => {
+                    let incident_id = capture_incident(
+                        &env,
+                        IncidentSeverity::High,
+                        String::from_str(&env, "healthcare-analytics"),
+                        5,
+                        String::from_str(
+                            &env,
+                            "Report job throttled due to resource constraints",
+                        ),
+                        requester.clone(),
+                        None,
+                    );
+                    let hash: Bytes = env
+                        .crypto()
+                        .sha256(&Bytes::from_slice(
+                            &env,
+                            b"current_resource_usage_snapshot",
+                        ))
+                        .into();
+                    let _ = attach_evidence(
+                        &env,
+                        incident_id,
+                        EvidenceType::StateSnapshot,
+                        hash,
+                        requester.clone(),
+                    );
+                    return Err(Error::JobThrottled);
+                }
+                DegradationPolicy::Approximate => {
+                    let quota = ResourceQuota {
+                        cpu_units: estimated_cpu / 2,
+                        memory_units: estimated_memory / 2,
+                        timeout_seconds: 300,
+                    };
+                    let job_id = create_report_job(
+                        &env,
+                        report_type.clone(),
+                        priority,
+                        requester.clone(),
+                        quota,
+                    );
+                    env.storage().persistent().set(
+                        &DataKey::JobResultQuality(job_id),
+                        &ResultQuality::Truncated,
+                    );
+                    env.events().publish(
+                        (symbol_short!("rep_degr"), requester.clone()),
+                        (
+                            report_type.clone(),
+                            job_id,
+                            Symbol::new(&env, "approximate"),
+                            100u32,
+                        ),
+                    );
+                    env.events()
+                        .publish((symbol_short!("rep_job"), requester), (report_type, job_id));
+                    return Ok(ReportJobAccepted {
+                        job_id,
+                        result_quality: ResultQuality::Truncated,
+                    });
+                }
+                DegradationPolicy::Sample => {
+                    let sampling_rate_pct: u32 = 50;
+                    let quota = ResourceQuota {
+                        cpu_units: estimated_cpu * (sampling_rate_pct as u64) / 100,
+                        memory_units: estimated_memory * (sampling_rate_pct as u64) / 100,
+                        timeout_seconds: 300,
+                    };
+                    let job_id = create_report_job(
+                        &env,
+                        report_type.clone(),
+                        priority,
+                        requester.clone(),
+                        quota,
+                    );
+                    env.storage().persistent().set(
+                        &DataKey::JobResultQuality(job_id),
+                        &ResultQuality::Sampled,
+                    );
+                    env.events().publish(
+                        (symbol_short!("rep_degr"), requester.clone()),
+                        (
+                            report_type.clone(),
+                            job_id,
+                            Symbol::new(&env, "sample"),
+                            sampling_rate_pct,
+                        ),
+                    );
+                    env.events()
+                        .publish((symbol_short!("rep_job"), requester), (report_type, job_id));
+                    return Ok(ReportJobAccepted {
+                        job_id,
+                        result_quality: ResultQuality::Sampled,
+                    });
+                }
+            }
         }
 
         let quota = ResourceQuota {
             cpu_units: estimated_cpu,
             memory_units: estimated_memory,
-            timeout_seconds: 300, // 5 minutes default
+            timeout_seconds: 300,
         };
+        let job_id =
+            create_report_job(&env, report_type.clone(), priority, requester.clone(), quota);
 
-        // Create the job via shared module
-        let job_id = create_report_job(&env, report_type.clone(), priority, requester.clone(), quota);
+        env.events()
+            .publish((symbol_short!("rep_job"), requester), (report_type, job_id));
 
-        env.events().publish(
-            (symbol_short!("rep_job"), requester),
-            (report_type, job_id),
-        );
+        Ok(ReportJobAccepted {
+            job_id,
+            result_quality: ResultQuality::Full,
+        })
+    }
 
-        Ok(job_id)
+    /// Return the result quality for a report job (`Full` if not degraded).
+    pub fn get_job_result_quality(env: Env, job_id: u64) -> ResultQuality {
+        env.storage()
+            .persistent()
+            .get(&DataKey::JobResultQuality(job_id))
+            .unwrap_or(ResultQuality::Full)
     }
 
     /// Execute next available report job (respects resource limits)

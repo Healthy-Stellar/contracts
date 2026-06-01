@@ -663,3 +663,116 @@ fn test_time_series_support() {
     assert_eq!(all.count, 4);
     assert_eq!(all.average, 127);
 }
+
+// ========================
+// Degradation policy tests
+// ========================
+
+fn setup_with_admin() -> (Env, HealthcareAnalyticsClient<'static>, Address) {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(HealthcareAnalytics, ());
+    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin).unwrap();
+    (env, client, admin)
+}
+
+#[test]
+fn test_request_report_full_quality_when_not_throttled() {
+    let (env, client, _admin) = setup_with_admin();
+    let requester = Address::generate(&env);
+
+    let accepted = client
+        .request_report(
+            &requester,
+            &String::from_str(&env, "quality_metrics"),
+            &shared::resource_management::JobPriority::Normal,
+            &500_000,
+            &50_000,
+            &DegradationPolicy::Fail,
+        )
+        .unwrap();
+
+    assert_eq!(accepted.result_quality, ResultQuality::Full);
+    assert_eq!(
+        client.get_job_result_quality(&accepted.job_id),
+        ResultQuality::Full
+    );
+}
+
+#[test]
+fn test_request_report_fail_policy_when_throttled() {
+    let (env, client, admin) = setup_with_admin();
+    let requester = Address::generate(&env);
+
+    // throttle_threshold = 0 means always throttled
+    client
+        .set_resource_limits(&admin, &1, &1, &1, &0)
+        .unwrap();
+
+    let result = client.request_report(
+        &requester,
+        &String::from_str(&env, "adverse_event"),
+        &shared::resource_management::JobPriority::Normal,
+        &1_000_000,
+        &100_000,
+        &DegradationPolicy::Fail,
+    );
+
+    assert_eq!(result, Err(Ok(Error::JobThrottled)));
+}
+
+#[test]
+fn test_request_report_approximate_policy_when_throttled() {
+    let (env, client, admin) = setup_with_admin();
+    let requester = Address::generate(&env);
+
+    client
+        .set_resource_limits(&admin, &1, &1, &1, &0)
+        .unwrap();
+
+    let accepted = client
+        .request_report(
+            &requester,
+            &String::from_str(&env, "quality_metrics"),
+            &shared::resource_management::JobPriority::Normal,
+            &1_000_000,
+            &100_000,
+            &DegradationPolicy::Approximate,
+        )
+        .unwrap();
+
+    assert_eq!(accepted.result_quality, ResultQuality::Truncated);
+    assert_eq!(
+        client.get_job_result_quality(&accepted.job_id),
+        ResultQuality::Truncated
+    );
+}
+
+#[test]
+fn test_request_report_sample_policy_when_throttled() {
+    let (env, client, admin) = setup_with_admin();
+    let requester = Address::generate(&env);
+
+    client
+        .set_resource_limits(&admin, &1, &1, &1, &0)
+        .unwrap();
+
+    let accepted = client
+        .request_report(
+            &requester,
+            &String::from_str(&env, "quality_metrics"),
+            &shared::resource_management::JobPriority::Normal,
+            &1_000_000,
+            &100_000,
+            &DegradationPolicy::Sample,
+        )
+        .unwrap();
+
+    assert_eq!(accepted.result_quality, ResultQuality::Sampled);
+    assert_eq!(
+        client.get_job_result_quality(&accepted.job_id),
+        ResultQuality::Sampled
+    );
+}
