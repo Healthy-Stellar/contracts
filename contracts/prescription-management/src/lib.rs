@@ -38,6 +38,12 @@ pub trait ProviderRegistryInterface {
 /// Attempting to exceed this returns `Error::TransferHistoryFull`.
 pub const MAX_TRANSFER_HISTORY: u32 = 100;
 
+pub const SECONDS_PER_HOUR: u64 = 3600;
+/// 30-day window used when extending a prescription's validity on refill.
+pub const REFILL_WINDOW_SECS: u64 = 30 * 24 * SECONDS_PER_HOUR;
+/// Divisor applied to a prescription's total quantity for schedule-2 per-dispense limits.
+pub const MIN_REFILL_QUANTITY_DIVISOR: u32 = 2;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -467,7 +473,7 @@ impl PrescriptionContract {
         // Controlled substance checks
         if p.is_controlled {
             if let Some(schedule) = p.schedule {
-                if schedule == 2 && req.quantity > p.quantity / 2 {
+                if schedule == 2 && req.quantity > p.quantity / MIN_REFILL_QUANTITY_DIVISOR {
                     return Err(Error::ControlledSubstanceViolation);
                 }
             }
@@ -1148,7 +1154,7 @@ impl PrescriptionContract {
         let new_valid_until = env
             .ledger()
             .timestamp()
-            .checked_add(30u64 * 24 * 60 * 60)
+            .checked_add(REFILL_WINDOW_SECS)
             .ok_or(Error::InvalidValidityWindow)?;
         if new_valid_until > p.valid_until {
             p.valid_until = new_valid_until;

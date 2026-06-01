@@ -2,7 +2,7 @@ use shared_contracts::safe_increment_persistent;
 use soroban_sdk::{Address, Env, Vec};
 
 use crate::types::{
-    ComputedNeeds, DataKey, DietOrder, FoodIntakeRecord, MalnutritionScreening,
+    ClinicalOutcome, ComputedNeeds, DataKey, DietOrder, FoodIntakeRecord, MalnutritionScreening,
     NutritionAssessment, NutritionCarePlan, NutritionIntervention, OutcomeEvaluation,
     SupplementRecommendation, WeightEntry,
 };
@@ -227,4 +227,92 @@ pub fn load_outcome_evaluation(env: &Env, care_plan_id: u64) -> Option<OutcomeEv
     env.storage()
         .persistent()
         .get(&DataKey::OutcomeEvaluation(care_plan_id))
+}
+
+// -----------------------------------------------------------------------
+// ClinicalOutcome (#393)
+// -----------------------------------------------------------------------
+
+pub fn next_outcome_id(env: &Env) -> u64 {
+    safe_increment_persistent(env, &DataKey::OutcomeCounter)
+}
+
+pub fn save_clinical_outcome(env: &Env, outcome: &ClinicalOutcome) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::ClinicalOutcome(outcome.outcome_id), outcome);
+}
+
+pub fn load_clinical_outcome(env: &Env, outcome_id: u64) -> Option<ClinicalOutcome> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::ClinicalOutcome(outcome_id))
+}
+
+pub fn append_plan_outcome(env: &Env, care_plan_id: u64, outcome_id: u64) {
+    let mut ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::PlanOutcomes(care_plan_id))
+        .unwrap_or(Vec::new(env));
+    ids.push_back(outcome_id);
+    env.storage()
+        .persistent()
+        .set(&DataKey::PlanOutcomes(care_plan_id), &ids);
+}
+
+pub fn load_plan_outcomes(env: &Env, care_plan_id: u64) -> Vec<u64> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::PlanOutcomes(care_plan_id))
+        .unwrap_or(Vec::new(env))
+}
+
+pub fn get_plan_version(env: &Env, care_plan_id: u64) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::PlanVersion(care_plan_id))
+        .unwrap_or(1)
+}
+
+pub fn increment_plan_version(env: &Env, care_plan_id: u64) {
+    let current = get_plan_version(env, care_plan_id);
+    env.storage()
+        .persistent()
+        .set(&DataKey::PlanVersion(care_plan_id), &(current + 1));
+}
+
+pub fn add_authorized_provider(env: &Env, care_plan_id: u64, provider: &Address) {
+    let mut providers: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::AuthorizedProviders(care_plan_id))
+        .unwrap_or(Vec::new(env));
+    
+    // Check if provider is already authorized
+    for p in providers.iter() {
+        if p == *provider {
+            return; // Already authorized
+        }
+    }
+    
+    providers.push_back(provider.clone());
+    env.storage()
+        .persistent()
+        .set(&DataKey::AuthorizedProviders(care_plan_id), &providers);
+}
+
+pub fn is_provider_authorized(env: &Env, care_plan_id: u64, provider: &Address) -> bool {
+    let providers: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::AuthorizedProviders(care_plan_id))
+        .unwrap_or(Vec::new(env));
+    
+    for p in providers.iter() {
+        if p == *provider {
+            return true;
+        }
+    }
+    false
 }

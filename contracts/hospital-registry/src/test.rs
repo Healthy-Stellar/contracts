@@ -275,3 +275,163 @@ fn test_hospital_config_flow() {
     let stored_after = client.get_hospital_config(&hospital_wallet);
     assert_eq!(stored_after.departments, updated_departments);
 }
+
+#[test]
+fn test_update_departments_exceeds_limit() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, HospitalRegistry);
+    let client = HospitalRegistryClient::new(&env, &contract_id);
+
+    let hospital_wallet = Address::generate(&env);
+    env.mock_all_auths();
+
+    register_hospital_with_anchor(&env, &client, &hospital_wallet);
+
+    // Initialise an empty config so get_hospital_config succeeds inside update_departments
+    client.set_hospital_config(&hospital_wallet, &HospitalConfig {
+        departments: Vec::new(&env),
+        locations: Vec::new(&env),
+        equipment: Vec::new(&env),
+        policies: Vec::new(&env),
+        alerts: Vec::new(&env),
+        insurance_providers: Vec::new(&env),
+        billing: BillingConfig {
+            currency: String::from_str(&env, "USD"),
+            payment_terms: String::from_str(&env, "Net 30"),
+            tax_id: String::from_str(&env, "TAX-001"),
+        },
+        emergency_protocols: Vec::new(&env),
+    });
+
+    let mut departments: Vec<Department> = Vec::new(&env);
+    for i in 0..=MAX_DEPARTMENTS {
+        departments.push_back(Department {
+            name: String::from_str(&env, "Dept"),
+            head: String::from_str(&env, "Head"),
+            contact: String::from_str(&env, "contact@hospital.org"),
+        });
+        let _ = i;
+    }
+
+    let result = client.try_update_departments(&hospital_wallet, &departments);
+    assert_eq!(result, Err(Ok(ContractError::ConfigLimitExceeded)));
+}
+
+#[test]
+fn test_update_locations_exceeds_limit() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, HospitalRegistry);
+    let client = HospitalRegistryClient::new(&env, &contract_id);
+
+    let hospital_wallet = Address::generate(&env);
+    env.mock_all_auths();
+
+    register_hospital_with_anchor(&env, &client, &hospital_wallet);
+
+    client.set_hospital_config(&hospital_wallet, &HospitalConfig {
+        departments: Vec::new(&env),
+        locations: Vec::new(&env),
+        equipment: Vec::new(&env),
+        policies: Vec::new(&env),
+        alerts: Vec::new(&env),
+        insurance_providers: Vec::new(&env),
+        billing: BillingConfig {
+            currency: String::from_str(&env, "USD"),
+            payment_terms: String::from_str(&env, "Net 30"),
+            tax_id: String::from_str(&env, "TAX-001"),
+        },
+        emergency_protocols: Vec::new(&env),
+    });
+
+    let mut locations: Vec<Location> = Vec::new(&env);
+    for i in 0..=MAX_LOCATIONS {
+        locations.push_back(Location {
+            name: String::from_str(&env, "Loc"),
+            address: String::from_str(&env, "Addr"),
+            metadata: String::from_str(&env, ""),
+        });
+        let _ = i;
+    }
+
+    let result = client.try_update_locations(&hospital_wallet, &locations);
+    assert_eq!(result, Err(Ok(ContractError::ConfigLimitExceeded)));
+}
+
+#[test]
+fn test_update_equipment_exceeds_limit() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, HospitalRegistry);
+    let client = HospitalRegistryClient::new(&env, &contract_id);
+
+    let hospital_wallet = Address::generate(&env);
+    env.mock_all_auths();
+
+    register_hospital_with_anchor(&env, &client, &hospital_wallet);
+
+    client.set_hospital_config(&hospital_wallet, &HospitalConfig {
+        departments: Vec::new(&env),
+        locations: Vec::new(&env),
+        equipment: Vec::new(&env),
+        policies: Vec::new(&env),
+        alerts: Vec::new(&env),
+        insurance_providers: Vec::new(&env),
+        billing: BillingConfig {
+            currency: String::from_str(&env, "USD"),
+            payment_terms: String::from_str(&env, "Net 30"),
+            tax_id: String::from_str(&env, "TAX-001"),
+        },
+        emergency_protocols: Vec::new(&env),
+    });
+
+    let mut equipment: Vec<EquipmentResource> = Vec::new(&env);
+    for i in 0..=MAX_EQUIPMENT {
+        equipment.push_back(EquipmentResource {
+            name: String::from_str(&env, "Item"),
+            quantity: 1,
+            status: String::from_str(&env, "operational"),
+            metadata: String::from_str(&env, ""),
+        });
+        let _ = i;
+    }
+
+    let result = client.try_update_equipment(&hospital_wallet, &equipment);
+    assert_eq!(result, Err(Ok(ContractError::ConfigLimitExceeded)));
+}
+
+#[test]
+fn test_set_hospital_config_exceeds_limits() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, HospitalRegistry);
+    let client = HospitalRegistryClient::new(&env, &contract_id);
+
+    let hospital_wallet = Address::generate(&env);
+    env.mock_all_auths();
+
+    register_hospital_with_anchor(&env, &client, &hospital_wallet);
+
+    let mut locations: Vec<Location> = Vec::new(&env);
+    for i in 0..=MAX_LOCATIONS {
+        locations.push_back(Location {
+            name: String::from_str(&env, "Loc"),
+            address: String::from_str(&env, "Addr"),
+            metadata: String::from_str(&env, ""),
+        });
+        let _ = i;
+    }
+
+    let result = client.try_set_hospital_config(&hospital_wallet, &HospitalConfig {
+        departments: Vec::new(&env),
+        locations,
+        equipment: Vec::new(&env),
+        policies: Vec::new(&env),
+        alerts: Vec::new(&env),
+        insurance_providers: Vec::new(&env),
+        billing: BillingConfig {
+            currency: String::from_str(&env, "USD"),
+            payment_terms: String::from_str(&env, "Net 30"),
+            tax_id: String::from_str(&env, "TAX-001"),
+        },
+        emergency_protocols: Vec::new(&env),
+    });
+    assert_eq!(result, Err(Ok(ContractError::ConfigLimitExceeded)));
+}

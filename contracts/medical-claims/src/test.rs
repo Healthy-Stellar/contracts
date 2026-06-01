@@ -60,6 +60,8 @@ fn setup(
 ) {
     // Register the always-approving mock access-control contract (#300).
     let ac_id = env.register(MockAccessControl, ());
+    // Mock financial records contract (not needed for these tests)
+    let fr_id = Address::generate(env);
 
     let contract_id = env.register_contract(None, MedicalClaimsSystem);
     let client = MedicalClaimsSystemClient::new(env, &contract_id);
@@ -67,7 +69,7 @@ fn setup(
     let provider = Address::generate(env);
     let patient = Address::generate(env);
     let insurer = Address::generate(env);
-    client.initialize(&admin, &ac_id);
+    client.initialize(&admin, &ac_id, &fr_id, &86400); // 24 hour threshold
     client.register_insurer(&admin, &insurer);
     (client, admin, provider, patient, insurer)
 }
@@ -315,7 +317,8 @@ fn test_double_initialize_fails() {
     // Second initialize must fail regardless of which access-control address is
     // provided — the AlreadyInitialized guard is checked first.
     let dummy_ac = Address::generate(&env);
-    let result = client.try_initialize(&admin, &dummy_ac);
+    let dummy_fr = Address::generate(&env);
+    let result = client.try_initialize(&admin, &dummy_ac, &dummy_fr, &86400);
     assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
 }
 
@@ -415,4 +418,247 @@ fn test_appeal_level_0_rejected() {
         Err(Ok(Error::InvalidAppealLevel)),
         "appeal_level = 0 must be rejected with InvalidAppealLevel"
     );
+}
+
+// ─── Issue #392 ── Financial reconciliation tests ─────────────────────────
+
+#[test]
+fn test_reconcile_insurer_payment() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, provider, patient, insurer) = setup(&env);
+
+    let claim_id = client.submit_claim(
+        &provider,
+        &patient,
+        &insurer,
+        &1,
+        &1000,
+        &make_services(&env),
+        &Vec::new(&env),
+        &BytesN::from_array(&env, &[0; 32]),
+        &policy(&env),
+        &15000,
+    );
+
+    client.adjudicate_claim(
+        &claim_id,
+        &insurer,
+        &Vec::new(&env),
+        &Vec::new(&env),
+        &10000,
+        &2000,
+    );
+
+    client.process_payment(
+        &claim_id,
+        &insurer,
+        &10000,
+        &1690100000,
+        &reference_hash(&env, 8),
+    );
+
+    let fr_owner = Address::generate(&env);
+    let result = client.try_reconcile_claim(&claim_id, &0, &true, &fr_owner, &0, &insurer);
+    assert!(result.is_ok());
+
+    let payments = client.get_insurer_payments(&claim_id);
+    assert_eq!(payments.len(), 1);
+    assert!(payments.get(0).unwrap().reconciled);
+}
+
+#[test]
+fn test_reconcile_patient_payment() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, provider, patient, insurer) = setup(&env);
+
+    let claim_id = client.submit_claim(
+        &provider,
+        &patient,
+        &insurer,
+        &1,
+        &1000,
+        &make_services(&env),
+        &Vec::new(&env),
+        &BytesN::from_array(&env, &[0; 32]),
+        &policy(&env),
+        &15000,
+    );
+
+    client.adjudicate_claim(
+        &claim_id,
+        &insurer,
+        &Vec::new(&env),
+        &Vec::new(&env),
+        &10000,
+        &2000,
+    );
+
+    client.process_payment(
+        &claim_id,
+        &insurer,
+        &10000,
+        &1690100000,
+        &reference_hash(&env, 8),
+    );
+
+    client.apply_patient_payment(&claim_id, &patient, &2000, &1690200000);
+
+    let fr_owner = Address::generate(&env);
+    let result = client.try_reconcile_claim(&claim_id, &0, &false, &fr_owner, &0, &patient);
+    assert!(result.is_ok());
+
+    let payments = client.get_patient_payments(&claim_id);
+    assert_eq!(payments.len(), 1);
+    assert!(payments.get(0).unwrap().reconciled);
+}
+
+#[test]
+fn test_reconcile_payment_already_reconciled() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, provider, patient, insurer) = setup(&env);
+
+    let claim_id = client.submit_claim(
+        &provider,
+        &patient,
+        &insurer,
+        &1,
+        &1000,
+        &make_services(&env),
+        &Vec::new(&env),
+        &BytesN::from_array(&env, &[0; 32]),
+        &policy(&env),
+        &15000,
+    );
+
+    client.adjudicate_claim(
+        &claim_id,
+        &insurer,
+        &Vec::new(&env),
+        &Vec::new(&env),
+        &10000,
+        &2000,
+    );
+
+    client.process_payment(
+        &claim_id,
+        &insurer,
+        &10000,
+        &1690100000,
+        &reference_hash(&env, 8),
+    );
+
+    let fr_owner = Address::generate(&env);
+    client.reconcile_claim(&claim_id, &0, &true, &fr_owner, &0, &insurer);
+
+    // Try to reconcile again
+    let result = client.try_reconcile_claim(&claim_id, &0, &true, &fr_owner, &1, &insurer);
+    assert_eq!(result, Err(Ok(Error::PaymentAlreadyReconciled)));
+}
+
+#[test]
+fn test_mark_claim_disputed() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, provider, patient, insurer) = setup(&env);
+
+    let claim_id = client.submit_claim(
+        &provider,
+        &patient,
+        &insurer,
+        &1,
+        &1000,
+        &make_services(&env),
+        &Vec::new(&env),
+        &BytesN::from_array(&env, &[0; 32]),
+        &policy(&env),
+        &15000,
+    );
+
+    client.adjudicate_claim(
+        &claim_id,
+        &insurer,
+        &Vec::new(&env),
+        &Vec::new(&env),
+        &10000,
+        &2000,
+    );
+
+    client.mark_claim_disputed(&claim_id, &insurer);
+
+    let claim = client.get_claim(&claim_id);
+    assert_eq!(claim.reconciliation_status, ReconciliationStatus::Disputed);
+}
+
+#[test]
+fn test_get_unreconciled_claims() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, provider, patient, insurer) = setup(&env);
+
+    // Get current ledger time and set service date to be older than threshold
+    let current_time = env.ledger().timestamp();
+    let old_timestamp = current_time.saturating_sub(90000); // More than 24 hours ago
+    
+    let claim_id = client.submit_claim(
+        &provider,
+        &patient,
+        &insurer,
+        &1,
+        &old_timestamp,
+        &make_services(&env),
+        &Vec::new(&env),
+        &BytesN::from_array(&env, &[0; 32]),
+        &policy(&env),
+        &15000,
+    );
+
+    client.adjudicate_claim(
+        &claim_id,
+        &insurer,
+        &Vec::new(&env),
+        &Vec::new(&env),
+        &10000,
+        &2000,
+    );
+
+    let unreconciled = client.get_unreconciled_claims(&insurer);
+    assert!(unreconciled.len() > 0);
+    assert!(unreconciled.contains(&claim_id));
+}
+
+#[test]
+fn test_set_reconciliation_threshold() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _, _, _) = setup(&env);
+
+    let result = client.try_set_reconciliation_threshold(&admin, &172800);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_unauthorized_cannot_mark_disputed() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, provider, patient, insurer) = setup(&env);
+
+    let claim_id = client.submit_claim(
+        &provider,
+        &patient,
+        &insurer,
+        &1,
+        &1000,
+        &make_services(&env),
+        &Vec::new(&env),
+        &BytesN::from_array(&env, &[0; 32]),
+        &policy(&env),
+        &15000,
+    );
+
+    let unauthorized = Address::generate(&env);
+    let result = client.try_mark_claim_disputed(&claim_id, &unauthorized);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
 }

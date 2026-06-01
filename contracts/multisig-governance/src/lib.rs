@@ -338,10 +338,8 @@ impl MultisigGovernance {
         // Validate the change is meaningful.
         match kind {
             SignerChangeKind::Add => {
-                for s in signers.iter() {
-                    if s == target {
-                        return Err(Error::AlreadySigner);
-                    }
+                if is_signer(&env, &signers, &target) {
+                    return Err(Error::AlreadySigner);
                 }
             }
             SignerChangeKind::Remove => {
@@ -355,14 +353,7 @@ impl MultisigGovernance {
                     return Err(Error::ThresholdBreached);
                 }
                 // Target must be a current signer.
-                let mut found = false;
-                for s in signers.iter() {
-                    if s == target {
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
+                if !is_signer(&env, &signers, &target) {
                     return Err(Error::NotASigner);
                 }
             }
@@ -532,11 +523,19 @@ impl MultisigGovernance {
             .persistent()
             .get(&DataKey::Signers)
             .ok_or(Error::NotInitialized)?;
-        for i in 0..signers.len() {
-            if signers.get(i).ok_or(Error::NotASigner)? == *caller {
-                return Ok(());
-            }
+        if is_signer(env, &signers, caller) {
+            return Ok(());
         }
         Err(Error::NotASigner)
     }
+}
+
+/// Returns `true` if `addr` is present in `signers`.
+fn is_signer(_env: &Env, signers: &Vec<Address>, addr: &Address) -> bool {
+    for s in signers.iter() {
+        if s == *addr {
+            return true;
+        }
+    }
+    false
 }

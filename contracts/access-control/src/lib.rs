@@ -1030,6 +1030,69 @@ impl AccessControl {
     }
 
     // -----------------------------------------------------------------------
+    // Patient deregistration hook
+    // -----------------------------------------------------------------------
+
+    /// Remove all access-control state for a deregistered patient.
+    ///
+    /// Clears:
+    /// - `Entity` record
+    /// - `AccessList` (all permissions granted to the patient)
+    /// - `SubjectConsents` index + every `Consent` record where the patient is
+    ///   the subject
+    /// - `Did` registration
+    ///
+    /// Only callable by the stored admin.
+    pub fn deregister_patient(env: Env, patient: Address) -> Result<(), ContractError> {
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .ok_or(ContractError::ContractNotInitialized)?;
+        admin.require_auth();
+
+        // Remove entity record
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Entity(patient.clone()));
+
+        // Remove access list
+        env.storage()
+            .persistent()
+            .remove(&DataKey::AccessList(patient.clone()));
+
+        // Remove DID
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Did(patient.clone()));
+
+        // Remove all consent records where patient is the subject
+        let idx_key = DataKey::SubjectConsents(patient.clone());
+        let consent_index: Vec<ConsentIndexEntry> = env
+            .storage()
+            .persistent()
+            .get(&idx_key)
+            .unwrap_or(Vec::new(&env));
+
+        for i in 0..consent_index.len() {
+            if let Some(entry) = consent_index.get(i) {
+                env.storage().persistent().remove(&DataKey::Consent(
+                    patient.clone(),
+                    entry.grantee,
+                    entry.purpose_code,
+                ));
+            }
+        }
+        env.storage().persistent().remove(&idx_key);
+
+        env.events().publish(
+            (symbol_short!("pat_dreg"), patient),
+            symbol_short!("ac_clean"),
+        );
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
 

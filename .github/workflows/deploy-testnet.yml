@@ -1,0 +1,194 @@
+name: Deploy to Testnet
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      contracts:
+        description: 'Comma-separated list of contracts to deploy (leave empty for all changed)'
+        required: false
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  SOROBAN_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+  SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org"
+
+jobs:
+  detect-changes:
+    name: Detect Changed Contracts
+    runs-on: ubuntu-latest
+    outputs:
+      contracts: ${{ steps.changes.outputs.contracts }}
+      has_changes: ${{ steps.changes.outputs.has_changes }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed contracts
+        id: changes
+        run: |
+          if [ -n "${{ github.event.inputs.contracts }}" ]; then
+            # Manual trigger with specific contracts
+            CONTRACTS="${{ github.event.inputs.contracts }}"
+            echo "contracts=$CONTRACTS" >> $GITHUB_OUTPUT
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "Deploying manually specified contracts: $CONTRACTS"
+          else
+            # Detect changes from git diff
+            CHANGED_FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep '^contracts/' || true)
+            
+            if [ -z "$CHANGED_FILES" ]; then
+              echo "No contract changes detected"
+              echo "has_changes=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            
+            # Extract unique contract names
+            CONTRACTS=$(echo "$CHANGED_FILES" | cut -d'/' -f2 | sort -u | tr '\n' ',' | sed 's/,$//')
+            
+            echo "contracts=$CONTRACTS" >> $GITHUB_OUTPUT
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "Changed contracts: $CONTRACTS"
+          fi
+
+  build-and-deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_changes == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-git-
+
+      - name: Install soroban-cli
+        run: |
+          cargo install --locked soroban-cli --features opt
+
+      - name: Configure Soroban identity
+        env:
+          STELLAR_SECRET_KEY: ${{ secrets.STELLAR_SECRET_KEY }}
+        run: |
+          if [ -z "$STELLAR_SECRET_KEY" ]; then
+            echo "Error: STELLAR_SECRET_KEY secret not configured"
+            exit 1
+          fi
+          soroban keys add deployer --secret-key "$STELLAR_SECRET_KEY"
+
+      - name: Build and deploy contracts
+        id: deploy
+        env:
+          CONTRACTS: ${{ needs.detect-changes.outputs.contracts }}
+        run: |
+          IFS=',' read -ra CONTRACT_ARRAY <<< "$CONTRACTS"
+          
+          DEPLOYMENT_SUMMARY="## Testnet Deployment Summary\n\n"
+          DEPLOYMENT_SUMMARY+="**Deployed at:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')\n"
+          DEPLOYMENT_SUMMARY+="**Commit:** ${{ github.sha }}\n\n"
+          DEPLOYMENT_SUMMARY+="| Contract | Status | Contract ID |\n"
+          DEPLOYMENT_SUMMARY+="|----------|--------|-------------|\n"
+          
+          for contract in "${CONTRACT_ARRAY[@]}"; do
+            contract=$(echo "$contract" | xargs) # trim whitespace
+            
+            if [ ! -d "contracts/$contract" ]; then
+              echo "Warning: Contract directory contracts/$contract not found, skipping..."
+              DEPLOYMENT_SUMMARY+="| $contract | ⚠️ Not Found | - |\n"
+              continue
+            fi
+            
+            echo "Building $contract..."
+            cargo build --release --target wasm32-unknown-unknown --package "$contract" || {
+              echo "Build failed for $contract"
+              DEPLOYMENT_SUMMARY+="| $contract | ❌ Build Failed | - |\n"
+              continue
+            }
+            
+            WASM_FILE="target/wasm32-unknown-unknown/release/${contract//-/_}.wasm"
+            
+            if [ ! -f "$WASM_FILE" ]; then
+              echo "WASM file not found: $WASM_FILE"
+              DEPLOYMENT_SUMMARY+="| $contract | ❌ WASM Not Found | - |\n"
+              continue
+            fi
+            
+            echo "Optimizing $contract..."
+            soroban contract optimize --wasm "$WASM_FILE" || {
+              echo "Optimization failed for $contract, using unoptimized binary"
+            }
+            
+            echo "Deploying $contract to testnet..."
+            CONTRACT_ID=$(soroban contract deploy \
+              --wasm "$WASM_FILE" \
+              --source deployer \
+              --network testnet 2>&1 | tail -n1)
+            
+            if [ $? -eq 0 ] && [ -n "$CONTRACT_ID" ]; then
+              echo "Successfully deployed $contract: $CONTRACT_ID"
+              DEPLOYMENT_SUMMARY+="| $contract | ✅ Success | \`$CONTRACT_ID\` |\n"
+              
+              # Save contract ID to file
+              mkdir -p deployments
+              echo "$CONTRACT_ID" > "deployments/${contract}_testnet.txt"
+            else
+              echo "Deployment failed for $contract"
+              DEPLOYMENT_SUMMARY+="| $contract | ❌ Deploy Failed | - |\n"
+            fi
+          done
+          
+          echo -e "$DEPLOYMENT_SUMMARY" > deployment_summary.md
+          echo "summary<<EOF" >> $GITHUB_OUTPUT
+          cat deployment_summary.md >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Upload deployment artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-info
+          path: |
+            deployments/
+            deployment_summary.md
+          retention-days: 90
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const summary = fs.readFileSync('deployment_summary.md', 'utf8');
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: summary
+            });
+
+      - name: Create deployment summary
+        run: |
+          cat deployment_summary.md >> $GITHUB_STEP_SUMMARY

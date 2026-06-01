@@ -1,6 +1,16 @@
 use shared::privacy::PolicyMetadata;
 use soroban_sdk::{contracterror, contracttype, Address, BytesN, String, Vec};
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimReconciledEvent {
+    pub claim_id: u64,
+    pub payment_amount: i128,
+    pub claim_amount: i128,
+    pub outstanding_balance: i128,
+    pub reconciliation_status: ReconciliationStatus,
+}
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -18,6 +28,9 @@ pub enum Error {
     /// #300: Patient has not granted consent to this provider, or consent has
     /// expired / been revoked.  The access-control contract is the authority.
     ConsentNotVerified = 11,
+    PaymentNotFound = 12,
+    PaymentAlreadyReconciled = 13,
+    InvalidReconciliationAmount = 14,
 }
 
 #[contracttype]
@@ -33,9 +46,10 @@ pub enum ClaimStatus {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReconciliationStatus {
-    Unreconciled,
-    PartiallyReconciled,
-    Reconciled,
+    Pending,
+    PartiallyPaid,
+    FullyReconciled,
+    Disputed,
 }
 
 #[contracttype]
@@ -63,6 +77,9 @@ pub struct InsurerPaymentRecord {
     pub payment_date: u64,
     pub payment_amount: i128,
     pub payment_reference_hash: BytesN<32>,
+    pub reconciled: bool,
+    pub financial_record_owner: Option<Address>,
+    pub financial_record_idx: Option<u32>,
 }
 
 #[contracttype]
@@ -70,6 +87,9 @@ pub struct InsurerPaymentRecord {
 pub struct PatientPaymentRecord {
     pub payment_date: u64,
     pub payment_amount: i128,
+    pub reconciled: bool,
+    pub financial_record_owner: Option<Address>,
+    pub financial_record_idx: Option<u32>,
 }
 
 #[contracttype]
@@ -111,4 +131,7 @@ pub enum DataKey {
     /// #300: Address of the deployed access-control contract used to verify
     /// patient → provider consent before a claim may be submitted.
     AccessControlId,
+    FinancialRecordsId,
+    ReconciliationThreshold, // configurable threshold in seconds for unreconciled claims
+    InsurerUnreconciledClaims(Address), // insurer_id -> Vec<u64> of claim_ids
 }

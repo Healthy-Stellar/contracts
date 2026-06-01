@@ -490,6 +490,48 @@ impl PatientVitalsContract {
         let key = DataKey::VitalsAlerts(patient_id, vital_type);
         env.storage().persistent().get(&key).unwrap_or(Vec::new(&env))
     }
+
+    /// Remove all vitals state for a deregistered patient.
+    ///
+    /// Clears: `VitalsHistory`, `LatestRawWindow`, and all `VitalsAlerts`
+    /// for the standard vital types.
+    ///
+    /// Callable by the patient themselves.
+    pub fn deregister_patient(env: Env, patient_id: Address) {
+        patient_id.require_auth();
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::VitalsHistory(patient_id.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::LatestRawWindow(patient_id.clone()));
+
+        // Clear alerts for all standard vital types
+        let vital_types = [
+            Symbol::new(&env, "heart_rate"),
+            Symbol::new(&env, "bp_systolic"),
+            Symbol::new(&env, "bp_diastolic"),
+            Symbol::new(&env, "temperature"),
+            Symbol::new(&env, "respiratory"),
+            Symbol::new(&env, "oxygen_sat"),
+            Symbol::new(&env, "blood_glucose"),
+            Symbol::new(&env, "weight"),
+        ];
+        for vt in vital_types.iter() {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::VitalsAlerts(patient_id.clone(), vt.clone()));
+            env.storage()
+                .persistent()
+                .remove(&DataKey::LastAlertTime(patient_id.clone(), vt.clone()));
+        }
+
+        env.events().publish(
+            (Symbol::new(&env, "pat_dreg"), patient_id),
+            Symbol::new(&env, "pv_clean"),
+        );
+    }
 }
 
 /// Convert a u32 to a decimal Soroban String (no_std, no alloc).

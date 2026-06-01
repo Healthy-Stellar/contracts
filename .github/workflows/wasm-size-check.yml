@@ -1,0 +1,174 @@
+name: WASM Size Check
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'contracts/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  push:
+    branches: [main]
+    paths:
+      - 'contracts/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+
+env:
+  CARGO_TERM_COLOR: always
+  # Size limit in KB
+  SIZE_LIMIT_KB: 200
+
+jobs:
+  check-sizes:
+    name: Check WASM Binary Sizes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-git-
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-wasm-
+
+      - name: Install wasm-opt
+        run: |
+          wget https://github.com/WebAssembly/binaryen/releases/download/version_116/binaryen-version_116-x86_64-linux.tar.gz
+          tar -xzf binaryen-version_116-x86_64-linux.tar.gz
+          sudo cp binaryen-version_116/bin/wasm-opt /usr/local/bin/
+          wasm-opt --version
+
+      - name: Install soroban-cli
+        run: |
+          cargo install --locked soroban-cli --features opt
+
+      - name: Build WASM binaries
+        run: |
+          cargo build --release --target wasm32-unknown-unknown --workspace
+
+      - name: Optimize WASM binaries
+        run: |
+          mkdir -p target/wasm32-unknown-unknown/release/optimized
+          for wasm in target/wasm32-unknown-unknown/release/*.wasm; do
+            if [ -f "$wasm" ] && [[ "$wasm" != *"_optimized.wasm" ]]; then
+              filename=$(basename "$wasm")
+              echo "Optimizing $filename..."
+              wasm-opt -O4 -o "target/wasm32-unknown-unknown/release/optimized/$filename" "$wasm" || \
+              soroban contract optimize --wasm "$wasm" --wasm-out "target/wasm32-unknown-unknown/release/optimized/$filename"
+            fi
+          done
+
+      - name: Check binary sizes
+        id: size_check
+        run: |
+          SIZE_LIMIT=$((SIZE_LIMIT_KB * 1024))
+          WASM_DIR="target/wasm32-unknown-unknown/release/optimized"
+          
+          OVER_LIMIT=0
+          TOTAL_SIZE=0
+          CONTRACT_COUNT=0
+          
+          echo "## WASM Binary Size Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Size Limit:** ${SIZE_LIMIT_KB} KB" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Contract | Size | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|------|--------|" >> $GITHUB_STEP_SUMMARY
+          
+          for wasm_file in "$WASM_DIR"/*.wasm; do
+            [ -e "$wasm_file" ] || continue
+            
+            filename=$(basename "$wasm_file")
+            contract_name="${filename%.wasm}"
+            
+            size=$(stat -c%s "$wasm_file")
+            size_kb=$(echo "scale=2; $size / 1024" | bc)
+            
+            TOTAL_SIZE=$((TOTAL_SIZE + size))
+            CONTRACT_COUNT=$((CONTRACT_COUNT + 1))
+            
+            if [ "$size" -gt "$SIZE_LIMIT" ]; then
+              echo "| $contract_name | ${size_kb} KB | ❌ OVER LIMIT |" >> $GITHUB_STEP_SUMMARY
+              echo "::error file=$wasm_file::Contract $contract_name exceeds size limit: ${size_kb} KB > ${SIZE_LIMIT_KB} KB"
+              OVER_LIMIT=$((OVER_LIMIT + 1))
+            else
+              echo "| $contract_name | ${size_kb} KB | ✅ OK |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+          
+          TOTAL_MB=$(echo "scale=2; $TOTAL_SIZE / 1024 / 1024" | bc)
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total Contracts:** $CONTRACT_COUNT" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total Size:** ${TOTAL_MB} MB" >> $GITHUB_STEP_SUMMARY
+          echo "- **Contracts Over Limit:** $OVER_LIMIT" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "$OVER_LIMIT" -gt 0 ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### ⚠️ Action Required" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "$OVER_LIMIT contract(s) exceed the ${SIZE_LIMIT_KB} KB size limit." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Recommended actions:**" >> $GITHUB_STEP_SUMMARY
+            echo "1. Review contract for code duplication" >> $GITHUB_STEP_SUMMARY
+            echo "2. Extract shared functionality to libraries" >> $GITHUB_STEP_SUMMARY
+            echo "3. Remove unused dependencies" >> $GITHUB_STEP_SUMMARY
+            echo "4. Use more aggressive optimization" >> $GITHUB_STEP_SUMMARY
+            echo "5. Consider splitting into smaller modules" >> $GITHUB_STEP_SUMMARY
+            
+            exit 1
+          fi
+
+      - name: Upload size report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-size-report
+          path: |
+            target/wasm32-unknown-unknown/release/optimized/*.wasm
+          retention-days: 30
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            // Read the step summary
+            const summary = fs.readFileSync(process.env.GITHUB_STEP_SUMMARY, 'utf8');
+            
+            // Post as comment
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: summary
+            });

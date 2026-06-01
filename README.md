@@ -176,6 +176,10 @@ soroban contract invoke \
   --admin <ADMIN_ADDRESS>
 ```
 
+## Upgrade Guide
+
+A step-by-step upgrade workflow is available in `docs/upgrade-guide.md`, including schema migration, multi-sig governance submission, rollback procedures, and testnet dry run examples.
+
 ## Usage
 
 ### Patient Registration

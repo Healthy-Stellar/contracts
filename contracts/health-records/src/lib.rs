@@ -28,7 +28,8 @@ pub struct MedicalRecord {
 pub enum DataKey {
     Record(u64),
     RecordCounter,
-    Consent(Address, Address), // (patient, provider) -> bool
+    Consent(Address, Address),     // (patient, provider) -> bool
+    PatientProviders(Address),     // patient -> Vec<Address> of consented providers
 }
 
 #[contracterror]
@@ -81,7 +82,25 @@ impl HealthRecords {
         patient.require_auth();
         env.storage()
             .persistent()
-            .set(&DataKey::Consent(patient, provider), &true);
+            .set(&DataKey::Consent(patient.clone(), provider.clone()), &true);
+        // Maintain index of consented providers for this patient
+        let idx_key = DataKey::PatientProviders(patient.clone());
+        let mut providers: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&idx_key)
+            .unwrap_or(Vec::new(&env));
+        let mut already = false;
+        for p in providers.iter() {
+            if p == provider {
+                already = true;
+                break;
+            }
+        }
+        if !already {
+            providers.push_back(provider);
+            env.storage().persistent().set(&idx_key, &providers);
+        }
     }
 
     /// Patient revokes a provider's consent.
@@ -90,6 +109,27 @@ impl HealthRecords {
         env.storage()
             .persistent()
             .set(&DataKey::Consent(patient, provider), &false);
+    }
+
+    /// Remove all health-records state for a deregistered patient.
+    ///
+    /// Revokes consent for every provider that was ever granted access.
+    /// Only callable by the patient themselves (they must auth before
+    /// deregistering from patient-registry).
+    pub fn deregister_patient(env: Env, patient: Address) {
+        patient.require_auth();
+        let idx_key = DataKey::PatientProviders(patient.clone());
+        let providers: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&idx_key)
+            .unwrap_or(Vec::new(&env));
+        for provider in providers.iter() {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Consent(patient.clone(), provider));
+        }
+        env.storage().persistent().remove(&idx_key);
     }
 
     /// Create a record. Requires both patient and provider auth, plus prior patient consent.
