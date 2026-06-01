@@ -505,6 +505,7 @@ checksum = "d7a1e2f27636f116493b8b860f5546edb47c8d8f8ea73e1d2a20be88e28d1fea"
 name = "dental-records"
 version = "0.1.0"
 dependencies = [
+ "Contracts",
  "shared",
  "soroban-sdk",
 ]
@@ -567,6 +568,7 @@ dependencies = [
 name = "doctor-registry"
 version = "0.0.0"
 dependencies = [
+ "shared",
  "soroban-sdk",
 ]
 
@@ -854,6 +856,7 @@ name = "health-records"
 version = "0.0.0"
 dependencies = [
  "Contracts",
+ "patient-registry",
  "shared",
  "soroban-sdk",
 ]
@@ -925,6 +928,7 @@ dependencies = [
 name = "hospital-registry"
 version = "0.0.0"
 dependencies = [
+ "shared",
  "soroban-sdk",
 ]
 
@@ -1013,6 +1017,7 @@ checksum = "8e04e2fd2b8188ea827b32ef11de88377086d690286ab35747ef7f9bf3ccb590"
 name = "insurer-registry"
 version = "0.0.0"
 dependencies = [
+ "shared",
  "soroban-sdk",
 ]
 
@@ -1340,6 +1345,7 @@ dependencies = [
 name = "provider-registry"
 version = "0.0.0"
 dependencies = [
+ "shared",
  "soroban-sdk",
 ]
 
@@ -1462,6 +1468,8 @@ dependencies = [
 name = "referral"
 version = "0.1.0"
 dependencies = [
+ "Contracts",
+ "shared",
  "soroban-sdk",
 ]
 

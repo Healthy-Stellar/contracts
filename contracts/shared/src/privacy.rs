@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Bytes, BytesN, String, Symbol};
+use soroban_sdk::{contracttype, Address, Bytes, BytesN, String, Symbol};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -22,6 +22,7 @@ pub enum PrivacyError {
     InvalidEnvelopeUri,
     InvalidKeyVersionId,
     InvalidPolicyMetadata,
+    InvalidAddress,
 }
 
 pub fn validate_encrypted_ref(reference: &EncryptedEnvelopeRef) -> Result<(), PrivacyError> {
@@ -34,6 +35,14 @@ pub fn validate_encrypted_ref(reference: &EncryptedEnvelopeRef) -> Result<(), Pr
 pub fn validate_policy_metadata(policy: &PolicyMetadata) -> Result<(), PrivacyError> {
     validate_nonzero_hash(&policy.access_policy_hash)?;
     let _ = (&policy.retention_class, &policy.purpose);
+    Ok(())
+}
+
+pub fn validate_nonzero_address(address: &Address) -> Result<(), PrivacyError> {
+    let zero_addr = Address::from_array([0; 32]);
+    if *address == zero_addr {
+        return Err(PrivacyError::InvalidAddress);
+    }
     Ok(())
 }
 

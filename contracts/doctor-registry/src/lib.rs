@@ -1,6 +1,7 @@
 #![no_std]
 #![allow(deprecated)]
 
+use shared::privacy::validate_nonzero_address;
 use soroban_sdk::{contract, contractimpl, contracterror, contracttype, symbol_short, Address, Env, String};
 
 /// Error codes for doctor registry operations
@@ -12,6 +13,7 @@ pub enum Error {
     ProfileNotFound = 2,
     Unauthorized = 3,
     AlreadyInitialized = 4,
+    InvalidAddress = 5,
 }
 
 /// --------------------
@@ -43,6 +45,7 @@ impl DoctorRegistry {
     /// Set the contract admin. Must be called once before any profile operations.
     /// Only the admin (or an authorized registrar) may create or modify doctor profiles.
     pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
+        validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
         admin.require_auth();
         if env.storage().persistent().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
@@ -68,6 +71,9 @@ impl DoctorRegistry {
         specialization: String,
         institution_wallet: Address,
     ) -> Result<(), Error> {
+        validate_nonzero_address(&registrar).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&institution_wallet).map_err(|_| Error::InvalidAddress)?;
         require_admin(&env, &registrar)?;
 
         let key = DataKey::Doctor(wallet.clone());
@@ -105,6 +111,8 @@ impl DoctorRegistry {
         specialization: String,
         metadata: String,
     ) -> Result<(), Error> {
+        validate_nonzero_address(&registrar).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         require_admin(&env, &registrar)?;
 
         let key = DataKey::Doctor(wallet.clone());
@@ -125,6 +133,7 @@ impl DoctorRegistry {
     }
 
     pub fn get_doctor_profile(env: Env, wallet: Address) -> Result<DoctorProfileData, Error> {
+        validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         let key = DataKey::Doctor(wallet);
         env.storage()
             .persistent()

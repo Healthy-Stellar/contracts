@@ -1,6 +1,7 @@
 #![no_std]
 #![allow(deprecated)]
 
+use shared::privacy::validate_nonzero_address;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
     String, Vec,
@@ -19,6 +20,7 @@ pub enum Error {
     ReviewerNotFound = 4,
     NoReviewersFound = 5,
     NotAuthorized = 6,
+    InvalidAddress = 7,
 }
 
 #[contracttype]
@@ -73,6 +75,8 @@ impl InsurerRegistry {
         expires_at: u64,
         revocation_reference: BytesN<32>,
     ) -> Result<(), Error> {
+        validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&issuer).map_err(|_| Error::InvalidAddress)?;
         wallet.require_auth();
         issuer.require_auth();
 
@@ -114,6 +118,7 @@ impl InsurerRegistry {
     /// * `wallet` - The wallet address of the insurance company
     /// * `metadata` - Updated metadata information
     pub fn update_insurer(env: Env, wallet: Address, metadata: String) -> Result<(), Error> {
+        validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         wallet.require_auth();
 
         let key = DataKey::Insurer(wallet.clone());
@@ -143,6 +148,7 @@ impl InsurerRegistry {
         wallet: Address,
         contact_details: String,
     ) -> Result<(), Error> {
+        validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         wallet.require_auth();
 
         let key = DataKey::Insurer(wallet.clone());
@@ -174,6 +180,7 @@ impl InsurerRegistry {
         wallet: Address,
         coverage_policies: String,
     ) -> Result<(), Error> {
+        validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         wallet.require_auth();
 
         let key = DataKey::Insurer(wallet.clone());
@@ -201,6 +208,7 @@ impl InsurerRegistry {
     /// # Returns
     /// The InsurerData for the given wallet address
     pub fn get_insurer(env: Env, wallet: Address) -> Result<InsurerData, Error> {
+        validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         let key = DataKey::Insurer(wallet);
         env.storage()
             .persistent()
@@ -244,6 +252,8 @@ impl InsurerRegistry {
         insurer_wallet: Address,
         reviewer_wallet: Address,
     ) -> Result<(), Error> {
+        validate_nonzero_address(&insurer_wallet).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&reviewer_wallet).map_err(|_| Error::InvalidAddress)?;
         insurer_wallet.require_auth();
 
         // Verify insurer exists
@@ -286,6 +296,8 @@ impl InsurerRegistry {
         insurer_wallet: Address,
         reviewer_wallet: Address,
     ) -> Result<(), Error> {
+        validate_nonzero_address(&insurer_wallet).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&reviewer_wallet).map_err(|_| Error::InvalidAddress)?;
         insurer_wallet.require_auth();
         Self::assert_active_insurer(&env, &insurer_wallet)?;
 

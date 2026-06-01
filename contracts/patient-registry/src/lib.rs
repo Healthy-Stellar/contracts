@@ -5,8 +5,8 @@ use shared::incident_tracking::{
     capture_incident, get_incidents_by_correlation_id as shared_get_by_corr, IncidentSeverity,
 };
 use shared::privacy::{
-    validate_encrypted_ref, validate_nonzero_hash, validate_policy_metadata, EncryptedEnvelopeRef,
-    PolicyMetadata,
+    validate_encrypted_ref, validate_nonzero_address, validate_nonzero_hash, validate_policy_metadata,
+    EncryptedEnvelopeRef, PolicyMetadata,
 };
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token,
@@ -245,6 +245,9 @@ pub enum ContractError {
     InvalidEncryptedEnvelope = 21,
     InvalidPolicyMetadata = 22,
     InvalidPagination = 23,
+    RecordNotFound = 24,
+    NoHistoryFound = 25,
+    InvalidAddress = 26,
 }
 
 pub fn validate_cid(cid: &Bytes) -> Result<(), ContractError> {
@@ -438,6 +441,9 @@ impl MedicalRegistry {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(ContractError::AlreadyInitialized);
         }
+        validate_nonzero_address(&admin).map_err(|_| ContractError::InvalidAddress)?;
+        validate_nonzero_address(&treasury).map_err(|_| ContractError::InvalidAddress)?;
+        validate_nonzero_address(&fee_token).map_err(|_| ContractError::InvalidAddress)?;
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Treasury, &treasury);
         env.storage().instance().set(&DataKey::FeeToken, &fee_token);
@@ -1609,13 +1615,17 @@ impl MedicalRegistry {
             .storage()
             .persistent()
             .get(&record_key)
-            .ok_or(ContractError::NotFound)?;
+            .ok_or(ContractError::RecordNotFound)?;
         require_record_access(&env, &record_data.patient, &caller)?;
 
         // TTL bump
         env.storage()
             .persistent()
             .extend_ttl(&record_key, LEDGER_THRESHOLD, LEDGER_BUMP_AMOUNT);
+
+        if record_data.history.is_empty() {
+            return Err(ContractError::NoHistoryFound);
+        }
 
         Ok(record_data.history)
     }

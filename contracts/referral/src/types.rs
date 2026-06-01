@@ -7,6 +7,7 @@ pub enum Error {
     NotAuthorized = 1,
     ReferralNotFound = 2,
     InvalidStatusTransition = 3,
+    InvalidAddress = 4,
 }
 
 #[contracttype]
