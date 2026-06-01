@@ -663,3 +663,131 @@ fn test_time_series_support() {
     assert_eq!(all.count, 4);
     assert_eq!(all.average, 127);
 }
+
+// ========================
+// Resource quota enforcement tests
+// ========================
+
+fn setup_with_admin() -> (Env, HealthcareAnalyticsClient<'static>, Address) {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(HealthcareAnalytics, ());
+    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    (env, client, admin)
+}
+
+#[test]
+fn test_request_report_within_quota_accepted() {
+    let (env, client, admin) = setup_with_admin();
+    let requester = Address::generate(&env);
+
+    // Set a modest budget: 1_000 CPU, 1_000 memory, throttle at 80%
+    client.set_resource_limits(&admin, &1_000, &1_000, &5, &80);
+
+    // Request a job well within budget (100 CPU, 100 memory)
+    let job_id = client.request_report(
+        &requester,
+        &String::from_str(&env, "quality_metrics"),
+        &JobPriority::Normal,
+        &100,
+        &100,
+    );
+    assert!(job_id > 0);
+}
+
+#[test]
+fn test_request_report_throttled_when_cpu_budget_exceeded() {
+    let (env, client, admin) = setup_with_admin();
+    let requester = Address::generate(&env);
+
+    // Budget: 1_000 CPU, throttle at 80% → throttles when TotalCpuUsed > 800
+    client.set_resource_limits(&admin, &1_000, &1_000_000, &5, &80);
+
+    // Submit and complete a job that consumes 900 CPU (above the 80% threshold)
+    let job_id = client.request_report(
+        &requester,
+        &String::from_str(&env, "adverse_event_report"),
+        &JobPriority::High,
+        &900,
+        &100,
+    );
+    client.execute_next_report();
+    client.complete_report(&job_id, &900, &100);
+
+    // Next request must be throttled: TotalCpuUsed (900) > 80% of 1_000 (800)
+    let result = client.try_request_report(
+        &requester,
+        &String::from_str(&env, "quality_metrics"),
+        &JobPriority::Normal,
+        &10,
+        &10,
+    );
+    assert_eq!(result, Err(Ok(Error::JobThrottled)));
+}
+
+#[test]
+fn test_cpu_quota_accumulates_across_jobs() {
+    let (env, client, admin) = setup_with_admin();
+    let requester = Address::generate(&env);
+
+    // Budget: 1_000 CPU, throttle at 80% → threshold is 800
+    client.set_resource_limits(&admin, &1_000, &1_000_000, &5, &80);
+
+    // First job: 400 CPU — below threshold, accepted
+    let job1 = client.request_report(
+        &requester,
+        &String::from_str(&env, "report_a"),
+        &JobPriority::Normal,
+        &400,
+        &50,
+    );
+    client.execute_next_report();
+    client.complete_report(&job1, &400, &50);
+
+    // Second job: another 400 CPU — still below threshold (total 800, not > 800)
+    let job2 = client.request_report(
+        &requester,
+        &String::from_str(&env, "report_b"),
+        &JobPriority::Normal,
+        &400,
+        &50,
+    );
+    client.execute_next_report();
+    client.complete_report(&job2, &400, &50);
+
+    // Now TotalCpuUsed = 800; 800*100/1000 = 80, which is NOT > 80, so one more is still ok.
+    // Push it over: complete a tiny job that adds 1 more CPU unit.
+    let job3 = client.request_report(
+        &requester,
+        &String::from_str(&env, "report_c"),
+        &JobPriority::Normal,
+        &1,
+        &1,
+    );
+    client.execute_next_report();
+    client.complete_report(&job3, &1, &1);
+
+    // TotalCpuUsed = 801; 801*100/1000 = 80 (integer), still not > 80.
+    // Add one more to make it 901 total.
+    let job4 = client.request_report(
+        &requester,
+        &String::from_str(&env, "report_d"),
+        &JobPriority::Normal,
+        &100,
+        &1,
+    );
+    client.execute_next_report();
+    client.complete_report(&job4, &100, &1);
+
+    // TotalCpuUsed = 901; 901*100/1000 = 90 > 80 → throttled
+    let result = client.try_request_report(
+        &requester,
+        &String::from_str(&env, "report_e"),
+        &JobPriority::Normal,
+        &10,
+        &10,
+    );
+    assert_eq!(result, Err(Ok(Error::JobThrottled)));
+}
