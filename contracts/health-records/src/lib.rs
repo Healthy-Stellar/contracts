@@ -28,13 +28,30 @@ pub struct ConsentScope {
     pub expires_at: u64,
 }
 
+/// Category of a medical record, used for type-safe queries and
+/// category-specific retention rules. Replaces the previous free-form
+/// `record_type: String` field (see `record_description` for the
+/// human-readable free text that used to live there).
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecordCategory {
+    Lab = 0,
+    Imaging = 1,
+    Consultation = 2,
+    Prescription = 3,
+    Discharge = 4,
+    Vaccination = 5,
+    Other = 6,
+}
+
 /// Input record for `create_records_batch`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecordInput {
     pub patient: Address,
     pub encrypted_ref: EncryptedEnvelopeRef,
-    pub record_type: String,
+    pub record_category: RecordCategory,
+    pub record_description: Option<String>,
     pub policy: PolicyMetadata,
 }
 
@@ -45,7 +62,8 @@ pub struct MedicalRecord {
     pub patient: Address,
     pub provider: Address,
     pub encrypted_ref: EncryptedEnvelopeRef,
-    pub record_type: String,
+    pub record_category: RecordCategory,
+    pub record_description: Option<String>,
     pub timestamp: u64,
     pub integrity_hash: BytesN<32>,
     pub policy: PolicyMetadata,
@@ -58,6 +76,7 @@ pub enum DataKey {
     RecordCounter,
     Consent(Address, Address),     // (patient, provider) -> ConsentScope
     PatientProviders(Address),     // patient -> Vec<Address> of consented providers
+    CategoryIndex(RecordCategory), // category -> Vec<u64> of record ids in that category, for prefix-style queries
 }
 
 #[contracterror]
@@ -73,13 +92,24 @@ pub enum Error {
     BatchTooLarge = 7,
 }
 
+/// Append `record_category`'s record ID to its `CategoryIndex` so
+/// `get_records_by_category` can look up records of a given category
+/// without scanning every record.
+fn index_record_by_category(env: &Env, category: RecordCategory, record_id: u64) {
+    let key = DataKey::CategoryIndex(category);
+    let mut ids: Vec<u64> = env.storage().persistent().get(&key).unwrap_or(Vec::new(env));
+    ids.push_back(record_id);
+    env.storage().persistent().set(&key, &ids);
+}
+
 fn compute_hash(
     env: &Env,
     record_id: u64,
     patient: &Address,
     provider: &Address,
     encrypted_ref: &EncryptedEnvelopeRef,
-    record_type: &String,
+    record_category: RecordCategory,
+    record_description: &Option<String>,
     timestamp: u64,
 ) -> BytesN<32> {
     let mut data = Bytes::new(env);
@@ -89,8 +119,10 @@ fn compute_hash(
     let provider_bytes = provider.clone().to_xdr(env);
     data.append(&provider_bytes);
     data.append(&Bytes::from(encrypted_ref.content_hash.clone()));
-    let type_bytes = record_type.clone().to_xdr(env);
-    data.append(&type_bytes);
+    data.extend_from_array(&(record_category as u32).to_be_bytes());
+    if let Some(description) = record_description {
+        data.append(&description.clone().to_xdr(env));
+    }
     data.extend_from_array(&timestamp.to_be_bytes());
     env.crypto().sha256(&data).into()
 }
@@ -172,7 +204,8 @@ impl HealthRecords {
         patient: Address,
         provider: Address,
         encrypted_ref: EncryptedEnvelopeRef,
-        record_type: String,
+        record_category: RecordCategory,
+        record_description: Option<String>,
         policy: PolicyMetadata,
     ) -> Result<u64, Error> {
         validate_nonzero_address(&patient).map_err(|_| Error::InvalidAddress)?;
@@ -199,7 +232,8 @@ impl HealthRecords {
             &patient,
             &provider,
             &encrypted_ref,
-            &record_type,
+            record_category,
+            &record_description,
             timestamp,
         );
 
@@ -208,7 +242,8 @@ impl HealthRecords {
             patient,
             provider,
             encrypted_ref,
-            record_type,
+            record_category,
+            record_description,
             timestamp,
             integrity_hash,
             policy,
@@ -218,8 +253,21 @@ impl HealthRecords {
         env.storage()
             .persistent()
             .set(&DataKey::Record(record_id), &record);
+        index_record_by_category(&env, record_category, record_id);
 
         Ok(record_id)
+    }
+
+    /// Return every record ID filed under `category`, in creation order.
+    ///
+    /// Backed by `DataKey::CategoryIndex`, populated by `create_record` and
+    /// `create_records_batch` -- a category-prefixed index rather than a
+    /// linear scan of every record ever created.
+    pub fn get_records_by_category(env: Env, category: RecordCategory) -> Vec<u64> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::CategoryIndex(category))
+            .unwrap_or(Vec::new(&env))
     }
 
     /// Create multiple records in one transaction.
@@ -263,7 +311,8 @@ impl HealthRecords {
                 &input.patient,
                 &provider,
                 &input.encrypted_ref,
-                &input.record_type,
+                input.record_category,
+                &input.record_description,
                 timestamp,
             );
 
@@ -272,15 +321,18 @@ impl HealthRecords {
                 patient: input.patient.clone(),
                 provider: provider.clone(),
                 encrypted_ref: input.encrypted_ref.clone(),
-                record_type: input.record_type.clone(),
+                record_category: input.record_category,
+                record_description: input.record_description.clone(),
                 timestamp,
                 integrity_hash,
                 policy: input.policy.clone(),
+                version: 1,
             };
 
             env.storage()
                 .persistent()
                 .set(&DataKey::Record(record_id), &record);
+            index_record_by_category(&env, input.record_category, record_id);
 
             ids.push_back(record_id);
         }
@@ -344,7 +396,8 @@ impl HealthRecords {
             &record.patient,
             &record.provider,
             &record.encrypted_ref,
-            &record.record_type,
+            record.record_category,
+            &record.record_description,
             record.timestamp,
         );
 
@@ -362,7 +415,8 @@ impl HealthRecords {
         caller: Address,
         record_id: u64,
         new_encrypted_ref: EncryptedEnvelopeRef,
-        new_record_type: String,
+        new_record_category: RecordCategory,
+        new_record_description: Option<String>,
         new_policy: PolicyMetadata,
     ) -> Result<u32, Error> {
         validate_nonzero_address(&caller).map_err(|_| Error::InvalidAddress)?;
@@ -393,12 +447,22 @@ impl HealthRecords {
             &record.patient,
             &record.provider,
             &new_encrypted_ref,
-            &new_record_type,
+            new_record_category,
+            &new_record_description,
             timestamp,
         );
 
+        // Note: this only adds the record to the new category's index; it
+        // doesn't remove it from the old one (Soroban's Vec has no O(1)
+        // remove-by-value), so a record that changes category will appear
+        // under both until/unless that's addressed separately.
+        if new_record_category != record.record_category {
+            index_record_by_category(&env, new_record_category, record_id);
+        }
+
         record.encrypted_ref = new_encrypted_ref;
-        record.record_type = new_record_type;
+        record.record_category = new_record_category;
+        record.record_description = new_record_description;
         record.policy = new_policy;
         record.timestamp = timestamp;
         record.integrity_hash = new_integrity_hash;

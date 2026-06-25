@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::{ConsentScope, Error, HealthRecords, HealthRecordsClient};
+    use crate::{ConsentScope, Error, HealthRecords, HealthRecordsClient, RecordCategory};
     use patient_registry::{MedicalRegistry, MedicalRegistryClient};
     use provider_registry::{ProviderRegistry, ProviderRegistryClient};
     use shared::privacy::{EncryptedEnvelopeRef, PolicyMetadata};
@@ -48,10 +48,11 @@ mod tests {
         client.grant_consent(&patient, &provider, &full_scope());
 
         let reference = encrypted_ref(&env, 1);
-        let rtype = String::from_str(&env, "LAB_RESULT");
+        let rtype = RecordCategory::Lab;
+        let rdesc = Some(String::from_str(&env, "LAB_RESULT"));
 
         let record_id =
-            client.create_record(&patient, &provider, &reference, &rtype, &policy(&env));
+            client.create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
         let record = client.get_record(&patient, &record_id);
 
         assert_eq!(record.integrity_hash.len(), 32);
@@ -66,10 +67,11 @@ mod tests {
         let (client, patient, provider) = setup(&env);
 
         let reference = encrypted_ref(&env, 1);
-        let rtype = String::from_str(&env, "LAB_RESULT");
+        let rtype = RecordCategory::Lab;
+        let rdesc = Some(String::from_str(&env, "LAB_RESULT"));
 
         let result =
-            client.try_create_record(&patient, &provider, &reference, &rtype, &policy(&env));
+            client.try_create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
         assert_eq!(result, Err(Ok(Error::ConsentNotGranted)));
     }
 
@@ -81,9 +83,10 @@ mod tests {
 
         client.grant_consent(&patient, &provider, &full_scope());
         let reference = encrypted_ref(&env, 1);
-        let rtype = String::from_str(&env, "PRESCRIPTION");
+        let rtype = RecordCategory::Prescription;
+        let rdesc = Some(String::from_str(&env, "PRESCRIPTION"));
         let record_id =
-            client.create_record(&patient, &provider, &reference, &rtype, &policy(&env));
+            client.create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
 
         let record = client.get_record(&patient, &record_id);
         assert_eq!(record.record_id, record_id);
@@ -97,9 +100,10 @@ mod tests {
 
         client.grant_consent(&patient, &provider, &full_scope());
         let reference = encrypted_ref(&env, 1);
-        let rtype = String::from_str(&env, "DIAGNOSIS");
+        let rtype = RecordCategory::Consultation;
+        let rdesc = Some(String::from_str(&env, "DIAGNOSIS"));
         let record_id =
-            client.create_record(&patient, &provider, &reference, &rtype, &policy(&env));
+            client.create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
 
         let record = client.get_record(&provider, &record_id);
         assert_eq!(record.record_id, record_id);
@@ -114,9 +118,10 @@ mod tests {
 
         client.grant_consent(&patient, &provider, &full_scope());
         let reference = encrypted_ref(&env, 1);
-        let rtype = String::from_str(&env, "XRAY");
+        let rtype = RecordCategory::Imaging;
+        let rdesc = Some(String::from_str(&env, "XRAY"));
         let record_id =
-            client.create_record(&patient, &provider, &reference, &rtype, &policy(&env));
+            client.create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
 
         let result = client.try_get_record(&stranger, &record_id);
         assert_eq!(result, Err(Ok(Error::Unauthorized)));
@@ -130,9 +135,10 @@ mod tests {
 
         client.grant_consent(&patient, &provider, &full_scope());
         let reference = encrypted_ref(&env, 1);
-        let rtype = String::from_str(&env, "LAB");
+        let rtype = RecordCategory::Lab;
+        let rdesc = Some(String::from_str(&env, "LAB"));
         let record_id =
-            client.create_record(&patient, &provider, &reference, &rtype, &policy(&env));
+            client.create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
 
         client.revoke_consent(&patient, &provider);
 
@@ -148,9 +154,10 @@ mod tests {
 
         client.grant_consent(&patient, &provider, &full_scope());
         let reference = encrypted_ref(&env, 1);
-        let rtype = String::from_str(&env, "PRESCRIPTION");
+        let rtype = RecordCategory::Prescription;
+        let rdesc = Some(String::from_str(&env, "PRESCRIPTION"));
         let record_id =
-            client.create_record(&patient, &provider, &reference, &rtype, &policy(&env));
+            client.create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
         let record = client.get_record(&patient, &record_id);
 
         let stored_hash: Bytes = record.integrity_hash.into();
@@ -165,9 +172,10 @@ mod tests {
 
         client.grant_consent(&patient, &provider, &full_scope());
         let reference = encrypted_ref(&env, 1);
-        let rtype = String::from_str(&env, "DIAGNOSIS");
+        let rtype = RecordCategory::Consultation;
+        let rdesc = Some(String::from_str(&env, "DIAGNOSIS"));
         let record_id =
-            client.create_record(&patient, &provider, &reference, &rtype, &policy(&env));
+            client.create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
 
         let tampered_hash = Bytes::from_array(&env, &[0u8; 32]);
         assert!(!client.verify_record_integrity(&patient, &record_id, &tampered_hash));
@@ -182,9 +190,10 @@ mod tests {
 
         client.grant_consent(&patient, &provider, &full_scope());
         let reference = encrypted_ref(&env, 1);
-        let rtype = String::from_str(&env, "XRAY");
+        let rtype = RecordCategory::Imaging;
+        let rdesc = Some(String::from_str(&env, "XRAY"));
         let record_id =
-            client.create_record(&patient, &provider, &reference, &rtype, &policy(&env));
+            client.create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
         let record = client.get_record(&patient, &record_id);
         let hash: Bytes = record.integrity_hash.into();
 
@@ -210,9 +219,10 @@ mod tests {
 
         client.grant_consent(&patient, &provider, &full_scope());
         let reference = encrypted_ref(&env, 1);
-        let rtype = String::from_str(&env, "XRAY");
+        let rtype = RecordCategory::Imaging;
+        let rdesc = Some(String::from_str(&env, "XRAY"));
         let record_id =
-            client.create_record(&patient, &provider, &reference, &rtype, &policy(&env));
+            client.create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
 
         let short_hash = Bytes::from_array(&env, &[0u8; 16]);
         assert!(!client.verify_record_integrity(&patient, &record_id, &short_hash));
@@ -366,7 +376,7 @@ mod cross_contract_correlation_tests {
 
     mod cross_contract_workflow_tests {
         use super::*;
-        use crate::ConsentScope;
+        use crate::{ConsentScope, RecordCategory};
         use patient_registry::{MedicalRegistry, MedicalRegistryClient};
         use provider_registry::{ProviderRegistry, ProviderRegistryClient};
         use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String, Symbol, Vec};
@@ -436,7 +446,8 @@ mod cross_contract_correlation_tests {
                     &patient,
                     &provider,
                     &encrypted_ref(&env, 9),
-                    &String::from_str(&env, "DIAGNOSIS"),
+                    &RecordCategory::Consultation,
+                    &Some(String::from_str(&env, "DIAGNOSIS")),
                     &policy(&env),
                 )
                 .unwrap();
@@ -444,7 +455,7 @@ mod cross_contract_correlation_tests {
 
             assert_eq!(record.patient, patient);
             assert_eq!(record.provider, provider);
-            assert_eq!(record.record_type, String::from_str(&env, "DIAGNOSIS"));
+            assert_eq!(record.record_description, Some(String::from_str(&env, "DIAGNOSIS")));
         }
 
         #[test]
@@ -492,7 +503,8 @@ mod cross_contract_correlation_tests {
                     patient.clone().into_val(&env),
                     provider.clone().into_val(&env),
                     encrypted_ref(&env, 10).into_val(&env),
-                    String::from_str(&env, "LAB").into_val(&env),
+                    RecordCategory::Lab.into_val(&env),
+                    Some(String::from_str(&env, "LAB")).into_val(&env),
                     policy(&env).into_val(&env),
                 ],
             );
@@ -517,7 +529,8 @@ mod cross_contract_correlation_tests {
                     &patient,
                     &provider,
                     &encrypted_ref(&env, 11),
-                    &String::from_str(&env, "XRAY"),
+                    &RecordCategory::Imaging,
+                    &Some(String::from_str(&env, "XRAY")),
                     &policy(&env),
                 )
                 .unwrap();
@@ -534,7 +547,7 @@ mod cross_contract_correlation_tests {
 /// Tests for issue #472: bulk record creation via `create_records_batch`.
 #[cfg(test)]
 mod batch_creation_tests {
-    use crate::{ConsentScope, Error, HealthRecords, HealthRecordsClient, RecordInput};
+    use crate::{ConsentScope, Error, HealthRecords, HealthRecordsClient, RecordCategory, RecordInput};
     use shared::privacy::{EncryptedEnvelopeRef, PolicyMetadata};
     use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String, Symbol, Vec};
 
@@ -583,19 +596,22 @@ mod batch_creation_tests {
         inputs.push_back(RecordInput {
             patient: patient.clone(),
             encrypted_ref: encrypted_ref(&env, 1),
-            record_type: String::from_str(&env, "LAB_RESULT"),
+            record_category: RecordCategory::Lab,
+            record_description: Some(String::from_str(&env, "LAB_RESULT")),
             policy: policy(&env),
         });
         inputs.push_back(RecordInput {
             patient: patient.clone(),
             encrypted_ref: encrypted_ref(&env, 2),
-            record_type: String::from_str(&env, "DIAGNOSIS"),
+            record_category: RecordCategory::Consultation,
+            record_description: Some(String::from_str(&env, "DIAGNOSIS")),
             policy: policy(&env),
         });
         inputs.push_back(RecordInput {
             patient: patient.clone(),
             encrypted_ref: encrypted_ref(&env, 3),
-            record_type: String::from_str(&env, "PRESCRIPTION"),
+            record_category: RecordCategory::Prescription,
+            record_description: Some(String::from_str(&env, "PRESCRIPTION")),
             policy: policy(&env),
         });
 
@@ -617,7 +633,8 @@ mod batch_creation_tests {
             inputs.push_back(RecordInput {
                 patient: patient.clone(),
                 encrypted_ref: encrypted_ref(&env, seed),
-                record_type: String::from_str(&env, "LAB"),
+                record_category: RecordCategory::Lab,
+                record_description: Some(String::from_str(&env, "LAB")),
                 policy: policy(&env),
             });
         }
@@ -645,13 +662,15 @@ mod batch_creation_tests {
         inputs.push_back(RecordInput {
             patient: patient.clone(),
             encrypted_ref: encrypted_ref(&env, 10),
-            record_type: String::from_str(&env, "XRAY"),
+            record_category: RecordCategory::Imaging,
+            record_description: Some(String::from_str(&env, "XRAY")),
             policy: policy(&env),
         });
         inputs.push_back(RecordInput {
             patient: patient.clone(),
             encrypted_ref: encrypted_ref(&env, 11),
-            record_type: String::from_str(&env, "SCAN"),
+            record_category: RecordCategory::Imaging,
+            record_description: Some(String::from_str(&env, "SCAN")),
             policy: policy(&env),
         });
 
@@ -659,11 +678,11 @@ mod batch_creation_tests {
 
         let record0 = client.get_record(&patient, &ids.get(0).unwrap());
         assert_eq!(record0.record_id, ids.get(0).unwrap());
-        assert_eq!(record0.record_type, String::from_str(&env, "XRAY"));
+        assert_eq!(record0.record_description, Some(String::from_str(&env, "XRAY")));
 
         let record1 = client.get_record(&patient, &ids.get(1).unwrap());
         assert_eq!(record1.record_id, ids.get(1).unwrap());
-        assert_eq!(record1.record_type, String::from_str(&env, "SCAN"));
+        assert_eq!(record1.record_description, Some(String::from_str(&env, "SCAN")));
     }
 
     #[test]
@@ -679,7 +698,8 @@ mod batch_creation_tests {
             inputs.push_back(RecordInput {
                 patient: patient.clone(),
                 encrypted_ref: encrypted_ref(&env, seed),
-                record_type: String::from_str(&env, "LAB"),
+                record_category: RecordCategory::Lab,
+                record_description: Some(String::from_str(&env, "LAB")),
                 policy: policy(&env),
             });
         }
@@ -701,7 +721,8 @@ mod batch_creation_tests {
             inputs.push_back(RecordInput {
                 patient: patient.clone(),
                 encrypted_ref: encrypted_ref(&env, seed),
-                record_type: String::from_str(&env, "LAB"),
+                record_category: RecordCategory::Lab,
+                record_description: Some(String::from_str(&env, "LAB")),
                 policy: policy(&env),
             });
         }
@@ -724,13 +745,15 @@ mod batch_creation_tests {
         inputs.push_back(RecordInput {
             patient: patient_a.clone(),
             encrypted_ref: encrypted_ref(&env, 1),
-            record_type: String::from_str(&env, "LAB"),
+            record_category: RecordCategory::Lab,
+            record_description: Some(String::from_str(&env, "LAB")),
             policy: policy(&env),
         });
         inputs.push_back(RecordInput {
             patient: patient_b.clone(),
             encrypted_ref: encrypted_ref(&env, 2),
-            record_type: String::from_str(&env, "LAB"),
+            record_category: RecordCategory::Lab,
+            record_description: Some(String::from_str(&env, "LAB")),
             policy: policy(&env),
         });
 
@@ -752,13 +775,15 @@ mod batch_creation_tests {
         inputs.push_back(RecordInput {
             patient: patient_a.clone(),
             encrypted_ref: encrypted_ref(&env, 1),
-            record_type: String::from_str(&env, "DIAGNOSIS"),
+            record_category: RecordCategory::Consultation,
+            record_description: Some(String::from_str(&env, "DIAGNOSIS")),
             policy: policy(&env),
         });
         inputs.push_back(RecordInput {
             patient: patient_b.clone(),
             encrypted_ref: encrypted_ref(&env, 2),
-            record_type: String::from_str(&env, "PRESCRIPTION"),
+            record_category: RecordCategory::Prescription,
+            record_description: Some(String::from_str(&env, "PRESCRIPTION")),
             policy: policy(&env),
         });
 
@@ -787,7 +812,7 @@ mod batch_creation_tests {
 /// Tests for issue #473: granular `ConsentScope` replacing binary consent.
 #[cfg(test)]
 mod consent_scope_tests {
-    use crate::{ConsentScope, Error, HealthRecords, HealthRecordsClient};
+    use crate::{ConsentScope, Error, HealthRecords, HealthRecordsClient, RecordCategory};
     use shared::privacy::{EncryptedEnvelopeRef, PolicyMetadata};
     use soroban_sdk::{
         testutils::{Address as _, Ledger as _},
@@ -854,8 +879,9 @@ mod consent_scope_tests {
         client.grant_consent(&patient, &provider, &full_scope());
 
         let reference = encrypted_ref(&env, 1);
-        let rtype = String::from_str(&env, "LAB_RESULT");
-        let record_id = client.create_record(&patient, &provider, &reference, &rtype, &policy(&env));
+        let rtype = RecordCategory::Lab;
+        let rdesc = Some(String::from_str(&env, "LAB_RESULT"));
+        let record_id = client.create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
 
         let record = client.get_record(&provider, &record_id);
         assert_eq!(record.record_id, record_id);
@@ -870,8 +896,9 @@ mod consent_scope_tests {
         // First create a record with full access, then downgrade to read-only.
         client.grant_consent(&patient, &provider, &full_scope());
         let reference = encrypted_ref(&env, 1);
-        let rtype = String::from_str(&env, "LAB_RESULT");
-        let record_id = client.create_record(&patient, &provider, &reference, &rtype, &policy(&env));
+        let rtype = RecordCategory::Lab;
+        let rdesc = Some(String::from_str(&env, "LAB_RESULT"));
+        let record_id = client.create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
 
         // Downgrade consent to read-only.
         client.grant_consent(&patient, &provider, &read_only_scope());
@@ -891,8 +918,9 @@ mod consent_scope_tests {
         client.grant_consent(&patient, &provider, &read_only_scope());
 
         let reference = encrypted_ref(&env, 1);
-        let rtype = String::from_str(&env, "LAB_RESULT");
-        let result = client.try_create_record(&patient, &provider, &reference, &rtype, &policy(&env));
+        let rtype = RecordCategory::Lab;
+        let rdesc = Some(String::from_str(&env, "LAB_RESULT"));
+        let result = client.try_create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
         assert_eq!(result, Err(Ok(Error::Unauthorized)));
     }
 
@@ -905,9 +933,10 @@ mod consent_scope_tests {
         client.grant_consent(&patient, &provider, &write_only_scope());
 
         let reference = encrypted_ref(&env, 1);
-        let rtype = String::from_str(&env, "PRESCRIPTION");
+        let rtype = RecordCategory::Prescription;
+        let rdesc = Some(String::from_str(&env, "PRESCRIPTION"));
         // create_record should succeed with write-only consent.
-        let record_id = client.create_record(&patient, &provider, &reference, &rtype, &policy(&env));
+        let record_id = client.create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
 
         // Patient can always read their own record.
         let record = client.get_record(&patient, &record_id);
@@ -923,8 +952,9 @@ mod consent_scope_tests {
         client.grant_consent(&patient, &provider, &write_only_scope());
 
         let reference = encrypted_ref(&env, 1);
-        let rtype = String::from_str(&env, "DIAGNOSIS");
-        let record_id = client.create_record(&patient, &provider, &reference, &rtype, &policy(&env));
+        let rtype = RecordCategory::Consultation;
+        let rdesc = Some(String::from_str(&env, "DIAGNOSIS"));
+        let record_id = client.create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
 
         // Provider has no read permission.
         let result = client.try_get_record(&provider, &record_id);
@@ -951,8 +981,9 @@ mod consent_scope_tests {
         env.ledger().with_mut(|li| li.timestamp = 10_000);
 
         let reference = encrypted_ref(&env, 1);
-        let rtype = String::from_str(&env, "LAB_RESULT");
-        let result = client.try_create_record(&patient, &provider, &reference, &rtype, &policy(&env));
+        let rtype = RecordCategory::Lab;
+        let rdesc = Some(String::from_str(&env, "LAB_RESULT"));
+        let result = client.try_create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
         assert_eq!(result, Err(Ok(Error::ConsentNotGranted)));
     }
 
@@ -972,8 +1003,9 @@ mod consent_scope_tests {
         client.grant_consent(&patient, &provider, &expiring_scope);
 
         let reference = encrypted_ref(&env, 1);
-        let rtype = String::from_str(&env, "LAB");
-        let record_id = client.create_record(&patient, &provider, &reference, &rtype, &policy(&env));
+        let rtype = RecordCategory::Lab;
+        let rdesc = Some(String::from_str(&env, "LAB"));
+        let record_id = client.create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
 
         // Advance ledger past expiry.
         env.ledger().with_mut(|li| li.timestamp = 10_000);
@@ -1000,8 +1032,9 @@ mod consent_scope_tests {
         client.grant_consent(&patient, &provider, &expiring_scope);
 
         let reference = encrypted_ref(&env, 1);
-        let rtype = String::from_str(&env, "XRAY");
-        let record_id = client.create_record(&patient, &provider, &reference, &rtype, &policy(&env));
+        let rtype = RecordCategory::Imaging;
+        let rdesc = Some(String::from_str(&env, "XRAY"));
+        let record_id = client.create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
 
         // Advance to just before expiry.
         env.ledger().with_mut(|li| li.timestamp = 4_999);
@@ -1019,8 +1052,9 @@ mod consent_scope_tests {
         client.grant_consent(&patient, &provider, &full_scope());
 
         let reference = encrypted_ref(&env, 1);
-        let rtype = String::from_str(&env, "PRESCRIPTION");
-        let record_id = client.create_record(&patient, &provider, &reference, &rtype, &policy(&env));
+        let rtype = RecordCategory::Prescription;
+        let rdesc = Some(String::from_str(&env, "PRESCRIPTION"));
+        let record_id = client.create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
 
         // Far-future ledger timestamp.
         env.ledger().with_mut(|li| li.timestamp = u64::MAX / 2);
@@ -1038,8 +1072,9 @@ mod consent_scope_tests {
         client.grant_consent(&patient, &provider, &full_scope());
 
         let reference = encrypted_ref(&env, 1);
-        let rtype = String::from_str(&env, "LAB");
-        let record_id = client.create_record(&patient, &provider, &reference, &rtype, &policy(&env));
+        let rtype = RecordCategory::Lab;
+        let rdesc = Some(String::from_str(&env, "LAB"));
+        let record_id = client.create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
 
         client.revoke_consent(&patient, &provider);
 
@@ -1048,7 +1083,7 @@ mod consent_scope_tests {
         assert_eq!(result_read, Err(Ok(Error::Unauthorized)));
 
         let reference2 = encrypted_ref(&env, 2);
-        let result_write = client.try_create_record(&patient, &provider, &reference2, &rtype, &policy(&env));
+        let result_write = client.try_create_record(&patient, &provider, &reference2, &rtype, &rdesc, &policy(&env));
         assert_eq!(result_write, Err(Ok(Error::ConsentNotGranted)));
     }
 
@@ -1062,8 +1097,9 @@ mod consent_scope_tests {
         client.grant_consent(&patient, &provider, &write_only_scope());
 
         let reference = encrypted_ref(&env, 1);
-        let rtype = String::from_str(&env, "LAB");
-        let record_id = client.create_record(&patient, &provider, &reference, &rtype, &policy(&env));
+        let rtype = RecordCategory::Lab;
+        let rdesc = Some(String::from_str(&env, "LAB"));
+        let record_id = client.create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
 
         // Upgrade to full scope.
         client.grant_consent(&patient, &provider, &full_scope());
@@ -1083,8 +1119,9 @@ mod consent_scope_tests {
         client.grant_consent(&patient, &provider, &full_scope());
 
         let reference = encrypted_ref(&env, 1);
-        let rtype = String::from_str(&env, "DIAGNOSIS");
-        let record_id = client.create_record(&patient, &provider, &reference, &rtype, &policy(&env));
+        let rtype = RecordCategory::Consultation;
+        let rdesc = Some(String::from_str(&env, "DIAGNOSIS"));
+        let record_id = client.create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
 
         // Revoke provider consent entirely.
         client.revoke_consent(&patient, &provider);
