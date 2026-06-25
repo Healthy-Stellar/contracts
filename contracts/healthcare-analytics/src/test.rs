@@ -711,7 +711,7 @@ fn test_request_report_fail_policy_when_throttled() {
         .set_resource_limits(&admin, &1, &1, &1, &0)
         .unwrap();
 
-    let result = client.request_report(
+    let result = client.try_request_report(
         &requester,
         &String::from_str(&env, "adverse_event"),
         &shared::resource_management::JobPriority::Normal,
@@ -783,7 +783,7 @@ fn test_cpu_quota_accumulates_across_jobs() {
     client.set_resource_limits(&admin, &1_000, &1_000_000, &5, &80);
 
     // First job: 400 CPU — below threshold, accepted
-    let job1 = client.request_report(
+    let job1 = client.try_request_report(
         &requester,
         &String::from_str(&env, "report_a"),
         &JobPriority::Normal,
@@ -794,7 +794,7 @@ fn test_cpu_quota_accumulates_across_jobs() {
     client.complete_report(&job1, &400, &50);
 
     // Second job: another 400 CPU — still below threshold (total 800, not > 800)
-    let job2 = client.request_report(
+    let job2 = client.try_request_report(
         &requester,
         &String::from_str(&env, "report_b"),
         &JobPriority::Normal,
@@ -806,7 +806,7 @@ fn test_cpu_quota_accumulates_across_jobs() {
 
     // Now TotalCpuUsed = 800; 800*100/1000 = 80, which is NOT > 80, so one more is still ok.
     // Push it over: complete a tiny job that adds 1 more CPU unit.
-    let job3 = client.request_report(
+    let job3 = client.try_request_report(
         &requester,
         &String::from_str(&env, "report_c"),
         &JobPriority::Normal,
@@ -818,7 +818,7 @@ fn test_cpu_quota_accumulates_across_jobs() {
 
     // TotalCpuUsed = 801; 801*100/1000 = 80 (integer), still not > 80.
     // Add one more to make it 901 total.
-    let job4 = client.request_report(
+    let job4 = client.try_request_report(
         &requester,
         &String::from_str(&env, "report_d"),
         &JobPriority::Normal,
