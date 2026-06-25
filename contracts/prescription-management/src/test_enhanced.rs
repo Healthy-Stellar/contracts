@@ -30,6 +30,8 @@ fn test_prescription_lifecycle_invariants() {
         valid_until: env.ledger().timestamp() + (30 * 24 * 60 * 60),
         substitution_allowed: true,
         pharmacy_id: Some(pharmacy.clone()),
+        bypass_allergy_check: false,
+        dea_number: None,
     };
 
     let prescription_id = client.issue_prescription(&provider, &patient, &req);
@@ -92,6 +94,8 @@ fn test_prescription_transfer_ownership_verification() {
         valid_until: env.ledger().timestamp() + (30 * 24 * 60 * 60),
         substitution_allowed: true,
         pharmacy_id: Some(pharmacy1.clone()),
+        bypass_allergy_check: false,
+        dea_number: None,
     };
 
     let prescription_id = client.issue_prescription(&provider, &patient, &req);
@@ -147,6 +151,9 @@ fn test_controlled_substance_transfer_limits() {
         valid_until: env.ledger().timestamp() + (30 * 24 * 60 * 60),
         substitution_allowed: false,
         pharmacy_id: Some(pharmacy1.clone()),
+        bypass_allergy_check: false,
+        // AB1234563: A=registrant type, B=last-name initial, check digit 3 ✓
+        dea_number: Some(String::from_str(&env, "AB1234563")),
     };
 
     let prescription_id = client.issue_prescription(&provider, &patient, &req);
@@ -200,6 +207,8 @@ fn test_refill_lifecycle_management() {
         valid_until: env.ledger().timestamp() + (90 * 24 * 60 * 60),
         substitution_allowed: true,
         pharmacy_id: Some(pharmacy.clone()),
+        bypass_allergy_check: false,
+        dea_number: None,
     };
 
     let prescription_id = client.issue_prescription(&provider, &patient, &req);
@@ -261,6 +270,8 @@ fn test_prescription_cancellation_safety() {
         valid_until: env.ledger().timestamp() + (30 * 24 * 60 * 60),
         substitution_allowed: true,
         pharmacy_id: Some(pharmacy.clone()),
+        bypass_allergy_check: false,
+        dea_number: None,
     };
 
     let prescription_id = client.issue_prescription(&provider, &patient, &req);
@@ -328,6 +339,8 @@ fn test_valid_until_zero_is_rejected() {
         valid_until: 0, // same as ledger timestamp — not in the future
         substitution_allowed: true,
         pharmacy_id: None,
+        bypass_allergy_check: false,
+        dea_number: None,
     };
 
     let result = client.try_issue_prescription(&provider, &patient, &req);
@@ -359,6 +372,8 @@ fn test_valid_until_max_u64_is_rejected() {
         valid_until: u64::MAX, // far exceeds MAX_VALIDITY_WINDOW_SECS (1 year)
         substitution_allowed: true,
         pharmacy_id: None,
+        bypass_allergy_check: false,
+        dea_number: None,
     };
 
     let result = client.try_issue_prescription(&provider, &patient, &req);
@@ -394,6 +409,8 @@ fn test_valid_until_at_and_beyond_window_limit() {
         valid_until: at_limit,
         substitution_allowed: true,
         pharmacy_id: None,
+        bypass_allergy_check: false,
+        dea_number: None,
     };
     let id = client.issue_prescription(&provider, &patient, &req_ok);
     // Prescription was created successfully — fetch it and verify
@@ -416,6 +433,8 @@ fn test_valid_until_at_and_beyond_window_limit() {
         valid_until: at_limit + 1,
         substitution_allowed: true,
         pharmacy_id: None,
+        bypass_allergy_check: false,
+        dea_number: None,
     };
     let result = client.try_issue_prescription(&provider, &patient, &req_over);
     assert_eq!(result, Err(Ok(Error::InvalidValidityWindow)));
@@ -455,6 +474,8 @@ fn test_refill_timestamp_near_max_u64_returns_error() {
         valid_until,
         substitution_allowed: true,
         pharmacy_id: Some(pharmacy.clone()),
+        bypass_allergy_check: false,
+        dea_number: None,
     };
 
     let prescription_id = client.issue_prescription(&provider, &patient, &req);
@@ -473,4 +494,274 @@ fn test_refill_timestamp_near_max_u64_returns_error() {
     // The checked_add guard must surface InvalidValidityWindow.
     let result = client.try_refill_prescription(&prescription_id, &pharmacy, &provider);
     assert_eq!(result, Err(Ok(Error::InvalidValidityWindow)));
+}
+
+// ── DEA number validation tests ───────────────────────────────────────────────
+//
+// Coverage:
+//   1. Controlled substance with valid DEA number → accepted
+//   2. Controlled substance with no DEA number → ControlledSubstanceViolation
+//   3. Controlled substance with malformed DEA (wrong length) → ControlledSubstanceViolation
+//   4. Controlled substance with invalid first letter → ControlledSubstanceViolation
+//   5. Controlled substance with bad check digit → ControlledSubstanceViolation
+//   6. Non-controlled prescription with dea_number: None → accepted
+//   7. Non-controlled prescription with dea_number: Some(...) → accepted (ignored)
+//   8. Controlled substance with schedule: None → accepted even without DEA number
+
+/// Helper: build a minimal IssueRequest for DEA tests.
+/// Valid DEA "AB1234563": A=registrant type, B=last-name initial.
+/// Check: (1+3+5) + 2*(2+4+6) = 9 + 24 = 33 → units digit 3 = d7 ✓
+fn make_dea_test_req(
+    env: &Env,
+    provider: &Address,
+    patient: &Address,
+    is_controlled: bool,
+    schedule: Option<u32>,
+    dea_number: Option<String>,
+) -> IssueRequest {
+    IssueRequest {
+        medication_name: String::from_str(env, "Hydrocodone"),
+        ndc_code: String::from_str(env, "00406-0369-01"),
+        dosage: String::from_str(env, "5mg"),
+        quantity: 30,
+        days_supply: 30,
+        refills_allowed: 0,
+        instructions_hash: BytesN::from_array(env, &[0u8; 32]),
+        is_controlled,
+        schedule,
+        valid_until: env.ledger().timestamp() + 86_400,
+        substitution_allowed: false,
+        pharmacy_id: None,
+        bypass_allergy_check: false,
+        dea_number,
+    }
+}
+
+/// Controlled + schedule + valid DEA → prescription issued successfully.
+#[test]
+fn test_controlled_with_valid_dea_number_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PrescriptionContract);
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    let req = make_dea_test_req(
+        &env,
+        &provider,
+        &patient,
+        true,
+        Some(2),
+        Some(String::from_str(&env, "AB1234563")),
+    );
+
+    // Must not panic or return an error
+    let id = client.issue_prescription(&provider, &patient, &req);
+    assert!(id < u64::MAX);
+}
+
+/// Controlled + schedule, but dea_number: None → ControlledSubstanceViolation.
+#[test]
+fn test_controlled_missing_dea_number_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PrescriptionContract);
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    let req = make_dea_test_req(&env, &provider, &patient, true, Some(2), None);
+
+    let result = client.try_issue_prescription(&provider, &patient, &req);
+    assert_eq!(result, Err(Ok(Error::ControlledSubstanceViolation)));
+}
+
+/// Controlled + schedule, DEA number is only 8 characters (wrong length).
+#[test]
+fn test_controlled_dea_number_wrong_length_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PrescriptionContract);
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    // 8 chars instead of 9
+    let req = make_dea_test_req(
+        &env,
+        &provider,
+        &patient,
+        true,
+        Some(3),
+        Some(String::from_str(&env, "AB123456")),
+    );
+
+    let result = client.try_issue_prescription(&provider, &patient, &req);
+    assert_eq!(result, Err(Ok(Error::ControlledSubstanceViolation)));
+}
+
+/// Controlled + schedule, DEA number is 10 characters (too long).
+#[test]
+fn test_controlled_dea_number_too_long_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PrescriptionContract);
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    // 10 chars
+    let req = make_dea_test_req(
+        &env,
+        &provider,
+        &patient,
+        true,
+        Some(4),
+        Some(String::from_str(&env, "AB12345630")),
+    );
+
+    let result = client.try_issue_prescription(&provider, &patient, &req);
+    assert_eq!(result, Err(Ok(Error::ControlledSubstanceViolation)));
+}
+
+/// Controlled + schedule, first letter is a digit (not a valid registrant type).
+#[test]
+fn test_controlled_dea_number_first_char_not_letter_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PrescriptionContract);
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    // Starts with digit '1' — invalid
+    let req = make_dea_test_req(
+        &env,
+        &provider,
+        &patient,
+        true,
+        Some(2),
+        Some(String::from_str(&env, "1B1234563")),
+    );
+
+    let result = client.try_issue_prescription(&provider, &patient, &req);
+    assert_eq!(result, Err(Ok(Error::ControlledSubstanceViolation)));
+}
+
+/// Controlled + schedule, DEA number has correct structure but wrong check digit.
+/// "AB1234560" — check should be 3, not 0.
+#[test]
+fn test_controlled_dea_number_bad_check_digit_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PrescriptionContract);
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    let req = make_dea_test_req(
+        &env,
+        &provider,
+        &patient,
+        true,
+        Some(2),
+        Some(String::from_str(&env, "AB1234560")), // check digit 0, should be 3
+    );
+
+    let result = client.try_issue_prescription(&provider, &patient, &req);
+    assert_eq!(result, Err(Ok(Error::ControlledSubstanceViolation)));
+}
+
+/// Non-controlled prescription with dea_number: None → accepted without error.
+#[test]
+fn test_non_controlled_none_dea_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PrescriptionContract);
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    let req = make_dea_test_req(&env, &provider, &patient, false, None, None);
+
+    let id = client.issue_prescription(&provider, &patient, &req);
+    assert!(id < u64::MAX);
+}
+
+/// Non-controlled prescription may optionally carry a DEA number without error.
+#[test]
+fn test_non_controlled_with_dea_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PrescriptionContract);
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    let req = make_dea_test_req(
+        &env,
+        &provider,
+        &patient,
+        false,
+        None,
+        Some(String::from_str(&env, "AB1234563")),
+    );
+
+    let id = client.issue_prescription(&provider, &patient, &req);
+    assert!(id < u64::MAX);
+}
+
+/// Controlled prescription with schedule: None skips DEA validation entirely.
+/// (No schedule means it is not a scheduled controlled substance.)
+#[test]
+fn test_controlled_no_schedule_skips_dea_check() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PrescriptionContract);
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    // is_controlled true but schedule None — DEA check is not triggered
+    let req = make_dea_test_req(&env, &provider, &patient, true, None, None);
+
+    let id = client.issue_prescription(&provider, &patient, &req);
+    assert!(id < u64::MAX);
+}
+
+/// Second valid DEA number to confirm the check-digit algorithm with a
+/// different set of digits: "BC2345671"
+/// odd  = 2+4+6 = 12, even = 3+5+7 = 15
+/// total = 12 + 2*15 = 42 → units digit 2 = d7 ✓
+#[test]
+fn test_controlled_alternative_valid_dea_number_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PrescriptionContract);
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    let req = make_dea_test_req(
+        &env,
+        &provider,
+        &patient,
+        true,
+        Some(3),
+        Some(String::from_str(&env, "BC2345672")),
+    );
+
+    let id = client.issue_prescription(&provider, &patient, &req);
+    assert!(id < u64::MAX);
 }

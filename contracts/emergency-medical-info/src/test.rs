@@ -2,7 +2,7 @@
 #![allow(deprecated)]
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, Env};
+use soroban_sdk::{testutils::Address as _, BytesN, Env, Symbol, Vec};
 
 fn hash(env: &Env, seed: u8) -> BytesN<32> {
     BytesN::from_array(env, &[seed; 32])
@@ -38,7 +38,8 @@ fn test_set_emergency_profile() {
     env.mock_all_auths();
 
     let blood_type = Symbol::new(&env, "O_POS");
-    let allergies = hash(&env, 21);
+    let mut allergies = Vec::new(&env);
+    allergies.push_back(hash(&env, 21));
 
     let mut conditions = Vec::new(&env);
     conditions.push_back(hash(&env, 31));
@@ -83,7 +84,8 @@ fn test_emergency_access_request() {
 
     // Setup emergency profile
     let blood_type = Symbol::new(&env, "AB_NEG");
-    let allergies = hash(&env, 21);
+    let mut allergies = Vec::new(&env);
+    allergies.push_back(hash(&env, 21));
     let conditions = Vec::new(&env);
     let medications = Vec::new(&env);
     let contacts = create_test_emergency_contacts(&env);
@@ -185,7 +187,8 @@ fn test_notify_emergency_contacts() {
 
     // Setup profile with contacts
     let blood_type = Symbol::new(&env, "A_POS");
-    let allergies = hash(&env, 21);
+    let mut allergies = Vec::new(&env);
+    allergies.push_back(hash(&env, 21));
     let conditions = Vec::new(&env);
     let medications = Vec::new(&env);
     let contacts = create_test_emergency_contacts(&env);
@@ -223,7 +226,8 @@ fn test_record_dnr_order() {
 
     // Setup profile first
     let blood_type = Symbol::new(&env, "B_POS");
-    let allergies = hash(&env, 21);
+    let mut allergies = Vec::new(&env);
+    allergies.push_back(hash(&env, 21));
     let conditions = Vec::new(&env);
     let medications = Vec::new(&env);
     let contacts = Vec::new(&env);
@@ -264,10 +268,12 @@ fn test_configured_emergency_contact_can_read_profile() {
     let contact = Address::generate(&env);
     env.mock_all_auths();
 
+    let mut allergy_hashes = Vec::new(&env);
+    allergy_hashes.push_back(hash(&env, 21));
     client.set_emergency_profile(
         &patient,
         &Symbol::new(&env, "O_POS"),
-        &hash(&env, 21),
+        &allergy_hashes,
         &Vec::new(&env),
         &Vec::new(&env),
         &create_test_emergency_contacts(&env),
@@ -293,10 +299,12 @@ fn test_guardian_threshold_rekeys_emergency_profile() {
     let new_owner = Address::generate(&env);
     env.mock_all_auths();
 
+    let mut allergy_hashes = Vec::new(&env);
+    allergy_hashes.push_back(hash(&env, 22));
     client.set_emergency_profile(
         &patient,
         &Symbol::new(&env, "AB_NEG"),
-        &hash(&env, 22),
+        &allergy_hashes,
         &Vec::new(&env),
         &Vec::new(&env),
         &create_test_emergency_contacts(&env),
@@ -326,7 +334,8 @@ fn test_dnr_with_advance_directives() {
     env.mock_all_auths();
 
     let blood_type = Symbol::new(&env, "O_NEG");
-    let allergies = hash(&env, 21);
+    let mut allergies = Vec::new(&env);
+    allergies.push_back(hash(&env, 21));
     let conditions = Vec::new(&env);
     let medications = Vec::new(&env);
     let contacts = Vec::new(&env);
@@ -381,7 +390,8 @@ fn test_emergency_access_audit_trail() {
 
     // Setup profile
     let blood_type = Symbol::new(&env, "A_NEG");
-    let allergies = hash(&env, 21);
+    let mut allergies = Vec::new(&env);
+    allergies.push_back(hash(&env, 21));
     let conditions = Vec::new(&env);
     let medications = Vec::new(&env);
     let contacts = Vec::new(&env);
@@ -434,7 +444,8 @@ fn test_has_emergency_profile() {
 
     // Create profile
     let blood_type = Symbol::new(&env, "O_POS");
-    let allergies = hash(&env, 21);
+    let mut allergies = Vec::new(&env);
+    allergies.push_back(hash(&env, 21));
     let conditions = Vec::new(&env);
     let medications = Vec::new(&env);
     let contacts = Vec::new(&env);
@@ -465,7 +476,8 @@ fn test_comprehensive_emergency_scenario() {
 
     // 1. Setup comprehensive emergency profile
     let blood_type = Symbol::new(&env, "AB_POS");
-    let allergies = hash(&env, 21);
+    let mut allergies = Vec::new(&env);
+    allergies.push_back(hash(&env, 21));
 
     let mut conditions = Vec::new(&env);
     conditions.push_back(hash(&env, 31));

@@ -37,6 +37,8 @@ fn test_prescription_lifecycle() {
         valid_until: 1000,
         substitution_allowed: true,
         pharmacy_id: Some(pharmacy.clone()),
+        bypass_allergy_check: false,
+        dea_number: None,
     };
 
     let prescription_id = client.issue_prescription(&provider, &patient, &request);
@@ -89,6 +91,8 @@ fn test_fail_expired_prescription() {
         valid_until: 500,
         substitution_allowed: true,
         pharmacy_id: Some(pharmacy.clone()),
+        bypass_allergy_check: false,
+        dea_number: None,
     };
 
     let id = client.issue_prescription(&provider, &patient, &request);
@@ -471,6 +475,8 @@ fn issue_at(
         valid_until,
         substitution_allowed: true,
         pharmacy_id: Some(pharmacy.clone()),
+        bypass_allergy_check: false,
+        dea_number: None,
     };
     client.issue_prescription(provider, patient, &req)
 }

@@ -44,6 +44,59 @@ pub const REFILL_WINDOW_SECS: u64 = 30 * 24 * SECONDS_PER_HOUR;
 /// Divisor applied to a prescription's total quantity for schedule-2 per-dispense limits.
 pub const MIN_REFILL_QUANTITY_DIVISOR: u32 = 2;
 
+// ── DEA number validation ─────────────────────────────────────────────────────
+
+/// Valid DEA registrant-type letters (first character of a DEA number).
+/// Source: DEA registrant type codes — A/B (practitioners), C (practitioners–military),
+/// F/G (teaching practitioners), M (mid-level practitioners), P/R/S/T/U (distributors),
+/// X (DATA-waivered practitioners).
+const DEA_REGISTRANT_TYPES: &[u8] = b"ABCFGMPRSTUX";
+
+/// Validate a DEA registration number.
+///
+/// Rules:
+/// 1. Exactly 9 characters: 2 ASCII uppercase letters followed by 7 ASCII digits.
+/// 2. The first letter must be a recognised DEA registrant-type code:
+///    A, B, C, F, G, M, P, R, S, T, U, X (mid-level practitioners use M or other letters;
+///    we accept the full set used by the DEA).
+/// 3. Check-digit: let the 7 digits be d1…d7.
+///    `(d1 + d3 + d5) + 2*(d2 + d4 + d6)` — the units digit of this sum must equal d7.
+///
+/// Returns `true` only when all three conditions hold.
+fn validate_dea_number(dea: &[u8]) -> bool {
+    // Must be exactly 9 bytes
+    if dea.len() != 9 {
+        return false;
+    }
+
+    // First two bytes must be uppercase ASCII letters
+    let (b0, b1) = (dea[0], dea[1]);
+    if !b0.is_ascii_uppercase() || !b1.is_ascii_uppercase() {
+        return false;
+    }
+
+    // First letter must be a known registrant-type code
+    if !DEA_REGISTRANT_TYPES.contains(&b0) {
+        return false;
+    }
+
+    // Bytes 2-8 must all be ASCII digits; collect as u32 values
+    let mut digits = [0u32; 7];
+    for i in 0..7 {
+        let byte = dea[2 + i];
+        if !byte.is_ascii_digit() {
+            return false;
+        }
+        digits[i] = (byte - b'0') as u32;
+    }
+
+    // Check-digit validation
+    let odd_sum = digits[0] + digits[2] + digits[4];   // d1 + d3 + d5
+    let even_sum = digits[1] + digits[3] + digits[5];  // d2 + d4 + d6
+    let check = (odd_sum + 2 * even_sum) % 10;
+    check == digits[6]
+}
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -253,6 +306,10 @@ pub struct IssueRequest {
     pub pharmacy_id: Option<Address>,
     /// When true, skip allergy check. Requires caller to be the configured admin.
     pub bypass_allergy_check: bool,
+    /// DEA registration number of the prescribing provider.
+    /// Required when `is_controlled == true` and a `schedule` is present.
+    /// Format: 2 uppercase letters followed by 7 digits (e.g. "AB1234563").
+    pub dea_number: Option<String>,
 }
 
 #[contracttype]
@@ -375,6 +432,26 @@ impl PrescriptionContract {
                     .unwrap_or(false);
                 if strict {
                     return Err(Error::AllergyInteractionDetected);
+                }
+            }
+        }
+
+        // DEA registration check: controlled substances require a valid DEA number.
+        if req.is_controlled && req.schedule.is_some() {
+            match &req.dea_number {
+                None => return Err(Error::ControlledSubstanceViolation),
+                Some(dea) => {
+                    // A valid DEA number is always exactly 9 ASCII characters.
+                    // Reject anything that isn't 9 bytes long before byte extraction.
+                    // soroban_sdk::String::len() returns u32.
+                    if dea.len() != 9u32 {
+                        return Err(Error::ControlledSubstanceViolation);
+                    }
+                    let mut buf = [0u8; 9];
+                    dea.copy_into_slice(&mut buf);
+                    if !validate_dea_number(&buf) {
+                        return Err(Error::ControlledSubstanceViolation);
+                    }
                 }
             }
         }

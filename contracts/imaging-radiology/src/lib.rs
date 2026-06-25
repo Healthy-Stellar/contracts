@@ -3,7 +3,7 @@
 
 use soroban_sdk::{
     contract, contractevent, contracterror, contractimpl, contracttype, Address, BytesN, Env,
-    String, Symbol, Vec,
+    String, Symbol,
 };
 use shared::{
     pagination::{self, PageResult, MAX_PAGE_SIZE},

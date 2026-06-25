@@ -75,8 +75,8 @@ fn test_multiple_imaging_orders() {
     assert_eq!(order_id2, 2);
 
     // Verify patient has both orders
-    let patient_orders = client.get_patient_orders(&patient, &patient);
-    assert_eq!(patient_orders.len(), 2);
+    let patient_orders = client.get_patient_orders(&patient, &patient, &0);
+    assert_eq!(patient_orders.ids.len(), 2);
 }
 
 #[test]
@@ -484,10 +484,10 @@ fn test_get_patient_orders() {
     );
 
     // Get patient orders
-    let orders = client.get_patient_orders(&patient, &patient);
-    assert_eq!(orders.len(), 2);
-    assert_eq!(orders.get(0).unwrap(), order_id1);
-    assert_eq!(orders.get(1).unwrap(), order_id2);
+    let orders = client.get_patient_orders(&patient, &patient, &0);
+    assert_eq!(orders.ids.len(), 2);
+    assert_eq!(orders.ids.get(0).unwrap(), order_id1);
+    assert_eq!(orders.ids.get(1).unwrap(), order_id2);
 }
 
 #[test]
@@ -523,10 +523,10 @@ fn test_get_provider_orders() {
     );
 
     // Get provider orders
-    let orders = client.get_provider_orders(&provider, &provider);
-    assert_eq!(orders.len(), 2);
-    assert_eq!(orders.get(0).unwrap(), order_id1);
-    assert_eq!(orders.get(1).unwrap(), order_id2);
+    let orders = client.get_provider_orders(&provider, &provider, &0);
+    assert_eq!(orders.ids.len(), 2);
+    assert_eq!(orders.ids.get(0).unwrap(), order_id1);
+    assert_eq!(orders.ids.get(1).unwrap(), order_id2);
 }
 
 #[test]
@@ -722,4 +722,138 @@ fn test_urgent_findings_notification() {
     // Verify order priority
     let order = client.get_imaging_order(&order_id, &patient).unwrap();
     assert_eq!(order.priority, Symbol::new(&env, "STAT"));
+}
+
+#[test]
+fn test_imaging_order_creation_with_contrast() {
+    let env = Env::default();
+    let contract_id = env.register(ImagingRadiology, ());
+    let client = ImagingRadiologyClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+    env.mock_all_auths();
+
+    let order_id = client.order_imaging_study(
+        &provider,
+        &patient,
+        &Symbol::new(&env, "CT"),
+        &String::from_str(&env, "Chest"),
+        &true,
+        &String::from_str(&env, "PE suspected"),
+        &Symbol::new(&env, "URGENT"),
+    );
+
+    assert_eq!(order_id, 1);
+
+    let order = client.get_imaging_order(&order_id, &patient).unwrap();
+    assert!(order.contrast_required);
+    assert_eq!(order.clinical_indication, String::from_str(&env, "PE suspected"));
+}
+
+#[test]
+fn test_imaging_schedule_timestamp_verification() {
+    let env = Env::default();
+    let contract_id = env.register(ImagingRadiology, ());
+    let client = ImagingRadiologyClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+    let imaging_center = Address::generate(&env);
+    env.mock_all_auths();
+
+    let order_id = client.order_imaging_study(
+        &provider,
+        &patient,
+        &Symbol::new(&env, "MRI"),
+        &String::from_str(&env, "Shoulder"),
+        &false,
+        &String::from_str(&env, "Rotator cuff tear"),
+        &Symbol::new(&env, "ROUTINE"),
+    );
+
+    let scheduled_time = env.ledger().timestamp() + 259200; // 3 days from now
+    let prep_hash = BytesN::from_array(&env, &[2u8; 32]);
+
+    client.schedule_imaging(&order_id, &imaging_center, &scheduled_time, &prep_hash);
+
+    let schedule = client.get_imaging_schedule(&order_id, &patient).unwrap();
+    assert_eq!(schedule.scheduled_time, scheduled_time);
+    assert_eq!(schedule.imaging_center, imaging_center);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn test_multiple_preliminary_reports_error() {
+    let env = Env::default();
+    let contract_id = env.register(ImagingRadiology, ());
+    let client = ImagingRadiologyClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+    let imaging_center = Address::generate(&env);
+    let radiologist = Address::generate(&env);
+    env.mock_all_auths();
+
+    let order_id = client.order_imaging_study(
+        &provider,
+        &patient,
+        &Symbol::new(&env, "ULTRASOUND"),
+        &String::from_str(&env, "Thyroid"),
+        &false,
+        &String::from_str(&env, "Nodule assessment"),
+        &Symbol::new(&env, "ROUTINE"),
+    );
+
+    let dicom_hash = BytesN::from_array(&env, &[3u8; 32]);
+    client.upload_images(
+        &order_id,
+        &imaging_center,
+        &dicom_hash,
+        &8,
+        &env.ledger().timestamp(),
+    );
+
+    let report_hash1 = BytesN::from_array(&env, &[4u8; 32]);
+    client.submit_preliminary_report(&order_id, &radiologist, &report_hash1, &false);
+
+    let report_hash2 = BytesN::from_array(&env, &[5u8; 32]);
+    client.submit_preliminary_report(&order_id, &radiologist, &report_hash2, &true);
+}
+
+#[test]
+fn test_patient_order_pagination_with_page_zero() {
+    let env = Env::default();
+    let contract_id = env.register(ImagingRadiology, ());
+    let client = ImagingRadiologyClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+    env.mock_all_auths();
+
+    // Create three orders
+    for i in 0..3 {
+        let study_type = if i == 0 {
+            Symbol::new(&env, "XRAY")
+        } else if i == 1 {
+            Symbol::new(&env, "CT")
+        } else {
+            Symbol::new(&env, "MRI")
+        };
+
+        client.order_imaging_study(
+            &provider,
+            &patient,
+            &study_type,
+            &String::from_str(&env, "Test body part"),
+            &false,
+            &String::from_str(&env, "Test indication"),
+            &Symbol::new(&env, "ROUTINE"),
+        );
+    }
+
+    // Fetch first page
+    let page_result = client.get_patient_orders(&patient, &patient, &0);
+    assert!(page_result.ids.len() > 0);
+    assert_eq!(page_result.total, 3);
 }
