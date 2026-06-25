@@ -1,6 +1,8 @@
 #![no_std]
 #![allow(deprecated)]
 
+use shared::pagination::PageResult;
+
 use shared::incident_tracking::{
     capture_incident, get_incidents_by_correlation_id as shared_get_by_corr, IncidentSeverity,
 };
@@ -30,6 +32,19 @@ pub const ARCHIVE_LEDGER_BUMP_AMOUNT: u32 = 518_400;
 pub enum PatientStatus {
     Active,
     Deregistered,
+}
+
+/// Retention classification for patient data, aligned with HIPAA minimum standards.
+///
+/// - `Clinical`        → critical TTL (~31 days) for care-critical records
+/// - `Administrative`  → operational TTL (~7 days) for admin/operational records
+/// - `Financial`       → critical TTL (~31 days) for financial/billing records
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RetentionClass {
+    Clinical,
+    Administrative,
+    Financial,
 }
 
 /// Emitted on every patient status transition (Active ↔ Deregistered).
@@ -347,13 +362,11 @@ fn require_record_access(
     caller: &Address,
 ) -> Result<(), ContractError> {
     if caller == patient {
-        caller.require_auth();
         return Ok(());
     }
     let guardian_key = DataKey::Guardian(patient.clone());
     let guardian_opt: Option<Address> = env.storage().persistent().get(&guardian_key);
     if guardian_opt.as_ref() == Some(caller) {
-        caller.require_auth();
         return Ok(());
     }
     let access_key = DataKey::AuthorizedDoctors(patient.clone());
@@ -363,7 +376,6 @@ fn require_record_access(
         .get(&access_key)
         .unwrap_or(Map::new(env));
     if access_map.contains_key(caller.clone()) {
-        caller.require_auth();
         return Ok(());
     }
     Err(ContractError::NotAuthorized)
@@ -1791,14 +1803,15 @@ impl MedicalRegistry {
         env: Env,
         record_id: u64,
         caller: Address,
-    ) -> Result<Vec<RecordVersion>, ContractError> {
+        page: u32,
+    ) -> Result<PageResult, ContractError> {
         caller.require_auth();
         let record_key = DataKey::MedicalRecord(record_id);
         let record_data: RecordData = env
             .storage()
             .persistent()
             .get(&record_key)
-            .ok_or(ContractError::RecordNotFound)?;
+            .ok_or(ContractError::NotFound)?;
         require_record_access(&env, &record_data.patient, &caller)?;
 
         // TTL bump
@@ -1810,7 +1823,27 @@ impl MedicalRegistry {
             return Err(ContractError::NoHistoryFound);
         }
 
-        Ok(record_data.history)
+        let total = record_data.history.len();
+        let limit = 20u32;
+        let offset = page * limit;
+
+        let mut page_items: Vec<soroban_sdk::Val> = Vec::new(&env);
+        let mut has_more = false;
+
+        if offset < total {
+            let end = (offset + limit).min(total);
+            for i in offset..end {
+                if let Some(version) = record_data.history.get(i) {
+                    page_items.push_back(version.into_val(&env));
+                }
+            }
+            has_more = end < total;
+        }
+
+        Ok(PageResult {
+            ids: page_items,
+            has_more,
+        })
     }
 
     pub fn get_record_fields(

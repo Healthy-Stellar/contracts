@@ -572,17 +572,10 @@ impl ImagingRadiology {
             return Err(Error::UnauthorizedAccess);
         }
         let p = patient_id.clone();
-        let total_key = DataKey::PatientOrdersTotal(patient_id.clone());
-        let total: u32 = env
-            .storage()
-            .persistent()
-            .get(&total_key)
-            .ok_or(Error::CounterUnavailable)?;
         Ok(pagination::get_paged(
             &env,
             |pg| DataKey::PatientOrdersPage(p.clone(), pg),
             || DataKey::PatientOrdersHead(p.clone()),
-            || total,
             page,
         ))
     }
@@ -601,17 +594,10 @@ impl ImagingRadiology {
             return Err(Error::UnauthorizedAccess);
         }
         let prov = provider_id.clone();
-        let total_key = DataKey::ProviderOrdersTotal(provider_id.clone());
-        let total: u32 = env
-            .storage()
-            .persistent()
-            .get(&total_key)
-            .ok_or(Error::CounterUnavailable)?;
         Ok(pagination::get_paged(
             &env,
             |pg| DataKey::ProviderOrdersPage(prov.clone(), pg),
             || DataKey::ProviderOrdersHead(prov.clone()),
-            || total,
             page,
         ))
     }

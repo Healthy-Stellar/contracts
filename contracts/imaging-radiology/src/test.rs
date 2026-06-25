@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, vec as svec, Env};
+use soroban_sdk::{testutils::Address as _, vec as svec, Env, TryIntoVal};
 
 #[test]
 fn test_order_imaging_study() {
@@ -486,8 +486,10 @@ fn test_get_patient_orders() {
     // Get patient orders
     let orders = client.get_patient_orders(&patient, &patient, &0);
     assert_eq!(orders.ids.len(), 2);
-    assert_eq!(orders.ids.get(0).unwrap(), order_id1);
-    assert_eq!(orders.ids.get(1).unwrap(), order_id2);
+    let id1: u64 = orders.ids.get(0).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(id1, order_id1);
+    let id2: u64 = orders.ids.get(1).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(id2, order_id2);
 }
 
 #[test]
@@ -525,8 +527,10 @@ fn test_get_provider_orders() {
     // Get provider orders
     let orders = client.get_provider_orders(&provider, &provider, &0);
     assert_eq!(orders.ids.len(), 2);
-    assert_eq!(orders.ids.get(0).unwrap(), order_id1);
-    assert_eq!(orders.ids.get(1).unwrap(), order_id2);
+    let id1: u64 = orders.ids.get(0).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(id1, order_id1);
+    let id2: u64 = orders.ids.get(1).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(id2, order_id2);
 }
 
 #[test]
@@ -855,5 +859,5 @@ fn test_patient_order_pagination_with_page_zero() {
     // Fetch first page
     let page_result = client.get_patient_orders(&patient, &patient, &0);
     assert!(page_result.ids.len() > 0);
-    assert_eq!(page_result.total, 3);
+    assert_eq!(page_result.has_more, false);
 }

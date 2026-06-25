@@ -33,8 +33,8 @@
 /// Closes #399.
 #[cfg(test)]
 mod pagination_stability_tests {
-    use crate::pagination::{get_paged, push_paged, PageResult, MAX_PAGE_SIZE, NO_NEXT_PAGE};
-    use soroban_sdk::{contracttype, Env};
+    use crate::pagination::{get_paged, push_paged, PageResult, MAX_PAGE_SIZE};
+    use soroban_sdk::{contracttype, Env, TryIntoVal};
 
     #[contracttype]
     #[derive(Clone)]
@@ -48,7 +48,7 @@ mod pagination_stability_tests {
     }
 
     fn get(env: &Env, page: u32) -> PageResult {
-        get_paged(env, |p| TestKey::Page(p), || TestKey::Head, || 0, page)
+        get_paged(env, |p| TestKey::Page(p), || TestKey::Head, page)
     }
 
     // ── basic round-trip ─────────────────────────────────────────────────────
@@ -58,7 +58,7 @@ mod pagination_stability_tests {
         let env = Env::default();
         let result = get(&env, 0);
         assert_eq!(result.ids.len(), 0);
-        assert_eq!(result.next_page, NO_NEXT_PAGE);
+        assert_eq!(result.has_more, false);
     }
 
     #[test]
@@ -67,8 +67,9 @@ mod pagination_stability_tests {
         push(&env, 42);
         let result = get(&env, 0);
         assert_eq!(result.ids.len(), 1);
-        assert_eq!(result.ids.get(0).unwrap(), 42);
-        assert_eq!(result.next_page, NO_NEXT_PAGE);
+        let id: u64 = result.ids.get(0).unwrap().try_into_val(&env).unwrap();
+        assert_eq!(id, 42);
+        assert_eq!(result.has_more, false);
     }
 
     // ── cursor stability: insertion after cursor issued ───────────────────────
@@ -85,7 +86,7 @@ mod pagination_stability_tests {
         // Read page 0 — it is now full and immutable.
         let page0_before = get(&env, 0);
         assert_eq!(page0_before.ids.len() as u32, MAX_PAGE_SIZE);
-        assert_eq!(page0_before.next_page, 1);
+        assert_eq!(page0_before.has_more, true);
 
         // Insert more items (they land on page 1).
         for i in MAX_PAGE_SIZE..MAX_PAGE_SIZE + 5 {
@@ -112,8 +113,9 @@ mod pagination_stability_tests {
 
         let page1 = get(&env, 1);
         assert_eq!(page1.ids.len(), 1);
-        assert_eq!(page1.ids.get(0).unwrap(), 999);
-        assert_eq!(page1.next_page, NO_NEXT_PAGE);
+        let id: u64 = page1.ids.get(0).unwrap().try_into_val(&env).unwrap();
+        assert_eq!(id, 999);
+        assert_eq!(page1.has_more, false);
     }
 
     // ── no records skipped during concurrent insertion ────────────────────────
@@ -135,21 +137,22 @@ mod pagination_stability_tests {
         // Concurrent insertion lands on page 2 (pages 0 and 1 are full).
         push(&env, 9999);
 
-        let page1 = get(&env, page0.next_page);
+        let page1 = get(&env, 1);
         assert_eq!(page1.ids.len() as u32, MAX_PAGE_SIZE);
 
         // The concurrent item is on page 2, not mixed into page 1.
-        let page2 = get(&env, page1.next_page);
+        let page2 = get(&env, 2);
         assert_eq!(page2.ids.len(), 1);
-        assert_eq!(page2.ids.get(0).unwrap(), 9999);
+        let id: u64 = page2.ids.get(0).unwrap().try_into_val(&env).unwrap();
+        assert_eq!(id, 9999);
 
         // Collect all IDs into a fixed-size array (no_std compatible).
         // Max items = 2*MAX_PAGE_SIZE + 1 = 41; use 64 for safety.
         let mut all_ids = [0u64; 64];
         let mut count = 0usize;
-        for id in page0.ids.iter() { all_ids[count] = id; count += 1; }
-        for id in page1.ids.iter() { all_ids[count] = id; count += 1; }
-        for id in page2.ids.iter() { all_ids[count] = id; count += 1; }
+        for id in page0.ids.iter() { all_ids[count] = id.try_into_val(&env).unwrap(); count += 1; }
+        for id in page1.ids.iter() { all_ids[count] = id.try_into_val(&env).unwrap(); count += 1; }
+        for id in page2.ids.iter() { all_ids[count] = id.try_into_val(&env).unwrap(); count += 1; }
 
         // No duplicates.
         for i in 0..count {
@@ -189,7 +192,7 @@ mod pagination_stability_tests {
 
         // Check no duplicates.
         let mut ids = [0u64; 4];
-        for (i, id) in second_read.ids.iter().enumerate() { ids[i] = id; }
+        for (i, id) in second_read.ids.iter().enumerate() { ids[i] = id.try_into_val(&env).unwrap(); }
         for i in 0..4 {
             for j in (i + 1)..4 {
                 assert_ne!(ids[i], ids[j], "duplicate ID on head page");
@@ -204,7 +207,7 @@ mod pagination_stability_tests {
         let env = Env::default();
         push(&env, 1);
         let result = get(&env, 0);
-        assert_eq!(result.next_page, NO_NEXT_PAGE);
+        assert_eq!(result.has_more, false);
     }
 
     #[test]
@@ -214,6 +217,6 @@ mod pagination_stability_tests {
             push(&env, i as u64);
         }
         let result = get(&env, 0);
-        assert_eq!(result.next_page, 1);
+        assert_eq!(result.has_more, true);
     }
 }

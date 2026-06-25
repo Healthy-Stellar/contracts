@@ -298,6 +298,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "retention_class"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Clinical"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "status"
                       },
                       "val": {
