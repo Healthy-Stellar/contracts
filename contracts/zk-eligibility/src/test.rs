@@ -11,7 +11,7 @@ fn setup() -> (Env, Address, ZkEligibilityClient<'static>) {
     let contract_id = env.register_contract(None, ZkEligibility);
     let client = ZkEligibilityClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    client.initialize(&admin).unwrap();
+    client.initialize(&admin);
     (env, admin, client)
 }
 
@@ -65,8 +65,8 @@ fn test_call_before_init_returns_error() {
 #[test]
 fn test_register_and_get_verifier_key() {
     let (env, admin, client) = setup();
-    client.register_verifier_key(&admin, &1u32, &vk(&env, 0xAA)).unwrap();
-    let entry = client.get_verifier_key(&1u32).unwrap();
+    client.register_verifier_key(&admin, &1u32, &vk(&env, 0xAA));
+    let entry = client.get_verifier_key(&1u32);
     assert_eq!(entry.schema_version, 1);
     assert!(entry.active);
 }
@@ -74,7 +74,7 @@ fn test_register_and_get_verifier_key() {
 #[test]
 fn test_duplicate_schema_returns_error() {
     let (env, admin, client) = setup();
-    client.register_verifier_key(&admin, &1u32, &vk(&env, 0xAA)).unwrap();
+    client.register_verifier_key(&admin, &1u32, &vk(&env, 0xAA));
     let err = client
         .try_register_verifier_key(&admin, &1u32, &vk(&env, 0xBB))
         .unwrap_err()
@@ -96,9 +96,9 @@ fn test_non_admin_register_returns_error() {
 #[test]
 fn test_deprecate_verifier_key() {
     let (env, admin, client) = setup();
-    client.register_verifier_key(&admin, &1u32, &vk(&env, 0xAA)).unwrap();
-    client.deprecate_verifier_key(&admin, &1u32).unwrap();
-    let entry = client.get_verifier_key(&1u32).unwrap();
+    client.register_verifier_key(&admin, &1u32, &vk(&env, 0xAA));
+    client.deprecate_verifier_key(&admin, &1u32);
+    let entry = client.get_verifier_key(&1u32);
     assert!(!entry.active);
 }
 
@@ -117,9 +117,9 @@ fn test_deprecate_unknown_schema_returns_error() {
 #[test]
 fn test_valid_proof_accepted() {
     let (env, admin, client) = setup();
-    client.register_verifier_key(&admin, &1u32, &vk(&env, 0xAA)).unwrap();
+    client.register_verifier_key(&admin, &1u32, &vk(&env, 0xAA));
     let subject = Address::generate(&env);
-    client.verify_eligibility(&subject, &bundle(&env, 0xAA, 1)).unwrap();
+    client.verify_eligibility(&subject, &bundle(&env, 0xAA, 1));
 }
 
 // ── verify_eligibility: failure paths ────────────────────────────────────────
@@ -127,7 +127,7 @@ fn test_valid_proof_accepted() {
 #[test]
 fn test_invalid_proof_returns_error() {
     let (env, admin, client) = setup();
-    client.register_verifier_key(&admin, &1u32, &vk(&env, 0xAA)).unwrap();
+    client.register_verifier_key(&admin, &1u32, &vk(&env, 0xAA));
     let subject = Address::generate(&env);
     // proof tag 0xBB ≠ vk tag 0xAA → verification fails
     let bad_bundle = ProofBundle {
@@ -156,8 +156,8 @@ fn test_unknown_schema_returns_error() {
 #[test]
 fn test_deprecated_schema_returns_error() {
     let (env, admin, client) = setup();
-    client.register_verifier_key(&admin, &1u32, &vk(&env, 0xAA)).unwrap();
-    client.deprecate_verifier_key(&admin, &1u32).unwrap();
+    client.register_verifier_key(&admin, &1u32, &vk(&env, 0xAA));
+    client.deprecate_verifier_key(&admin, &1u32);
     let subject = Address::generate(&env);
     let err = client
         .try_verify_eligibility(&subject, &bundle(&env, 0xAA, 1))
@@ -169,9 +169,9 @@ fn test_deprecated_schema_returns_error() {
 #[test]
 fn test_proof_replay_returns_error() {
     let (env, admin, client) = setup();
-    client.register_verifier_key(&admin, &1u32, &vk(&env, 0xAA)).unwrap();
+    client.register_verifier_key(&admin, &1u32, &vk(&env, 0xAA));
     let subject = Address::generate(&env);
-    client.verify_eligibility(&subject, &bundle(&env, 0xAA, 1)).unwrap();
+    client.verify_eligibility(&subject, &bundle(&env, 0xAA, 1));
     // Same proof submitted again
     let err = client
         .try_verify_eligibility(&subject, &bundle(&env, 0xAA, 1))
@@ -183,7 +183,7 @@ fn test_proof_replay_returns_error() {
 #[test]
 fn test_proof_too_large_returns_error() {
     let (env, admin, client) = setup();
-    client.register_verifier_key(&admin, &1u32, &vk(&env, 0xAA)).unwrap();
+    client.register_verifier_key(&admin, &1u32, &vk(&env, 0xAA));
     let subject = Address::generate(&env);
     let big_proof = Bytes::from_slice(&env, &[0xAA; 513]);
     let bad_bundle = ProofBundle {
@@ -201,7 +201,7 @@ fn test_proof_too_large_returns_error() {
 #[test]
 fn test_too_many_public_inputs_returns_error() {
     let (env, admin, client) = setup();
-    client.register_verifier_key(&admin, &1u32, &vk(&env, 0xAA)).unwrap();
+    client.register_verifier_key(&admin, &1u32, &vk(&env, 0xAA));
     let subject = Address::generate(&env);
     let mut inputs: Vec<BytesN<32>> = Vec::new(&env);
     for _ in 0..=MAX_PUBLIC_INPUTS {
@@ -224,12 +224,12 @@ fn test_too_many_public_inputs_returns_error() {
 #[test]
 fn test_nullifier_recorded_after_valid_proof() {
     let (env, admin, client) = setup();
-    client.register_verifier_key(&admin, &1u32, &vk(&env, 0xAA)).unwrap();
+    client.register_verifier_key(&admin, &1u32, &vk(&env, 0xAA));
     let subject = Address::generate(&env);
     let p = proof(&env, 0xAA);
-    let proof_hash = env.crypto().sha256(&p);
+    let proof_hash: BytesN<32> = env.crypto().sha256(&p).into();
     assert!(!client.is_nullified(&proof_hash));
-    client.verify_eligibility(&subject, &bundle(&env, 0xAA, 1)).unwrap();
+    client.verify_eligibility(&subject, &bundle(&env, 0xAA, 1));
     assert!(client.is_nullified(&proof_hash));
 }
 
@@ -238,12 +238,12 @@ fn test_nullifier_recorded_after_valid_proof() {
 #[test]
 fn test_multiple_schema_versions_coexist() {
     let (env, admin, client) = setup();
-    client.register_verifier_key(&admin, &1u32, &vk(&env, 0xAA)).unwrap();
-    client.register_verifier_key(&admin, &2u32, &vk(&env, 0xBB)).unwrap();
+    client.register_verifier_key(&admin, &1u32, &vk(&env, 0xAA));
+    client.register_verifier_key(&admin, &2u32, &vk(&env, 0xBB));
 
     let subject = Address::generate(&env);
     // v1 proof
-    client.verify_eligibility(&subject, &bundle(&env, 0xAA, 1)).unwrap();
+    client.verify_eligibility(&subject, &bundle(&env, 0xAA, 1));
     // v2 proof (different proof bytes → different nullifier)
-    client.verify_eligibility(&subject, &bundle(&env, 0xBB, 2)).unwrap();
+    client.verify_eligibility(&subject, &bundle(&env, 0xBB, 2));
 }

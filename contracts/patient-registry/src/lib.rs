@@ -42,6 +42,17 @@ pub struct PatientStatusChanged {
 }
 
 /// --------------------
+/// Retention Class
+/// --------------------
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RetentionClass {
+    Clinical,
+    Financial,
+    Administrative,
+}
+
+/// --------------------
 /// Patient Structures
 /// --------------------
 #[contracttype]
@@ -53,6 +64,7 @@ pub struct PatientData {
     pub status: PatientStatus,
     pub policy: PolicyMetadata,
     pub retention_class: RetentionClass,
+    pub guardian: Option<Address>,
 }
 
 /// --------------------
@@ -722,6 +734,7 @@ impl MedicalRegistry {
             status: PatientStatus::Active,
             policy,
             retention_class: RetentionClass::Clinical,
+            guardian: None,
         };
         env.storage().persistent().set(&key, &patient);
         let total_patients: u64 = env
@@ -745,6 +758,76 @@ impl MedicalRegistry {
 
         env.events()
             .publish((symbol_short!("reg_pat"), wallet), symbol_short!("success"));
+        Ok(())
+    }
+
+    /// Register a patient on behalf of a minor or an adult lacking capacity.
+    ///
+    /// Both `wallet` (the patient) and `guardian` must authorise the call.
+    /// The guardian is stored both inside `PatientData` and under the
+    /// `DataKey::Guardian` key so that all existing guardian-aware helpers
+    /// (`require_patient_or_guardian`, `acknowledge_consent`, etc.) keep
+    /// working without modification.
+    pub fn register_patient_with_guardian(
+        env: Env,
+        wallet: Address,
+        guardian: Address,
+        name: String,
+        dob: u64,
+        encrypted_metadata_ref: EncryptedEnvelopeRef,
+        policy: PolicyMetadata,
+    ) -> Result<(), ContractError> {
+        Self::require_not_frozen(&env);
+        wallet.require_auth();
+        guardian.require_auth();
+
+        validate_encrypted_ref(&encrypted_metadata_ref)
+            .map_err(|_| ContractError::InvalidEncryptedEnvelope)?;
+        validate_policy_metadata(&policy).map_err(|_| ContractError::InvalidPolicyMetadata)?;
+
+        let key = DataKey::Patient(wallet.clone());
+        if env.storage().persistent().has(&key) {
+            return Err(ContractError::AlreadyExists);
+        }
+
+        let patient = PatientData {
+            name,
+            dob,
+            encrypted_metadata_ref,
+            status: PatientStatus::Active,
+            policy,
+            retention_class: RetentionClass::Clinical,
+            guardian: Some(guardian.clone()),
+        };
+        env.storage().persistent().set(&key, &patient);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Guardian(wallet.clone()), &guardian);
+
+        let total_patients: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalPatients)
+            .unwrap_or(0u64);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalPatients, &(total_patients + 1));
+
+        let mut pat_list: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PatientList)
+            .unwrap_or(Vec::new(&env));
+        pat_list.push_back(wallet.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey::PatientList, &pat_list);
+
+        env.events().publish(
+            (symbol_short!("reg_grd"), wallet),
+            guardian,
+        );
         Ok(())
     }
 
@@ -925,6 +1008,7 @@ impl MedicalRegistry {
                 status: PatientStatus::Active,
                 policy: entry.policy.clone(),
                 retention_class: RetentionClass::Clinical,
+                guardian: None,
             };
             env.storage().persistent().set(&key, &patient);
 

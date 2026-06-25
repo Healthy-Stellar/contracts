@@ -238,6 +238,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "guardian"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "name"
                       },
                       "val": {
@@ -273,6 +279,18 @@
                             "val": {
                               "symbol": "clinical"
                             }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "retention_class"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Clinical"
                           }
                         ]
                       }

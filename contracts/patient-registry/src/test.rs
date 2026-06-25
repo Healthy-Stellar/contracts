@@ -4221,3 +4221,169 @@ fn test_grant_access_allows_registered_provider() {
     let authorized = client.get_authorized_doctors(&patient);
     assert_eq!(authorized.len(), 1);
 }
+
+// ─── Guardian / proxy registration tests (#466) ──────────────────────────────
+
+#[test]
+fn test_guardian_registration_stores_guardian_and_patient() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let guardian = Address::generate(&env);
+
+    client.register_patient_with_guardian(
+        &patient,
+        &guardian,
+        &String::from_str(&env, "Minor Patient"),
+        &631152000u64,
+        &encrypted_ref(&env, 1),
+        &policy(&env),
+    );
+
+    assert!(client.is_patient_registered(&patient));
+
+    let data = client.get_patient(&patient);
+    assert_eq!(data.guardian, Some(guardian.clone()));
+
+    assert_eq!(client.get_guardian(&patient), Some(guardian));
+}
+
+#[test]
+fn test_guardian_registration_requires_both_auths() {
+    let env = Env::default();
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let guardian = Address::generate(&env);
+
+    env.mock_auths(&[
+        MockAuth {
+            address: &patient,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "register_patient_with_guardian",
+                args: (
+                    &patient,
+                    &guardian,
+                    &String::from_str(&env, "Minor"),
+                    &631152000u64,
+                    &encrypted_ref(&env, 1),
+                    &policy(&env),
+                )
+                    .into_val(&env),
+                sub_invokes: &[],
+            },
+        },
+        MockAuth {
+            address: &guardian,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "register_patient_with_guardian",
+                args: (
+                    &patient,
+                    &guardian,
+                    &String::from_str(&env, "Minor"),
+                    &631152000u64,
+                    &encrypted_ref(&env, 1),
+                    &policy(&env),
+                )
+                    .into_val(&env),
+                sub_invokes: &[],
+            },
+        },
+    ]);
+
+    client.register_patient_with_guardian(
+        &patient,
+        &guardian,
+        &String::from_str(&env, "Minor"),
+        &631152000u64,
+        &encrypted_ref(&env, 1),
+        &policy(&env),
+    );
+
+    assert!(client.is_patient_registered(&patient));
+}
+
+#[test]
+fn test_guardian_can_grant_consent_for_patient() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let fee_token = Address::generate(&env);
+    client.initialize(&admin, &treasury, &fee_token);
+
+    let version_hash = BytesN::from_array(&env, &[1u8; 32]);
+    client.publish_consent_version(&version_hash);
+
+    let patient = Address::generate(&env);
+    let guardian = Address::generate(&env);
+
+    client.register_patient_with_guardian(
+        &patient,
+        &guardian,
+        &String::from_str(&env, "Minor"),
+        &631152000u64,
+        &encrypted_ref(&env, 1),
+        &policy(&env),
+    );
+
+    // Guardian acknowledges consent on behalf of the patient.
+    client.acknowledge_consent(&patient, &guardian, &version_hash);
+
+    assert_eq!(client.get_consent_status(&patient), ConsentStatus::Acknowledged);
+}
+
+#[test]
+fn test_guardian_can_revoke_access() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let fee_token = Address::generate(&env);
+    client.initialize(&admin, &treasury, &fee_token);
+
+    let version_hash = BytesN::from_array(&env, &[1u8; 32]);
+    client.publish_consent_version(&version_hash);
+
+    let patient = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let doctor = Address::generate(&env);
+
+    client.register_patient_with_guardian(
+        &patient,
+        &guardian,
+        &String::from_str(&env, "Minor"),
+        &631152000u64,
+        &encrypted_ref(&env, 1),
+        &policy(&env),
+    );
+    client.register_doctor(
+        &doctor,
+        &String::from_str(&env, "Dr. House"),
+        &String::from_str(&env, "diagnostics"),
+        &Bytes::from_array(&env, &[0u8; 32]),
+    );
+
+    // Guardian grants access.
+    client.grant_access(&patient, &guardian, &doctor);
+    assert_eq!(client.get_authorized_doctors(&patient).len(), 1);
+
+    // Guardian revokes access — guardian cannot exceed patient's explicit consent preferences.
+    client.revoke_access(&patient, &guardian, &doctor);
+    assert_eq!(client.get_authorized_doctors(&patient).len(), 0);
+}

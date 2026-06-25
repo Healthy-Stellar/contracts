@@ -1,13 +1,14 @@
-use crate::{ClinicalTrialContractClient, DataFilters, Error};
-use soroban_sdk::{symbol_short, testutils::Address as _, testutils::Events, Address, BytesN, Env, String, Vec};
+use crate::{ClinicalTrialContractClient, CriteriaRule, DataFilters, Error};
+use soroban_sdk::{symbol_short, testutils::Address as _, testutils::Events, Address, Bytes, BytesN, Env, String, Vec};
+use soroban_sdk::xdr::ToXdr;
 
 fn create_test_env() -> (Env, Address, Address, Address, ClinicalTrialContractClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
 
-    let admin = soroban_sdk::testutils::Address::generate(&env);
-    let pi = soroban_sdk::testutils::Address::generate(&env);
-    let patient = soroban_sdk::testutils::Address::generate(&env);
+    let admin = Address::generate(&env);
+    let pi = Address::generate(&env);
+    let patient = Address::generate(&env);
 
     let contract_id = env.register_contract(None, crate::ClinicalTrialContract);
     let client = ClinicalTrialContractClient::new(&env, &contract_id);
@@ -42,10 +43,10 @@ fn expected_claim_hash(
     payload.append(&Bytes::from_slice(env, b"trial-eligibility-v1"));
     payload.append(&Bytes::from_slice(env, &trial_record_id.to_be_bytes()));
     payload.append(&patient_data_hash.clone().into());
-    payload.append(&rule.criteria_type.to_string().into());
-    payload.append(&rule.parameter.to_xdr(env));
-    payload.append(&rule.operator.to_string().into());
-    payload.append(&rule.value.to_xdr(env));
+    payload.append(&rule.criteria_type.clone().to_xdr(env));
+    payload.append(&rule.parameter.clone().to_xdr(env));
+    payload.append(&rule.operator.clone().to_xdr(env));
+    payload.append(&rule.value.clone().to_xdr(env));
     env.crypto().sha256(&payload).into()
 }
 

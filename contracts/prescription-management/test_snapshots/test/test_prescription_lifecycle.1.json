@@ -25,11 +25,25 @@
                   "map": [
                     {
                       "key": {
+                        "symbol": "bypass_allergy_check"
+                      },
+                      "val": {
+                        "bool": false
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "days_supply"
                       },
                       "val": {
                         "u32": 10
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dea_number"
+                      },
+                      "val": "void"
                     },
                     {
                       "key": {
