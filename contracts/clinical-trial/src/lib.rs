@@ -54,6 +54,18 @@ pub struct SafetyReportSubmitted {
     pub reporting_period: u64,
 }
 
+#[contractevent]
+pub struct SafetyHaltProposed {
+    pub trial_record_id: u64,
+    pub proposed_by: Address,
+}
+
+#[contractevent]
+pub struct SafetyHaltApproved {
+    pub trial_record_id: u64,
+    pub approval_count: u32,
+}
+
 /// Error codes for clinical trial operations
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -79,6 +91,11 @@ pub enum Error {
     AlreadyInitialized = 18,
     WithdrawalRestricted = 19,
     InvalidConsent = 20,
+    NoDsmBoardConfigured = 21,
+    NotDsmBoardMember = 22,
+    SafetyHaltAlreadyActive = 23,
+    NoSafetyHaltPending = 24,
+    AlreadyVoted = 25,
 }
 
 #[contract]
@@ -642,6 +659,131 @@ impl ClinicalTrialContract {
         }
 
         Ok(event)
+    }
+
+    /// Appoint DSMB members for a trial (PI only)
+    pub fn appoint_dsmb(
+        env: Env,
+        trial_record_id: u64,
+        principal_investigator: Address,
+        members: Vec<Address>,
+    ) -> Result<(), Error> {
+        principal_investigator.require_auth();
+
+        let trial = storage::get_trial(&env, trial_record_id)?;
+        if trial.principal_investigator != principal_investigator {
+            return Err(Error::Unauthorized);
+        }
+
+        storage::save_dsmb_members(&env, trial_record_id, &members);
+
+        Ok(())
+    }
+
+    /// Propose a safety halt for a trial (DSMB member only)
+    /// The proposer's vote is automatically counted as the first approval.
+    pub fn propose_safety_halt(
+        env: Env,
+        trial_record_id: u64,
+        dsmb_member: Address,
+        reason_hash: BytesN<32>,
+    ) -> Result<(), Error> {
+        dsmb_member.require_auth();
+
+        let members = storage::get_dsmb_members(&env, trial_record_id)
+            .ok_or(Error::NoDsmBoardConfigured)?;
+        if !members.contains(&dsmb_member) {
+            return Err(Error::NotDsmBoardMember);
+        }
+
+        if let Some(existing) = storage::get_safety_halt(&env, trial_record_id) {
+            if existing.status == types::SafetyHaltStatus::Pending {
+                return Err(Error::SafetyHaltAlreadyActive);
+            }
+        }
+
+        let mut approvals = Vec::new(&env);
+        approvals.push_back(dsmb_member.clone());
+
+        let proposal = types::SafetyHaltProposal {
+            trial_record_id,
+            proposed_by: dsmb_member.clone(),
+            reason_hash,
+            approvals,
+            status: types::SafetyHaltStatus::Pending,
+            proposed_at: env.ledger().timestamp(),
+        };
+
+        storage::save_safety_halt(&env, &proposal);
+
+        SafetyHaltProposed {
+            trial_record_id,
+            proposed_by: dsmb_member,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Cast an approval vote on the pending safety halt (DSMB member only)
+    /// When votes reach majority of the board the trial is suspended and the
+    /// proposal status transitions to Approved.
+    pub fn approve_safety_halt(
+        env: Env,
+        trial_record_id: u64,
+        dsmb_member: Address,
+    ) -> Result<(), Error> {
+        dsmb_member.require_auth();
+
+        let members = storage::get_dsmb_members(&env, trial_record_id)
+            .ok_or(Error::NoDsmBoardConfigured)?;
+        if !members.contains(&dsmb_member) {
+            return Err(Error::NotDsmBoardMember);
+        }
+
+        let mut proposal = storage::get_safety_halt(&env, trial_record_id)
+            .ok_or(Error::NoSafetyHaltPending)?;
+        if proposal.status != types::SafetyHaltStatus::Pending {
+            return Err(Error::NoSafetyHaltPending);
+        }
+
+        if proposal.approvals.contains(&dsmb_member) {
+            return Err(Error::AlreadyVoted);
+        }
+
+        proposal.approvals.push_back(dsmb_member);
+
+        let threshold = members.len() / 2 + 1;
+        if proposal.approvals.len() >= threshold {
+            proposal.status = types::SafetyHaltStatus::Approved;
+
+            let mut trial = storage::get_trial(&env, trial_record_id)?;
+            trial.status = TrialStatus::Suspended;
+            storage::save_trial(&env, &trial);
+
+            SafetyHaltApproved {
+                trial_record_id,
+                approval_count: proposal.approvals.len(),
+            }
+            .publish(&env);
+        }
+
+        storage::save_safety_halt(&env, &proposal);
+
+        Ok(())
+    }
+
+    /// Get the DSMB member list for a trial
+    pub fn get_dsmb_members(env: Env, trial_record_id: u64) -> Result<Vec<Address>, Error> {
+        storage::get_dsmb_members(&env, trial_record_id).ok_or(Error::NoDsmBoardConfigured)
+    }
+
+    /// Get the current safety-halt proposal for a trial, if any
+    pub fn get_safety_halt(
+        env: Env,
+        trial_record_id: u64,
+    ) -> Option<types::SafetyHaltProposal> {
+        storage::get_safety_halt(&env, trial_record_id)
     }
 
     fn evaluate_rule(

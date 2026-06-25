@@ -78,6 +78,7 @@ fn test_propose_before_init_returns_error() {
             &dummy_hash(&env),
             &release_metadata(&env),
             &metadata_hash(&env, &release_metadata(&env)),
+            &0u32,
         )
         .unwrap_err()
         .unwrap();
@@ -96,6 +97,7 @@ fn test_non_signer_propose_returns_error() {
             &dummy_hash(&env),
             &release_metadata(&env),
             &metadata_hash(&env, &release_metadata(&env)),
+            &0u32,
         )
         .unwrap_err()
         .unwrap();
@@ -108,12 +110,13 @@ fn test_propose_returns_incrementing_ids() {
     let s0 = signers.get(0).unwrap();
     let metadata = release_metadata(&env);
     let metadata_hash = metadata_hash(&env, &metadata);
-    let id0 = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash);
+    let id0 = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash, &0u32);
     let id1 = client.propose_upgrade(
         &s0,
         &BytesN::from_array(&env, &[2u8; 32]),
         &metadata,
         &metadata_hash,
+        &0u32,
     );
     assert_eq!(id0, 0);
     assert_eq!(id1, 1);
@@ -126,7 +129,7 @@ fn test_propose_with_invalid_release_metadata_hash_returns_error() {
     let metadata = release_metadata(&env);
     let wrong_hash = BytesN::from_array(&env, &[9u8; 32]);
     let err = client
-        .try_propose_upgrade(&s0, &dummy_hash(&env), &metadata, &wrong_hash)
+        .try_propose_upgrade(&s0, &dummy_hash(&env), &metadata, &wrong_hash, &0u32)
         .unwrap_err()
         .unwrap();
     assert_eq!(err, Error::InvalidReleaseMetadata);
@@ -140,12 +143,13 @@ fn test_domain_tags_differ_per_proposal() {
     let s0 = signers.get(0).unwrap();
     let metadata = release_metadata(&env);
     let metadata_hash = metadata_hash(&env, &metadata);
-    let id0 = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash);
+    let id0 = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash, &0u32);
     let id1 = client.propose_upgrade(
         &s0,
         &BytesN::from_array(&env, &[2u8; 32]),
         &metadata,
         &metadata_hash,
+        &0u32,
     );
     let p0 = client.get_proposal(&id0);
     let p1 = client.get_proposal(&id1);
@@ -161,7 +165,7 @@ fn test_non_signer_vote_returns_error() {
     let stranger = Address::generate(&env);
     let metadata = release_metadata(&env);
     let metadata_hash = metadata_hash(&env, &metadata);
-    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash);
+    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash, &0u32);
     let err = client.try_vote_upgrade(&stranger, &id).unwrap_err().unwrap();
     assert_eq!(err, Error::NotASigner);
 }
@@ -173,7 +177,7 @@ fn test_duplicate_vote_returns_error() {
     let s1 = signers.get(1).unwrap();
     let metadata = release_metadata(&env);
     let metadata_hash = metadata_hash(&env, &metadata);
-    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash);
+    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash, &0u32);
     client.vote_upgrade(&s1, &id);
     let err = client.try_vote_upgrade(&s1, &id).unwrap_err().unwrap();
     assert_eq!(err, Error::AlreadyVoted);
@@ -186,7 +190,7 @@ fn test_vote_after_expiry_returns_error() {
     let s1 = signers.get(1).unwrap();
     let metadata = release_metadata(&env);
     let metadata_hash = metadata_hash(&env, &metadata);
-    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash);
+    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash, &0u32);
     env.ledger().with_mut(|li| { li.timestamp += VOTING_WINDOW + 1; });
     let err = client.try_vote_upgrade(&s1, &id).unwrap_err().unwrap();
     assert_eq!(err, Error::Expired);
@@ -201,7 +205,7 @@ fn test_execute_before_timelock_returns_error() {
     let s1 = signers.get(1).unwrap();
     let metadata = release_metadata(&env);
     let metadata_hash = metadata_hash(&env, &metadata);
-    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash);
+    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash, &0u32);
     client.vote_upgrade(&s1, &id);
     // Threshold reached but timelock not elapsed.
     let err = client.try_execute_upgrade(&s0, &id).unwrap_err().unwrap();
@@ -215,7 +219,7 @@ fn test_execute_without_approved_metadata_returns_error() {
     let s1 = signers.get(1).unwrap();
     let metadata = release_metadata(&env);
     let metadata_hash = metadata_hash(&env, &metadata);
-    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash);
+    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash, &0u32);
     client.vote_upgrade(&s1, &id);
     env.ledger().with_mut(|li| {
         li.timestamp += TIMELOCK_DELAY + 1;
@@ -231,7 +235,7 @@ fn test_execute_after_timelock_passes_governance_checks() {
     let s1 = signers.get(1).unwrap();
     let metadata = release_metadata(&env);
     let metadata_hash = metadata_hash(&env, &metadata);
-    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash);
+    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash, &0u32);
     client.vote_upgrade(&s1, &id);
     client.approve_artifact_metadata(&s0, &metadata_hash);
     // Advance past the timelock.
@@ -263,7 +267,7 @@ fn test_cancel_active_proposal() {
     let s1 = signers.get(1).unwrap();
     let metadata = release_metadata(&env);
     let metadata_hash = metadata_hash(&env, &metadata);
-    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash);
+    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash, &0u32);
     client.cancel_upgrade(&s1, &id);
     let proposal = client.get_proposal(&id);
     assert_eq!(proposal.status, ProposalStatus::Cancelled);
@@ -277,7 +281,7 @@ fn test_cancel_approved_proposal_during_timelock() {
     let s2 = signers.get(2).unwrap();
     let metadata = release_metadata(&env);
     let metadata_hash = metadata_hash(&env, &metadata);
-    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash);
+    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash, &0u32);
     client.vote_upgrade(&s1, &id);
     // Proposal is now Approved; cancel during timelock window.
     client.cancel_upgrade(&s2, &id);
@@ -293,7 +297,7 @@ fn test_vote_on_cancelled_proposal_returns_error() {
     let s2 = signers.get(2).unwrap();
     let metadata = release_metadata(&env);
     let metadata_hash = metadata_hash(&env, &metadata);
-    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash);
+    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash, &0u32);
     client.cancel_upgrade(&s1, &id);
     let err = client.try_vote_upgrade(&s2, &id).unwrap_err().unwrap();
     assert_eq!(err, Error::Cancelled);
@@ -306,7 +310,7 @@ fn test_execute_cancelled_proposal_returns_error() {
     let s1 = signers.get(1).unwrap();
     let metadata = release_metadata(&env);
     let metadata_hash = metadata_hash(&env, &metadata);
-    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash);
+    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash, &0u32);
     client.vote_upgrade(&s1, &id);
     client.cancel_upgrade(&s0, &id);
     env.ledger().with_mut(|li| { li.timestamp += TIMELOCK_DELAY + 1; });
@@ -322,7 +326,7 @@ fn test_execute_under_threshold_returns_error() {
     let s0 = signers.get(0).unwrap();
     let metadata = release_metadata(&env);
     let metadata_hash = metadata_hash(&env, &metadata);
-    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash);
+    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash, &0u32);
     env.ledger().with_mut(|li| { li.timestamp += TIMELOCK_DELAY + 1; });
     let err = client.try_execute_upgrade(&s0, &id).unwrap_err().unwrap();
     assert_eq!(err, Error::ThresholdNotMet);
@@ -337,7 +341,7 @@ fn test_execute_expired_returns_error() {
     let s1 = signers.get(1).unwrap();
     let metadata = release_metadata(&env);
     let metadata_hash = metadata_hash(&env, &metadata);
-    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash);
+    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash, &0u32);
     client.vote_upgrade(&s1, &id);
     env.ledger().with_mut(|li| { li.timestamp += VOTING_WINDOW + 1; });
     let err = client.try_execute_upgrade(&s0, &id).unwrap_err().unwrap();
@@ -354,7 +358,7 @@ fn test_vote_on_executed_proposal_returns_error() {
     let s2 = signers.get(2).unwrap();
     let metadata = release_metadata(&env);
     let metadata_hash = metadata_hash(&env, &metadata);
-    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash);
+    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash, &0u32);
     client.vote_upgrade(&s1, &id);
 
     let mut proposal: UpgradeProposal = client.get_proposal(&id);
@@ -406,7 +410,7 @@ fn test_add_signer_executes_at_threshold() {
     client.approve_signer_change(&s1);
 
     // New signer can now propose upgrades.
-    let id = client.propose_upgrade(&new_signer, &dummy_hash(&env));
+    let id = client.propose_upgrade(&new_signer, &dummy_hash(&env), &release_metadata(&env), &metadata_hash(&env, &release_metadata(&env)), &0u32);
     let proposal = client.get_proposal(&id);
     assert_eq!(proposal.votes.len(), 1);
 }
@@ -468,7 +472,7 @@ fn test_remove_signer_executes_at_threshold() {
 
     // s2 should no longer be a signer.
     let err = client
-        .try_propose_upgrade(&s2, &dummy_hash(&env))
+        .try_propose_upgrade(&s2, &dummy_hash(&env), &release_metadata(&env), &metadata_hash(&env, &release_metadata(&env)), &0u32)
         .unwrap_err()
         .unwrap();
     assert_eq!(err, Error::NotASigner);

@@ -200,6 +200,26 @@ pub struct DataFilters {
     pub date_range_end: Option<u64>,
 }
 
+/// Status of a DSMB safety-halt proposal
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SafetyHaltStatus {
+    Pending,
+    Approved,
+}
+
+/// Safety-halt proposal submitted by a DSMB member
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct SafetyHaltProposal {
+    pub trial_record_id: u64,
+    pub proposed_by: Address,
+    pub reason_hash: BytesN<32>,
+    pub approvals: Vec<Address>,
+    pub status: SafetyHaltStatus,
+    pub proposed_at: u64,
+}
+
 /// Storage keys for the contract
 #[contracttype]
 #[derive(Clone)]
@@ -218,4 +238,6 @@ pub enum DataKey {
     ProtocolDeviation(u64, u64),
     SafetyReport(u64, u64),
     PatientRegistry,
+    DsmBoard(u64),
+    SafetyHalt(u64),
 }

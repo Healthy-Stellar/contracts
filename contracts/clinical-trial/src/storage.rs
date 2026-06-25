@@ -3,7 +3,7 @@ use soroban_sdk::{Address, Env, Vec};
 
 use crate::{
     AdverseEventReport, ClinicalTrial, DataKey, EligibilityCriteria, Error,
-    ParticipantEnrollment, ProtocolDeviation, SafetyReport, StudyVisit,
+    ParticipantEnrollment, ProtocolDeviation, SafetyHaltProposal, SafetyReport, StudyVisit,
 };
 
 /// Get the next trial record ID and increment counter
@@ -181,6 +181,34 @@ fn increment_safety_report_count(env: &Env, trial_record_id: u64) {
     let count = get_safety_report_count(env, trial_record_id);
     let key = DataKey::SafetyReport(trial_record_id, u64::MAX);
     env.storage().persistent().set(&key, &(count + 1));
+}
+
+/// Save DSMB member list for a trial
+pub fn save_dsmb_members(env: &Env, trial_record_id: u64, members: &Vec<Address>) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::DsmBoard(trial_record_id), members);
+}
+
+/// Get DSMB member list for a trial
+pub fn get_dsmb_members(env: &Env, trial_record_id: u64) -> Option<Vec<Address>> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::DsmBoard(trial_record_id))
+}
+
+/// Save a safety-halt proposal
+pub fn save_safety_halt(env: &Env, proposal: &SafetyHaltProposal) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::SafetyHalt(proposal.trial_record_id), proposal);
+}
+
+/// Get the current safety-halt proposal for a trial
+pub fn get_safety_halt(env: &Env, trial_record_id: u64) -> Option<SafetyHaltProposal> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::SafetyHalt(trial_record_id))
 }
 
 /// Check if patient is already enrolled in trial
