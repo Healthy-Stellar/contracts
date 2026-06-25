@@ -38,6 +38,12 @@ pub trait ProviderRegistryInterface {
 /// Attempting to exceed this returns `Error::TransferHistoryFull`.
 pub const MAX_TRANSFER_HISTORY: u32 = 100;
 
+/// Maximum number of concurrently active prescriptions a single patient may
+/// hold. "Active" means status is Issued, Active, or PartiallyDispensed
+/// *and* not yet past `valid_until`. Attempting to issue prescription
+/// N+1 beyond this limit returns `Error::TooManyActivePrescriptions`.
+pub const MAX_ACTIVE_PRESCRIPTIONS: u32 = 50;
+
 pub const SECONDS_PER_HOUR: u64 = 3600;
 /// 30-day window used when extending a prescription's validity on refill.
 pub const REFILL_WINDOW_SECS: u64 = 30 * 24 * SECONDS_PER_HOUR;
@@ -141,8 +147,8 @@ pub enum Error {
     CannotRecallDispensed = 27,
     /// Recall reason is required for documentation
     MissingRecallReason = 28,
-    /// Provider has exceeded their prescription issuance rate limit for the current window
-    RateLimitExceeded = 29,
+    /// Patient already has MAX_ACTIVE_PRESCRIPTIONS active prescriptions
+    TooManyActivePrescriptions = 29,
 }
 
 #[contracttype]
@@ -246,14 +252,12 @@ pub enum DataKey {
     RecallCounter,
     RecallRecord(u64),
     PrescriptionRecall(u64),
-    /// Counter used to assign template IDs.
-    TemplateCounter,
-    /// Stored prescription template keyed by template_id.
-    Template(u64),
-    /// Per-provider sliding-window counter for rate limiting.
-    ProviderPrescriptionWindow(Address),
-    /// Per-provider override of the default prescription rate limit.
-    ProviderPrescriptionLimit(Address),
+    /// patient -> Vec<u64> of prescription ids issued to them, used to
+    /// enforce MAX_ACTIVE_PRESCRIPTIONS. Pruned of no-longer-active ids
+    /// every time a new prescription is issued (see
+    /// `count_and_prune_active_prescriptions`), so it stays close to the
+    /// patient's actual active count rather than growing unboundedly.
+    PatientPrescriptions(Address),
 }
 
 #[contracttype]
@@ -405,6 +409,53 @@ pub struct RecallRecord {
     pub clinical_justification: String,
 }
 
+/// Whether a prescription still counts as "active" toward
+/// `MAX_ACTIVE_PRESCRIPTIONS`: its status is still actionable (not
+/// dispensed/cancelled/recalled/transferred-away) *and* it hasn't passed
+/// its `valid_until` timestamp. Expiry in this contract is passive (no
+/// stored state transition marks a prescription `Expired`), so it must be
+/// checked against the current ledger time here rather than by status alone.
+fn is_prescription_active(prescription: &Prescription, now: u64) -> bool {
+    matches!(
+        prescription.status,
+        PrescriptionStatus::Issued | PrescriptionStatus::Active | PrescriptionStatus::PartiallyDispensed
+    ) && prescription.valid_until > now
+}
+
+/// Returns the patient's current active-prescription count, and rewrites
+/// `DataKey::PatientPrescriptions(patient)` to drop ids that are no longer
+/// active (dispensed, cancelled, recalled, transferred away, or expired) --
+/// so the index stays close to bounded rather than growing for the
+/// patient's entire history. Called from `issue_prescription` before
+/// enforcing `MAX_ACTIVE_PRESCRIPTIONS`.
+fn count_and_prune_active_prescriptions(env: &Env, patient: &Address) -> u32 {
+    let key = DataKey::PatientPrescriptions(patient.clone());
+    let ids: Vec<u64> = env.storage().persistent().get(&key).unwrap_or(Vec::new(env));
+    let now = env.ledger().timestamp();
+
+    let mut still_active: Vec<u64> = Vec::new(env);
+    for id in ids.iter() {
+        if let Some(prescription) = env.storage().persistent().get::<u64, Prescription>(&id) {
+            if is_prescription_active(&prescription, now) {
+                still_active.push_back(id);
+            }
+        }
+    }
+
+    let count = still_active.len();
+    env.storage().persistent().set(&key, &still_active);
+    count
+}
+
+/// Records `prescription_id` as belonging to `patient` in the
+/// `PatientPrescriptions` index, used by `count_and_prune_active_prescriptions`.
+fn add_patient_prescription(env: &Env, patient: &Address, prescription_id: u64) {
+    let key = DataKey::PatientPrescriptions(patient.clone());
+    let mut ids: Vec<u64> = env.storage().persistent().get(&key).unwrap_or(Vec::new(env));
+    ids.push_back(prescription_id);
+    env.storage().persistent().set(&key, &ids);
+}
+
 #[contract]
 pub struct PrescriptionContract;
 
@@ -489,7 +540,82 @@ impl PrescriptionContract {
             }
         }
 
-        let template_id = env
+        // Allergy cross-check against allergy-management contract.
+        if req.bypass_allergy_check {
+            // Bypass requires admin role.
+            let admin: Option<Address> = env.storage().persistent().get(&DataKey::Admin);
+            match admin {
+                Some(ref a) if *a == provider_id => {}
+                _ => return Err(Error::AllergyBypassRequiresAdmin),
+            }
+        } else if let Some(allergy_addr) = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&DataKey::AllergyRegistry)
+        {
+            let allergy_client = AllergyManagementClient::new(&env, &allergy_addr);
+            let interactions =
+                allergy_client.check_drug_allergy_interaction(&patient_id, &req.medication_name);
+            if !interactions.is_empty() {
+                // Emit alert for every detected interaction.
+                for interaction in interactions.iter() {
+                    env.events().publish(
+                        (Symbol::new(&env, "allergy_interaction_alert"),),
+                        (
+                            patient_id.clone(),
+                            req.medication_name.clone(),
+                            interaction.allergen.clone(),
+                            interaction.severity.clone(),
+                        ),
+                    );
+                }
+                let strict: bool = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::AllergyStrictMode)
+                    .unwrap_or(false);
+                if strict {
+                    return Err(Error::AllergyInteractionDetected);
+                }
+            }
+        }
+
+        // DEA registration check: controlled substances require a valid DEA number.
+        if req.is_controlled && req.schedule.is_some() {
+            match &req.dea_number {
+                None => return Err(Error::ControlledSubstanceViolation),
+                Some(dea) => {
+                    // A valid DEA number is always exactly 9 ASCII characters.
+                    // Reject anything that isn't 9 bytes long before byte extraction.
+                    // soroban_sdk::String::len() returns u32.
+                    if dea.len() != 9u32 {
+                        return Err(Error::ControlledSubstanceViolation);
+                    }
+                    let mut buf = [0u8; 9];
+                    dea.copy_into_slice(&mut buf);
+                    if !validate_dea_number(&buf) {
+                        return Err(Error::ControlledSubstanceViolation);
+                    }
+                }
+            }
+        }
+
+        // #215 – valid_until must be in the future and within a 1-year window
+        temporal::must_be_future(&env, req.valid_until)
+            .map_err(|_| Error::InvalidValidityWindow)?;
+        temporal::within_validity_window(
+            env.ledger().timestamp(),
+            req.valid_until,
+            shared::temporal::MAX_VALIDITY_WINDOW_SECS,
+        )
+        .map_err(|_| Error::InvalidValidityWindow)?;
+
+        // #478 – cap concurrent active prescriptions per patient.
+        if count_and_prune_active_prescriptions(&env, &patient_id) >= MAX_ACTIVE_PRESCRIPTIONS {
+            return Err(Error::TooManyActivePrescriptions);
+        }
+
+        let id = env
             .storage()
             .instance()
             .get::<_, u64>(&DataKey::TemplateCounter)
@@ -519,49 +645,8 @@ impl PrescriptionContract {
             .set(&DataKey::Template(template_id), &stored);
         env.storage()
             .instance()
-            .set(&DataKey::TemplateCounter, &(template_id + 1));
-
-        Ok(template_id)
-    }
-
-    /// Issue a prescription using a previously created template.
-    /// Only the template's owning provider may call this.
-    pub fn issue_from_template(
-        env: Env,
-        provider: Address,
-        patient: Address,
-        template_id: u64,
-        valid_until: u64,
-    ) -> Result<u64, Error> {
-        provider.require_auth();
-
-        let tmpl: StoredTemplate = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Template(template_id))
-            .ok_or(Error::NotFound)?;
-
-        if tmpl.provider != provider {
-            return Err(Error::Unauthorized);
-        }
-
-        let req = IssueRequest {
-            medication_name: tmpl.medication_name,
-            ndc_code: tmpl.ndc_code,
-            dosage: tmpl.dosage,
-            quantity: tmpl.quantity,
-            days_supply: tmpl.days_supply,
-            refills_allowed: tmpl.refills_allowed,
-            instructions_hash: tmpl.instructions_hash,
-            is_controlled: tmpl.is_controlled,
-            schedule: tmpl.schedule,
-            valid_until,
-            substitution_allowed: tmpl.substitution_allowed,
-            pharmacy_id: tmpl.pharmacy_id,
-            bypass_allergy_check: tmpl.bypass_allergy_check,
-            dea_number: tmpl.dea_number,
-            bypass_reason_hash: tmpl.bypass_reason_hash,
-        };
+            .set(&Symbol::new(&env, "ID_COUNTER"), &(id + 1));
+        add_patient_prescription(&env, &prescription.patient_id, id);
 
         do_issue_prescription(&env, provider, patient, req)
     }
