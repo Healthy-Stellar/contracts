@@ -217,3 +217,145 @@ fn test_withdrawal_policy_enforces_data_retention() {
     let adverse_event = client.get_adverse_event(&event_id, &pi);
     assert_eq!(adverse_event.enrollment_id, enrollment_id);
 }
+
+// ── #484: multi-site enrolment tests ─────────────────────────────────────────────
+
+fn setup_trial_with_sites(
+    env: &Env,
+    client: &ClinicalTrialContractClient,
+    pi: &Address,
+) -> (u64, u64, u64, Address, Address) {
+    let trial_id = client.register_clinical_trial(
+        pi,
+        &String::from_str(env, "MULTI-SITE-01"),
+        &String::from_str(env, "Multi-Site Study"),
+        &symbol_short!("phase2"),
+        &create_protocol_hash(env),
+        &1000,
+        &9999,
+        &200, // total cap
+        &String::from_str(env, "IRB-2024-100"),
+    );
+
+    let coord_a = Address::generate(env);
+    let coord_b = Address::generate(env);
+
+    let site_a = client.add_site(&trial_id, pi, &coord_a, &50);
+    let site_b = client.add_site(&trial_id, pi, &coord_b, &10);
+
+    (trial_id, site_a, site_b, coord_a, coord_b)
+}
+
+#[test]
+fn test_enrol_at_site_succeeds() {
+    let (env, _, pi, patient, client) = create_test_env();
+    let (trial_id, site_a, _, coord_a, _) = setup_trial_with_sites(&env, &client, &pi);
+
+    let enrollment_id = client.enrol_participant_at_site(
+        &trial_id,
+        &site_a,
+        &coord_a,
+        &patient,
+        &symbol_short!("armA"),
+        &1100,
+        &create_protocol_hash(&env),
+        &String::from_str(&env, "P001"),
+    );
+
+    let enrollment = client.get_enrollment(&enrollment_id, &pi);
+    assert_eq!(enrollment.site_id, Some(site_a));
+    assert_eq!(enrollment.trial_record_id, trial_id);
+}
+
+#[test]
+fn test_enrol_at_full_site_rejected_even_if_trial_has_capacity() {
+    let (env, _, pi, _, client) = create_test_env();
+    let (trial_id, _site_a, site_b, _coord_a, coord_b) =
+        setup_trial_with_sites(&env, &client, &pi);
+
+    // site_b has max_enrollment = 10; fill it up
+    let participants = [
+        "P0", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9",
+    ];
+    for pid in participants.iter() {
+        let p = Address::generate(&env);
+        client.enrol_participant_at_site(
+            &trial_id,
+            &site_b,
+            &coord_b,
+            &p,
+            &symbol_short!("armB"),
+            &1100,
+            &create_protocol_hash(&env),
+            &String::from_str(&env, pid),
+        );
+    }
+
+    // 11th enrolment at site_b must fail even though trial total (200) not reached
+    let extra = Address::generate(&env);
+    let result = client.try_enrol_participant_at_site(
+        &trial_id,
+        &site_b,
+        &coord_b,
+        &extra,
+        &symbol_short!("armB"),
+        &1100,
+        &create_protocol_hash(&env),
+        &String::from_str(&env, "PEXTRA"),
+    );
+    assert_eq!(result, Err(Ok(Error::SiteEnrollmentFull)));
+}
+
+#[test]
+fn test_two_sites_with_different_quotas_cross_site_aggregation() {
+    let (env, _, pi, _, client) = create_test_env();
+    let (trial_id, site_a, site_b, coord_a, coord_b) =
+        setup_trial_with_sites(&env, &client, &pi);
+
+    // Enrol 2 at site_a and 3 at site_b
+    let pids_a = ["PA0", "PA1"];
+    let pids_b = ["PB0", "PB1", "PB2"];
+    for pid in pids_a.iter() {
+        let p = Address::generate(&env);
+        client.enrol_participant_at_site(
+            &trial_id,
+            &site_a,
+            &coord_a,
+            &p,
+            &symbol_short!("armA"),
+            &1100,
+            &create_protocol_hash(&env),
+            &String::from_str(&env, pid),
+        );
+    }
+    for pid in pids_b.iter() {
+        let p = Address::generate(&env);
+        client.enrol_participant_at_site(
+            &trial_id,
+            &site_b,
+            &coord_b,
+            &p,
+            &symbol_short!("armB"),
+            &1100,
+            &create_protocol_hash(&env),
+            &String::from_str(&env, pid),
+        );
+    }
+
+    // Trial total should be 5
+    let trial = client.get_trial(&trial_id);
+    assert_eq!(trial.current_enrollment, 5);
+
+    // export_deidentified_data aggregates all participants (5 included)
+    let filters = DataFilters {
+        include_withdrawn: false,
+        study_arms: Vec::new(&env),
+        date_range_start: None,
+        date_range_end: None,
+    };
+    let export_hash = client.export_deidentified_data(&trial_id, &pi, &filters);
+    let expected = env
+        .crypto()
+        .sha256(&soroban_sdk::Bytes::from_slice(&env, &5u32.to_be_bytes()));
+    assert_eq!(export_hash, expected);
+}

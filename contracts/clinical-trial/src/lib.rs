@@ -96,6 +96,10 @@ pub enum Error {
     SafetyHaltAlreadyActive = 23,
     NoSafetyHaltPending = 24,
     AlreadyVoted = 25,
+    /// The specified site does not exist
+    SiteNotFound = 26,
+    /// The site has reached its per-site enrollment quota
+    SiteEnrollmentFull = 27,
 }
 
 #[contract]
@@ -309,6 +313,7 @@ impl ClinicalTrialContract {
             withdrawal_reason: None,
             data_retention_consent: true,
             retention_class: DataRetentionClass::Optional,
+            site_id: None,
         };
 
         // Store enrollment record
@@ -784,6 +789,130 @@ impl ClinicalTrialContract {
         trial_record_id: u64,
     ) -> Option<types::SafetyHaltProposal> {
         storage::get_safety_halt(&env, trial_record_id)
+    }
+
+    /// Add a site to a trial (PI only).
+    /// The coordinator must already be a registered provider if a provider-registry is configured.
+    /// Returns the new site_id.
+    pub fn add_site(
+        env: Env,
+        trial_record_id: u64,
+        principal_investigator: Address,
+        coordinator: Address,
+        max_enrollment: u32,
+    ) -> Result<u64, Error> {
+        principal_investigator.require_auth();
+
+        let trial = storage::get_trial(&env, trial_record_id)?;
+        if trial.principal_investigator != principal_investigator {
+            return Err(Error::Unauthorized);
+        }
+
+        let site_id = storage::get_next_site_id(&env, trial_record_id);
+
+        let site = types::Site {
+            site_id,
+            trial_record_id,
+            coordinator: coordinator.clone(),
+            max_enrollment,
+            enrolled: 0,
+        };
+
+        storage::save_site(&env, &site);
+        storage::add_trial_site(&env, trial_record_id, site_id);
+
+        Ok(site_id)
+    }
+
+    /// Enrol a participant at a specific site.
+    /// Enforces both the per-site cap and the overall trial cap.
+    /// The caller must be the site coordinator.
+    pub fn enrol_participant_at_site(
+        env: Env,
+        trial_record_id: u64,
+        site_id: u64,
+        coordinator: Address,
+        patient_id: Address,
+        study_arm: Symbol,
+        enrollment_date: u64,
+        informed_consent_hash: BytesN<32>,
+        participant_id: String,
+    ) -> Result<u64, Error> {
+        coordinator.require_auth();
+
+        // Validate date
+        validation::validate_date_not_future(&env, enrollment_date)?;
+
+        // Validate consent
+        if !Self::is_valid_consent(&env, &informed_consent_hash) {
+            return Err(Error::InvalidConsent);
+        }
+
+        // Verify trial is active
+        let mut trial = storage::get_trial(&env, trial_record_id)?;
+        if trial.status != TrialStatus::Active {
+            return Err(Error::TrialNotActive);
+        }
+
+        // Fetch and validate site
+        let mut site = storage::get_site(&env, trial_record_id, site_id)
+            .ok_or(Error::SiteNotFound)?;
+
+        if site.coordinator != coordinator {
+            return Err(Error::Unauthorized);
+        }
+
+        // Per-site cap check
+        if site.enrolled >= site.max_enrollment {
+            return Err(Error::SiteEnrollmentFull);
+        }
+
+        // Overall trial cap check
+        if trial.current_enrollment >= trial.enrollment_target {
+            return Err(Error::EnrollmentFull);
+        }
+
+        // Duplicate enrollment check
+        if storage::check_duplicate_enrollment(&env, trial_record_id, &patient_id) {
+            return Err(Error::DuplicateEnrollment);
+        }
+
+        let enrollment_id = storage::get_next_enrollment_id(&env);
+
+        let enrollment = ParticipantEnrollment {
+            enrollment_id,
+            trial_record_id,
+            patient_id: patient_id.clone(),
+            study_arm,
+            enrollment_date,
+            informed_consent_hash,
+            participant_id: participant_id.clone(),
+            status: EnrollmentStatus::Active,
+            withdrawal_date: None,
+            withdrawal_reason: None,
+            data_retention_consent: true,
+            retention_class: DataRetentionClass::Optional,
+            site_id: Some(site_id),
+        };
+
+        storage::save_enrollment(&env, &enrollment);
+        storage::add_trial_enrollment(&env, trial_record_id, enrollment_id);
+        storage::add_patient_enrollment(&env, &patient_id, enrollment_id);
+
+        site.enrolled += 1;
+        storage::save_site(&env, &site);
+
+        trial.current_enrollment += 1;
+        storage::save_trial(&env, &trial);
+
+        ParticipantEnrolled {
+            enrollment_id,
+            trial_record_id,
+            participant_id,
+        }
+        .publish(&env);
+
+        Ok(enrollment_id)
     }
 
     fn evaluate_rule(

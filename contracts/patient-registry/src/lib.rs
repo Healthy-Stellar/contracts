@@ -1,6 +1,8 @@
 #![no_std]
 #![allow(deprecated)]
 
+use shared::pagination::PageResult;
+
 use shared::incident_tracking::{
     capture_incident, get_incidents_by_correlation_id as shared_get_by_corr, IncidentSeverity,
 };
@@ -30,6 +32,19 @@ pub const ARCHIVE_LEDGER_BUMP_AMOUNT: u32 = 518_400;
 pub enum PatientStatus {
     Active,
     Deregistered,
+}
+
+/// Retention classification for patient data, aligned with HIPAA minimum standards.
+///
+/// - `Clinical`        → critical TTL (~31 days) for care-critical records
+/// - `Administrative`  → operational TTL (~7 days) for admin/operational records
+/// - `Financial`       → critical TTL (~31 days) for financial/billing records
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RetentionClass {
+    Clinical,
+    Administrative,
+    Financial,
 }
 
 /// Emitted on every patient status transition (Active ↔ Deregistered).
@@ -359,13 +374,11 @@ fn require_record_access(
     caller: &Address,
 ) -> Result<(), ContractError> {
     if caller == patient {
-        caller.require_auth();
         return Ok(());
     }
     let guardian_key = DataKey::Guardian(patient.clone());
     let guardian_opt: Option<Address> = env.storage().persistent().get(&guardian_key);
     if guardian_opt.as_ref() == Some(caller) {
-        caller.require_auth();
         return Ok(());
     }
     let access_key = DataKey::AuthorizedDoctors(patient.clone());
@@ -375,7 +388,6 @@ fn require_record_access(
         .get(&access_key)
         .unwrap_or(Map::new(env));
     if access_map.contains_key(caller.clone()) {
-        caller.require_auth();
         return Ok(());
     }
     Err(ContractError::NotAuthorized)
@@ -1812,6 +1824,50 @@ impl MedicalRegistry {
         merkle::verify_membership(&env, record_id, &proof, &root)
     }
 
+    /// Generate a Merkle membership proof for the record at `record_index`
+    /// (0-based position within `PatientRecordIds`, insertion order -- not
+    /// a record ID) in `patient`'s record tree.
+    ///
+    /// The returned proof, together with `hash_leaf(env, record_id)`, can be
+    /// passed to `verify_record_membership`; or pass the leaf hash directly
+    /// to `verify_record_proof`. Returns `ContractError::RecordNotFound` if
+    /// `record_index` is out of bounds.
+    pub fn get_record_proof(
+        env: Env,
+        patient: Address,
+        record_index: u32,
+    ) -> Result<Vec<BytesN<32>>, ContractError> {
+        let ids_key = DataKey::PatientRecordIds(patient);
+        let record_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&ids_key)
+            .unwrap_or(Vec::new(&env));
+
+        if record_index >= record_ids.len() {
+            return Err(ContractError::RecordNotFound);
+        }
+
+        Ok(merkle::generate_proof(&env, &record_ids, record_index))
+    }
+
+    /// Returns true iff `proof` is a valid Merkle membership proof for
+    /// `leaf_hash` under this patient's root.
+    ///
+    /// Like `verify_record_membership` but takes the leaf hash directly
+    /// rather than a raw record ID -- pair with `get_record_proof` and
+    /// `merkle::hash_leaf` when the caller already has (or only needs) the
+    /// hash.
+    pub fn verify_record_proof(
+        env: Env,
+        patient: Address,
+        leaf_hash: BytesN<32>,
+        proof: Vec<BytesN<32>>,
+    ) -> bool {
+        let root = Self::get_merkle_root(env.clone(), patient);
+        merkle::verify_leaf_membership(&env, leaf_hash, &proof, &root)
+    }
+
     /// Returns all records for `patient` whose `record_type` matches the given symbol.
     /// Access control: caller must be the patient, their guardian, or an authorized doctor.
     /// Returns an empty vec (not an error) when no records match.
@@ -1875,14 +1931,15 @@ impl MedicalRegistry {
         env: Env,
         record_id: u64,
         caller: Address,
-    ) -> Result<Vec<RecordVersion>, ContractError> {
+        page: u32,
+    ) -> Result<PageResult, ContractError> {
         caller.require_auth();
         let record_key = DataKey::MedicalRecord(record_id);
         let record_data: RecordData = env
             .storage()
             .persistent()
             .get(&record_key)
-            .ok_or(ContractError::RecordNotFound)?;
+            .ok_or(ContractError::NotFound)?;
         require_record_access(&env, &record_data.patient, &caller)?;
 
         // TTL bump
@@ -1894,7 +1951,27 @@ impl MedicalRegistry {
             return Err(ContractError::NoHistoryFound);
         }
 
-        Ok(record_data.history)
+        let total = record_data.history.len();
+        let limit = 20u32;
+        let offset = page * limit;
+
+        let mut page_items: Vec<soroban_sdk::Val> = Vec::new(&env);
+        let mut has_more = false;
+
+        if offset < total {
+            let end = (offset + limit).min(total);
+            for i in offset..end {
+                if let Some(version) = record_data.history.get(i) {
+                    page_items.push_back(version.into_val(&env));
+                }
+            }
+            has_more = end < total;
+        }
+
+        Ok(PageResult {
+            ids: page_items,
+            has_more,
+        })
     }
 
     pub fn get_record_fields(

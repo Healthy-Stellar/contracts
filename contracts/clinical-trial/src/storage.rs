@@ -231,3 +231,37 @@ pub fn check_duplicate_enrollment(
 
     false
 }
+
+/// Save a site record for a trial.
+pub fn save_site(env: &Env, site: &crate::Site) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::Site(site.trial_record_id, site.site_id), site);
+}
+
+/// Get a site record.
+pub fn get_site(env: &Env, trial_record_id: u64, site_id: u64) -> Option<crate::Site> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Site(trial_record_id, site_id))
+}
+
+/// Get the next site ID for a trial and increment the counter.
+pub fn get_next_site_id(env: &Env, trial_record_id: u64) -> u64 {
+    let key = DataKey::SiteCounter(trial_record_id);
+    let current: u64 = env.storage().instance().get(&key).unwrap_or(0);
+    env.storage().instance().set(&key, &(current + 1));
+    current
+}
+
+/// Add a site_id to the trial's site list.
+pub fn add_trial_site(env: &Env, trial_record_id: u64, site_id: u64) {
+    let key = DataKey::TrialSites(trial_record_id);
+    let mut sites: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(Vec::new(env));
+    sites.push_back(site_id);
+    env.storage().persistent().set(&key, &sites);
+}

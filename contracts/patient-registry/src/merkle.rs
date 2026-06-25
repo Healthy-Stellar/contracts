@@ -88,6 +88,62 @@ pub fn compute_merkle_root(env: &Env, record_ids: &Vec<u64>) -> BytesN<32> {
     layer.get(0).unwrap_or_else(|| panic_with_error!(env, crate::ContractError::NotFound))
 }
 
+// ─── proof generation ───────────────────────────────────────────────────────
+
+/// Generate a Merkle membership proof for the leaf at `target_index` within
+/// `record_ids` (insertion order, matching `compute_merkle_root`).
+///
+/// Returns one sibling hash per tree level (leaf level → root), in the same
+/// shape `verify_membership` / `verify_leaf_membership` expect. Returns an
+/// empty `Vec` if `target_index` is out of bounds.
+///
+/// Mirrors `compute_merkle_root`'s layer-by-layer reduction (same pairing
+/// and odd-node-self-pairing rules) while tracking which sibling pairs with
+/// the target leaf at each level. Because `hash_pair` sorts its two inputs
+/// before hashing, the proof never needs to record left/right position.
+pub fn generate_proof(env: &Env, record_ids: &Vec<u64>, target_index: u32) -> Vec<BytesN<32>> {
+    let mut proof: Vec<BytesN<32>> = Vec::new(env);
+    let n = record_ids.len();
+    if target_index >= n {
+        return proof;
+    }
+
+    let mut layer: Vec<BytesN<32>> = Vec::new(env);
+    for id in record_ids.iter() {
+        layer.push_back(hash_leaf(env, id));
+    }
+
+    let mut idx = target_index;
+    while layer.len() > 1 {
+        let len = layer.len();
+        let mut next: Vec<BytesN<32>> = Vec::new(env);
+        let mut i = 0u32;
+        while i + 1 < len {
+            let left = layer.get(i).unwrap_or_else(|| panic_with_error!(env, crate::ContractError::NotFound));
+            let right = layer.get(i + 1).unwrap_or_else(|| panic_with_error!(env, crate::ContractError::NotFound));
+            if idx == i {
+                proof.push_back(right.clone());
+            } else if idx == i + 1 {
+                proof.push_back(left.clone());
+            }
+            next.push_back(hash_pair(env, left, right));
+            i += 2;
+        }
+        // Odd node: pair with itself; if it's our target, the "sibling" is itself.
+        if len % 2 == 1 {
+            let last = layer.get(len - 1).unwrap_or_else(|| panic_with_error!(env, crate::ContractError::NotFound));
+            if idx == len - 1 {
+                proof.push_back(last.clone());
+            }
+            next.push_back(hash_pair(env, last.clone(), last));
+        }
+        idx /= 2;
+        layer = next;
+    }
+
+    proof
+}
+
 // ─── membership verification ───────────────────────────────────────────────
 
 /// Verify that `record_id` belongs to the tree with the given `root`.
@@ -100,7 +156,19 @@ pub fn verify_membership(
     proof: &Vec<BytesN<32>>,
     root: &BytesN<32>,
 ) -> bool {
-    let mut current = hash_leaf(env, record_id);
+    verify_leaf_membership(env, hash_leaf(env, record_id), proof, root)
+}
+
+/// Verify that a precomputed leaf hash belongs to the tree with the given
+/// `root`, given a sibling proof. Same as `verify_membership` but for
+/// callers that already have the leaf hash rather than the raw record ID.
+pub fn verify_leaf_membership(
+    env: &Env,
+    leaf_hash: BytesN<32>,
+    proof: &Vec<BytesN<32>>,
+    root: &BytesN<32>,
+) -> bool {
+    let mut current = leaf_hash;
     for sibling in proof.iter() {
         current = hash_pair(env, current, sibling);
     }

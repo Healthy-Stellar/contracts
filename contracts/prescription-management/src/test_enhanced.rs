@@ -32,6 +32,7 @@ fn test_prescription_lifecycle_invariants() {
         pharmacy_id: Some(pharmacy.clone()),
         bypass_allergy_check: false,
         dea_number: None,
+        bypass_reason_hash: None,
     };
 
     let prescription_id = client.issue_prescription(&provider, &patient, &req);
@@ -96,6 +97,7 @@ fn test_prescription_transfer_ownership_verification() {
         pharmacy_id: Some(pharmacy1.clone()),
         bypass_allergy_check: false,
         dea_number: None,
+        bypass_reason_hash: None,
     };
 
     let prescription_id = client.issue_prescription(&provider, &patient, &req);
@@ -154,6 +156,7 @@ fn test_controlled_substance_transfer_limits() {
         bypass_allergy_check: false,
         // AB1234563: A=registrant type, B=last-name initial, check digit 3 ✓
         dea_number: Some(String::from_str(&env, "AB1234563")),
+        bypass_reason_hash: None,
     };
 
     let prescription_id = client.issue_prescription(&provider, &patient, &req);
@@ -209,6 +212,7 @@ fn test_refill_lifecycle_management() {
         pharmacy_id: Some(pharmacy.clone()),
         bypass_allergy_check: false,
         dea_number: None,
+        bypass_reason_hash: None,
     };
 
     let prescription_id = client.issue_prescription(&provider, &patient, &req);
@@ -272,6 +276,7 @@ fn test_prescription_cancellation_safety() {
         pharmacy_id: Some(pharmacy.clone()),
         bypass_allergy_check: false,
         dea_number: None,
+        bypass_reason_hash: None,
     };
 
     let prescription_id = client.issue_prescription(&provider, &patient, &req);
@@ -341,6 +346,7 @@ fn test_valid_until_zero_is_rejected() {
         pharmacy_id: None,
         bypass_allergy_check: false,
         dea_number: None,
+        bypass_reason_hash: None,
     };
 
     let result = client.try_issue_prescription(&provider, &patient, &req);
@@ -374,6 +380,7 @@ fn test_valid_until_max_u64_is_rejected() {
         pharmacy_id: None,
         bypass_allergy_check: false,
         dea_number: None,
+        bypass_reason_hash: None,
     };
 
     let result = client.try_issue_prescription(&provider, &patient, &req);
@@ -411,6 +418,7 @@ fn test_valid_until_at_and_beyond_window_limit() {
         pharmacy_id: None,
         bypass_allergy_check: false,
         dea_number: None,
+        bypass_reason_hash: None,
     };
     let id = client.issue_prescription(&provider, &patient, &req_ok);
     // Prescription was created successfully — fetch it and verify
@@ -435,6 +443,7 @@ fn test_valid_until_at_and_beyond_window_limit() {
         pharmacy_id: None,
         bypass_allergy_check: false,
         dea_number: None,
+        bypass_reason_hash: None,
     };
     let result = client.try_issue_prescription(&provider, &patient, &req_over);
     assert_eq!(result, Err(Ok(Error::InvalidValidityWindow)));
@@ -476,6 +485,7 @@ fn test_refill_timestamp_near_max_u64_returns_error() {
         pharmacy_id: Some(pharmacy.clone()),
         bypass_allergy_check: false,
         dea_number: None,
+        bypass_reason_hash: None,
     };
 
     let prescription_id = client.issue_prescription(&provider, &patient, &req);
@@ -534,6 +544,7 @@ fn make_dea_test_req(
         pharmacy_id: None,
         bypass_allergy_check: false,
         dea_number,
+        bypass_reason_hash: None,
     }
 }
 
@@ -764,4 +775,285 @@ fn test_controlled_alternative_valid_dea_number_accepted() {
 
     let id = client.issue_prescription(&provider, &patient, &req);
     assert!(id < u64::MAX);
+}
+
+// ── #480: rate-limit tests ────────────────────────────────────────────────────
+
+#[test]
+fn test_rate_limit_exceeded_after_default_cap() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PrescriptionContract);
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    // Set a tiny limit so we can exceed it quickly
+    client.configure_allergy_check(&admin, &admin, &false);
+    client.set_provider_limit(&admin, &provider, &2);
+
+    let make_req = |n: u8| -> IssueRequest {
+        IssueRequest {
+            medication_name: String::from_str(&env, "Drug"),
+            ndc_code: String::from_str(&env, "00000-1111"),
+            dosage: String::from_str(&env, "10mg"),
+            quantity: 10,
+            days_supply: 10,
+            refills_allowed: 0,
+            instructions_hash: BytesN::from_array(&env, &[n; 32]),
+            is_controlled: false,
+            schedule: None,
+            valid_until: env.ledger().timestamp() + 86_400,
+            substitution_allowed: true,
+            pharmacy_id: None,
+            bypass_allergy_check: false,
+            dea_number: None,
+            bypass_reason_hash: None,
+        }
+    };
+
+    client.issue_prescription(&provider, &patient, &make_req(1));
+    client.issue_prescription(&provider, &patient, &make_req(2));
+    // 3rd must be rejected
+    let result = client.try_issue_prescription(&provider, &patient, &make_req(3));
+    assert_eq!(result, Err(Ok(Error::RateLimitExceeded)));
+}
+
+#[test]
+fn test_rate_limit_resets_after_window() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PrescriptionContract);
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    client.configure_allergy_check(&admin, &admin, &false);
+    client.set_provider_limit(&admin, &provider, &1);
+
+    let make_req = |ts: u64| -> IssueRequest {
+        IssueRequest {
+            medication_name: String::from_str(&env, "Drug"),
+            ndc_code: String::from_str(&env, "00000-2222"),
+            dosage: String::from_str(&env, "10mg"),
+            quantity: 10,
+            days_supply: 10,
+            refills_allowed: 0,
+            instructions_hash: BytesN::from_array(&env, &[0; 32]),
+            is_controlled: false,
+            schedule: None,
+            valid_until: ts + 86_400,
+            substitution_allowed: true,
+            pharmacy_id: None,
+            bypass_allergy_check: false,
+            dea_number: None,
+            bypass_reason_hash: None,
+        }
+    };
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    client.issue_prescription(&provider, &patient, &make_req(1_000));
+
+    // Still in the same window — must be rejected
+    let result = client.try_issue_prescription(&provider, &patient, &make_req(1_000));
+    assert_eq!(result, Err(Ok(Error::RateLimitExceeded)));
+
+    // Advance past the 24-hour window
+    let new_ts = 1_000 + RATE_LIMIT_WINDOW_SECS + 1;
+    env.ledger().with_mut(|li| li.timestamp = new_ts);
+    // Window reset — should succeed now
+    client.issue_prescription(&provider, &patient, &make_req(new_ts));
+}
+
+#[test]
+fn test_admin_set_provider_limit_works() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PrescriptionContract);
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    client.configure_allergy_check(&admin, &admin, &false);
+    // Default limit is 100; set to 3
+    client.set_provider_limit(&admin, &provider, &3);
+
+    let make_req = |n: u8| -> IssueRequest {
+        IssueRequest {
+            medication_name: String::from_str(&env, "Drug"),
+            ndc_code: String::from_str(&env, "00000-3333"),
+            dosage: String::from_str(&env, "10mg"),
+            quantity: 10,
+            days_supply: 10,
+            refills_allowed: 0,
+            instructions_hash: BytesN::from_array(&env, &[n; 32]),
+            is_controlled: false,
+            schedule: None,
+            valid_until: env.ledger().timestamp() + 86_400,
+            substitution_allowed: true,
+            pharmacy_id: None,
+            bypass_allergy_check: false,
+            dea_number: None,
+            bypass_reason_hash: None,
+        }
+    };
+
+    client.issue_prescription(&provider, &patient, &make_req(1));
+    client.issue_prescription(&provider, &patient, &make_req(2));
+    client.issue_prescription(&provider, &patient, &make_req(3));
+    let result = client.try_issue_prescription(&provider, &patient, &make_req(4));
+    assert_eq!(result, Err(Ok(Error::RateLimitExceeded)));
+}
+
+// ── #481: allergy bypass audit log tests ─────────────────────────────────────
+
+#[test]
+fn test_bypass_with_missing_reason_hash_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PrescriptionContract);
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    let req = IssueRequest {
+        medication_name: String::from_str(&env, "Drug"),
+        ndc_code: String::from_str(&env, "00000-4444"),
+        dosage: String::from_str(&env, "10mg"),
+        quantity: 10,
+        days_supply: 10,
+        refills_allowed: 0,
+        instructions_hash: BytesN::from_array(&env, &[0; 32]),
+        is_controlled: false,
+        schedule: None,
+        valid_until: env.ledger().timestamp() + 86_400,
+        substitution_allowed: true,
+        pharmacy_id: None,
+        bypass_allergy_check: true,
+        dea_number: None,
+        bypass_reason_hash: None, // missing — must be rejected
+    };
+
+    let result = client.try_issue_prescription(&provider, &patient, &req);
+    assert_eq!(result, Err(Ok(Error::MissingOverrideReason)));
+}
+
+#[test]
+fn test_non_bypass_prescription_unaffected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PrescriptionContract);
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    let req = IssueRequest {
+        medication_name: String::from_str(&env, "NormalDrug"),
+        ndc_code: String::from_str(&env, "00000-5555"),
+        dosage: String::from_str(&env, "5mg"),
+        quantity: 10,
+        days_supply: 10,
+        refills_allowed: 0,
+        instructions_hash: BytesN::from_array(&env, &[0; 32]),
+        is_controlled: false,
+        schedule: None,
+        valid_until: env.ledger().timestamp() + 86_400,
+        substitution_allowed: true,
+        pharmacy_id: None,
+        bypass_allergy_check: false,
+        dea_number: None,
+        bypass_reason_hash: None, // not required when bypass=false
+    };
+
+    // Must succeed without error
+    let id = client.issue_prescription(&provider, &patient, &req);
+    assert!(id < u64::MAX);
+}
+
+// ── #482: prescription template tests ────────────────────────────────────────
+
+#[test]
+fn test_create_and_issue_from_template() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PrescriptionContract);
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    let template = PrescriptionTemplate {
+        medication_name: String::from_str(&env, "Metformin"),
+        ndc_code: String::from_str(&env, "00093-7267-01"),
+        dosage: String::from_str(&env, "500mg twice daily"),
+        quantity: 60,
+        days_supply: 30,
+        refills_allowed: 11,
+        instructions_hash: BytesN::from_array(&env, &[1u8; 32]),
+        is_controlled: false,
+        schedule: None,
+        substitution_allowed: true,
+        pharmacy_id: None,
+        bypass_allergy_check: false,
+        dea_number: None,
+        bypass_reason_hash: None,
+    };
+
+    let template_id = client.create_template(&provider, &template);
+
+    let valid_until = env.ledger().timestamp() + 86_400 * 30;
+    let rx_id = client.issue_from_template(&provider, &patient, &template_id, &valid_until);
+
+    // Prescription was stored
+    let rx: Prescription = env.as_contract(&contract_id, || {
+        env.storage().persistent().get(&rx_id).unwrap()
+    });
+    assert_eq!(rx.medication_name, String::from_str(&env, "Metformin"));
+    assert_eq!(rx.quantity, 60);
+    assert_eq!(rx.refills_allowed, 11);
+    assert_eq!(rx.valid_until, valid_until);
+    assert!(matches!(rx.status, PrescriptionStatus::Issued));
+}
+
+#[test]
+fn test_non_owning_provider_cannot_use_template() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PrescriptionContract);
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let other = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    let template = PrescriptionTemplate {
+        medication_name: String::from_str(&env, "Atorvastatin"),
+        ndc_code: String::from_str(&env, "00071-0156-23"),
+        dosage: String::from_str(&env, "20mg"),
+        quantity: 30,
+        days_supply: 30,
+        refills_allowed: 5,
+        instructions_hash: BytesN::from_array(&env, &[2u8; 32]),
+        is_controlled: false,
+        schedule: None,
+        substitution_allowed: true,
+        pharmacy_id: None,
+        bypass_allergy_check: false,
+        dea_number: None,
+        bypass_reason_hash: None,
+    };
+
+    let template_id = client.create_template(&owner, &template);
+    let valid_until = env.ledger().timestamp() + 86_400;
+
+    let result = client.try_issue_from_template(&other, &patient, &template_id, &valid_until);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
 }

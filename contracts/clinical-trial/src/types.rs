@@ -117,6 +117,7 @@ pub struct ParticipantEnrollment {
     pub withdrawal_reason: Option<Symbol>,
     pub data_retention_consent: bool,
     pub retention_class: DataRetentionClass,
+    pub site_id: Option<u64>,
 }
 
 /// Enrollment status enumeration
@@ -208,6 +209,17 @@ pub enum SafetyHaltStatus {
     Approved,
 }
 
+/// A trial site with its own coordinator and enrollment quota.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct Site {
+    pub site_id: u64,
+    pub trial_record_id: u64,
+    pub coordinator: Address,
+    pub max_enrollment: u32,
+    pub enrolled: u32,
+}
+
 /// Safety-halt proposal submitted by a DSMB member
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -240,4 +252,10 @@ pub enum DataKey {
     PatientRegistry,
     DsmBoard(u64),
     SafetyHalt(u64),
+    /// Counter for site IDs within a trial, keyed by trial_record_id.
+    SiteCounter(u64),
+    /// A single site record, keyed by (trial_record_id, site_id).
+    Site(u64, u64),
+    /// List of site_ids for a trial.
+    TrialSites(u64),
 }

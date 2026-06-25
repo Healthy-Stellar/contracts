@@ -39,6 +39,7 @@ fn test_prescription_lifecycle() {
         pharmacy_id: Some(pharmacy.clone()),
         bypass_allergy_check: false,
         dea_number: None,
+        bypass_reason_hash: None,
     };
 
     let prescription_id = client.issue_prescription(&provider, &patient, &request);
@@ -93,6 +94,7 @@ fn test_fail_expired_prescription() {
         pharmacy_id: Some(pharmacy.clone()),
         bypass_allergy_check: false,
         dea_number: None,
+        bypass_reason_hash: None,
     };
 
     let id = client.issue_prescription(&provider, &patient, &request);
@@ -110,6 +112,130 @@ fn test_fail_expired_prescription() {
         ndc_code: String::from_str(&env, "123"),
     };
     client.dispense_prescription(&dispense, &pharmacy);
+}
+
+// ── #478: MAX_ACTIVE_PRESCRIPTIONS cap ──────────────────────────────────────
+
+fn max_cap_request(env: &Env, pharmacy: &Address, valid_until: u64) -> IssueRequest {
+    IssueRequest {
+        medication_name: String::from_str(env, "Amoxicillin"),
+        ndc_code: String::from_str(env, "0501-1234-01"),
+        dosage: String::from_str(env, "500mg"),
+        quantity: 30,
+        days_supply: 10,
+        refills_allowed: 0,
+        instructions_hash: BytesN::from_array(env, &[0u8; 32]),
+        is_controlled: false,
+        schedule: None,
+        valid_until,
+        substitution_allowed: true,
+        pharmacy_id: Some(pharmacy.clone()),
+        bypass_allergy_check: false,
+        dea_number: None,
+    }
+}
+
+#[test]
+fn test_issuing_beyond_max_active_prescriptions_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(PrescriptionContract, ());
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+    let pharmacy = Address::generate(&env);
+
+    for _ in 0..MAX_ACTIVE_PRESCRIPTIONS {
+        let req = max_cap_request(&env, &pharmacy, 10_000_000);
+        client.issue_prescription(&provider, &patient, &req);
+    }
+
+    // The (MAX_ACTIVE_PRESCRIPTIONS + 1)th prescription for the same patient is rejected.
+    let req = max_cap_request(&env, &pharmacy, 10_000_000);
+    let result = client.try_issue_prescription(&provider, &patient, &req);
+    assert_eq!(result, Err(Ok(Error::TooManyActivePrescriptions)));
+
+    // A different patient is unaffected by this patient's cap.
+    let other_patient = Address::generate(&env);
+    let req = max_cap_request(&env, &pharmacy, 10_000_000);
+    client.issue_prescription(&provider, &other_patient, &req);
+}
+
+#[test]
+fn test_issuing_succeeds_after_a_prescription_is_fully_dispensed() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(PrescriptionContract, ());
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+    let pharmacy = Address::generate(&env);
+
+    let mut first_id = 0u64;
+    for i in 0..MAX_ACTIVE_PRESCRIPTIONS {
+        let req = max_cap_request(&env, &pharmacy, 10_000_000);
+        let id = client.issue_prescription(&provider, &patient, &req);
+        if i == 0 {
+            first_id = id;
+        }
+    }
+
+    // At the cap: the next issuance is rejected.
+    let req = max_cap_request(&env, &pharmacy, 10_000_000);
+    let result = client.try_issue_prescription(&provider, &patient, &req);
+    assert_eq!(result, Err(Ok(Error::TooManyActivePrescriptions)));
+
+    // Fully dispense one existing prescription, freeing a slot.
+    client.dispense_prescription(
+        &DispenseRequest {
+            prescription_id: first_id,
+            quantity: 30,
+            lot: String::from_str(&env, "LOT-FULL"),
+            expires_at: 20_000_000,
+            ndc_code: String::from_str(&env, "0501-1234-01"),
+        },
+        &pharmacy,
+    );
+
+    // A new prescription can now be issued for the same patient.
+    let req = max_cap_request(&env, &pharmacy, 10_000_000);
+    client.issue_prescription(&provider, &patient, &req);
+}
+
+#[test]
+fn test_issuing_succeeds_after_a_prescription_expires() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(PrescriptionContract, ());
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+    let pharmacy = Address::generate(&env);
+
+    // One prescription with a short validity window; the rest valid for a long time.
+    let short_req = max_cap_request(&env, &pharmacy, 100);
+    client.issue_prescription(&provider, &patient, &short_req);
+    for _ in 1..MAX_ACTIVE_PRESCRIPTIONS {
+        let req = max_cap_request(&env, &pharmacy, 10_000_000);
+        client.issue_prescription(&provider, &patient, &req);
+    }
+
+    // At the cap: the next issuance is rejected.
+    let req = max_cap_request(&env, &pharmacy, 10_000_000);
+    let result = client.try_issue_prescription(&provider, &patient, &req);
+    assert_eq!(result, Err(Ok(Error::TooManyActivePrescriptions)));
+
+    // Advance past the short prescription's valid_until (expiry is exclusive: expired at >=).
+    env.ledger().with_mut(|li| {
+        li.timestamp = 100;
+    });
+
+    // A new prescription can now be issued: the expired one no longer counts.
+    let req = max_cap_request(&env, &pharmacy, 10_000_000);
+    client.issue_prescription(&provider, &patient, &req);
 }
 
 #[test]
@@ -477,6 +603,7 @@ fn issue_at(
         pharmacy_id: Some(pharmacy.clone()),
         bypass_allergy_check: false,
         dea_number: None,
+        bypass_reason_hash: None,
     };
     client.issue_prescription(provider, patient, &req)
 }

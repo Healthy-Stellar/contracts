@@ -4,7 +4,7 @@ use super::*;
 use shared::privacy::{EncryptedEnvelopeRef, PolicyMetadata};
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger, MockAuth, MockAuthInvoke},
-    Address, Bytes, BytesN, Env, IntoVal, String, Symbol, TryFromVal, Vec,
+    Address, Bytes, BytesN, Env, IntoVal, String, Symbol, TryFromVal, TryIntoVal, Vec,
 };
 
 fn encrypted_ref(env: &Env, seed: u8) -> EncryptedEnvelopeRef {
@@ -1977,7 +1977,7 @@ fn test_get_record_history_missing_record_returns_not_found() {
     let env = Env::default();
     let (client, patient, _doctor) = setup_for_filter(&env);
 
-    let result = client.try_get_record_history(&999, &patient);
+    let result = client.try_get_record_history(&999, &patient, &0);
 
     assert_eq!(result, Err(Ok(ContractError::NotFound)));
 }
@@ -3751,8 +3751,8 @@ fn test_record_history_four_entries_after_three_updates() {
     client.update_record(&doctor, &record_id, &encrypted_ref(&env, 3), &policy(&env));
     client.update_record(&doctor, &record_id, &encrypted_ref(&env, 4), &policy(&env));
 
-    let history = client.get_record_history(&record_id, &patient);
-    assert_eq!(history.len(), 4, "expected 4 history entries (1 initial + 3 updates)");
+    let history = client.get_record_history(&record_id, &patient, &0);
+    assert_eq!(history.ids.len(), 4, "expected 4 history entries (1 initial + 3 updates)");
 }
 
 /// Version IDs (latest_version) must be monotonically increasing and immutable.
@@ -3825,12 +3825,12 @@ fn test_history_entries_contain_correct_refs() {
     client.update_record(&doctor, &record_id, &encrypted_ref(&env, 2), &policy(&env));
     client.update_record(&doctor, &record_id, &encrypted_ref(&env, 3), &policy(&env));
 
-    let history = client.get_record_history(&record_id, &patient);
-    assert_eq!(history.len(), 3);
+    let history = client.get_record_history(&record_id, &patient, &0);
+    assert_eq!(history.ids.len(), 3);
 
-    assert_eq!(history.get(0).unwrap().encrypted_ref, encrypted_ref(&env, 1));
-    assert_eq!(history.get(1).unwrap().encrypted_ref, encrypted_ref(&env, 2));
-    assert_eq!(history.get(2).unwrap().encrypted_ref, encrypted_ref(&env, 3));
+    assert_eq!(RecordVersion::try_from_val(&env, &history.ids.get(0).unwrap()).unwrap().encrypted_ref, encrypted_ref(&env, 1));
+    assert_eq!(RecordVersion::try_from_val(&env, &history.ids.get(1).unwrap()).unwrap().encrypted_ref, encrypted_ref(&env, 2));
+    assert_eq!(RecordVersion::try_from_val(&env, &history.ids.get(2).unwrap()).unwrap().encrypted_ref, encrypted_ref(&env, 3));
 }
 
 /// current_ref must always reflect the latest update.
@@ -3897,18 +3897,20 @@ fn test_concurrent_updates_from_multiple_providers() {
     env.ledger().set_timestamp(3000);
     client.update_record(&doctor1, &record_id, &encrypted_ref(&env, 4), &policy(&env));
 
-    let history = client.get_record_history(&record_id, &patient);
-    assert_eq!(history.len(), 4, "all 4 versions must be in history");
+    let history = client.get_record_history(&record_id, &patient, &0);
+    assert_eq!(history.ids.len(), 4, "all 4 versions must be in history");
 
     // Verify updated_by attribution.
-    assert_eq!(history.get(1).unwrap().updated_by, doctor1);
-    assert_eq!(history.get(2).unwrap().updated_by, doctor2);
-    assert_eq!(history.get(3).unwrap().updated_by, doctor1);
+    assert_eq!(RecordVersion::try_from_val(&env, &history.ids.get(1).unwrap()).unwrap().updated_by, doctor1);
+    assert_eq!(RecordVersion::try_from_val(&env, &history.ids.get(2).unwrap()).unwrap().updated_by, doctor2);
+    assert_eq!(RecordVersion::try_from_val(&env, &history.ids.get(3).unwrap()).unwrap().updated_by, doctor1);
 
     // Verify timestamps are non-decreasing.
-    for i in 1..history.len() {
+    for i in 1..history.ids.len() {
+        let current = RecordVersion::try_from_val(&env, &history.ids.get(i).unwrap()).unwrap().updated_at;
+        let prev = RecordVersion::try_from_val(&env, &history.ids.get(i - 1).unwrap()).unwrap().updated_at;
         assert!(
-            history.get(i).unwrap().updated_at >= history.get(i - 1).unwrap().updated_at,
+            current >= prev,
             "timestamps must be non-decreasing"
         );
     }
@@ -3954,8 +3956,55 @@ fn test_get_record_history_readable_by_authorized_doctor() {
     client.update_record(&doctor, &record_id, &encrypted_ref(&env, 2), &policy(&env));
 
     // Doctor (authorized) can read history.
-    let history = client.get_record_history(&record_id, &doctor);
-    assert_eq!(history.len(), 2);
+    let history = client.get_record_history(&record_id, &doctor, &0);
+    assert_eq!(history.ids.len(), 2);
+}
+
+#[test]
+fn test_get_record_history_pagination() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _admin, patient, doctor, _v1) = setup_for_ttl(&env);
+
+    let record_id = client.add_medical_record(
+        &patient,
+        &doctor,
+        &encrypted_ref(&env, 0),
+        &Symbol::new(&env, "LAB"),
+        &policy(&env),
+    );
+
+    // Perform 45 updates to get a total of 46 versions (1 initial + 45 updates).
+    for i in 1..46 {
+        client.update_record(&doctor, &record_id, &encrypted_ref(&env, i), &policy(&env));
+    }
+
+    // Page 0: should return 20 items, has_more = true
+    let page0 = client.get_record_history(&record_id, &patient, &0);
+    assert_eq!(page0.ids.len(), 20);
+    assert_eq!(page0.has_more, true);
+    assert_eq!(RecordVersion::try_from_val(&env, &page0.ids.get(0).unwrap()).unwrap().encrypted_ref, encrypted_ref(&env, 0));
+    assert_eq!(RecordVersion::try_from_val(&env, &page0.ids.get(19).unwrap()).unwrap().encrypted_ref, encrypted_ref(&env, 19));
+
+    // Page 1: should return 20 items, has_more = true
+    let page1 = client.get_record_history(&record_id, &patient, &1);
+    assert_eq!(page1.ids.len(), 20);
+    assert_eq!(page1.has_more, true);
+    assert_eq!(RecordVersion::try_from_val(&env, &page1.ids.get(0).unwrap()).unwrap().encrypted_ref, encrypted_ref(&env, 20));
+    assert_eq!(RecordVersion::try_from_val(&env, &page1.ids.get(19).unwrap()).unwrap().encrypted_ref, encrypted_ref(&env, 39));
+
+    // Page 2: should return 6 items, has_more = false (last page behavior)
+    let page2 = client.get_record_history(&record_id, &patient, &2);
+    assert_eq!(page2.ids.len(), 6);
+    assert_eq!(page2.has_more, false);
+    assert_eq!(RecordVersion::try_from_val(&env, &page2.ids.get(0).unwrap()).unwrap().encrypted_ref, encrypted_ref(&env, 40));
+    assert_eq!(RecordVersion::try_from_val(&env, &page2.ids.get(5).unwrap()).unwrap().encrypted_ref, encrypted_ref(&env, 45));
+
+    // Page 3: should return 0 items, has_more = false (empty page)
+    let page3 = client.get_record_history(&record_id, &patient, &3);
+    assert_eq!(page3.ids.len(), 0);
+    assert_eq!(page3.has_more, false);
 }
 
 
@@ -4109,9 +4158,30 @@ fn test_reactivate_patient_emits_patient_status_changed_event() {
         &policy(&env),
     );
 
-    client.deregister_patient(&patient);
-    client.reactivate_patient(&patient);
+    assert_eq!(client.try_deregister_patient(&patient), Ok(Ok(())));
+    extern crate std;
+    std::println!("=== AFTER DEREGISTER ===");
+    for (cid, topics, data) in env.events().all().iter() {
+        let mut topic_syms = std::vec::Vec::new();
+        for t in topics.iter() {
+            if let Ok(sym) = Symbol::try_from_val(&env, &t) {
+                topic_syms.push(sym);
+            }
+        }
+        std::println!("Event Topics: {:?}", topic_syms);
+    }
 
+    assert_eq!(client.try_reactivate_patient(&patient), Ok(Ok(())));
+    std::println!("=== AFTER REACTIVATE ===");
+    for (cid, topics, data) in env.events().all().iter() {
+        let mut topic_syms = std::vec::Vec::new();
+        for t in topics.iter() {
+            if let Ok(sym) = Symbol::try_from_val(&env, &t) {
+                topic_syms.push(sym);
+            }
+        }
+        std::println!("Event Topics: {:?}", topic_syms);
+    }
     let events = env.events().all();
     let status_changed_topic = Symbol::new(&env, "patient_status_changed");
     let count = events
