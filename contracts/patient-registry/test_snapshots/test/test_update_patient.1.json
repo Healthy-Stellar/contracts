@@ -257,6 +257,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "guardian"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "name"
                       },
                       "val": {
