@@ -510,3 +510,260 @@ mod cross_contract_correlation_tests {
             assert_eq!(result, Err(Ok(Error::Unauthorized)));
         }
     }
+
+// ── Record versioning tests (#471) ───────────────────────────────────────────
+
+#[cfg(test)]
+mod record_versioning_tests {
+    use crate::{Error, HealthRecords, HealthRecordsClient};
+    use shared::privacy::{EncryptedEnvelopeRef, PolicyMetadata};
+    use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String, Symbol};
+
+    fn encrypted_ref(env: &Env, seed: u8) -> EncryptedEnvelopeRef {
+        EncryptedEnvelopeRef {
+            content_hash: BytesN::from_array(env, &[seed; 32]),
+            envelope_uri: String::from_str(env, "enc+ipfs://bafyvalidhealthref"),
+            key_version_id: String::from_str(env, "kv:v01"),
+        }
+    }
+
+    fn policy(env: &Env) -> PolicyMetadata {
+        PolicyMetadata {
+            retention_class: Symbol::new(env, "clinical"),
+            access_policy_hash: BytesN::from_array(env, &[7u8; 32]),
+            purpose: Symbol::new(env, "treatment"),
+        }
+    }
+
+    fn setup(env: &Env) -> (HealthRecordsClient<'static>, Address, Address) {
+        let contract_id = env.register(HealthRecords, ());
+        let client = HealthRecordsClient::new(env, &contract_id);
+        let patient = Address::generate(env);
+        let provider = Address::generate(env);
+        (client, patient, provider)
+    }
+
+    /// New records start at version 1.
+    #[test]
+    fn test_create_record_starts_at_version_one() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, patient, provider) = setup(&env);
+
+        client.grant_consent(&patient, &provider);
+        let record_id = client.create_record(
+            &patient,
+            &provider,
+            &encrypted_ref(&env, 1),
+            &String::from_str(&env, "LAB"),
+            &policy(&env),
+        );
+
+        let record = client.get_record(&patient, &record_id);
+        assert_eq!(record.version, 1);
+    }
+
+    /// Version counter increments on each update.
+    #[test]
+    fn test_update_record_increments_version() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, patient, provider) = setup(&env);
+
+        client.grant_consent(&patient, &provider);
+        let record_id = client.create_record(
+            &patient,
+            &provider,
+            &encrypted_ref(&env, 1),
+            &String::from_str(&env, "DIAGNOSIS"),
+            &policy(&env),
+        );
+
+        let new_version = client.update_record(
+            &patient,
+            &record_id,
+            &encrypted_ref(&env, 2),
+            &String::from_str(&env, "DIAGNOSIS_UPDATED"),
+            &policy(&env),
+        );
+        assert_eq!(new_version, 2);
+
+        let record = client.get_record(&patient, &record_id);
+        assert_eq!(record.version, 2);
+    }
+
+    /// All prior versions remain readable via get_record_version.
+    #[test]
+    fn test_prior_versions_remain_readable() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, patient, provider) = setup(&env);
+
+        client.grant_consent(&patient, &provider);
+        let record_id = client.create_record(
+            &patient,
+            &provider,
+            &encrypted_ref(&env, 1),
+            &String::from_str(&env, "PRESCRIPTION"),
+            &policy(&env),
+        );
+
+        // Update twice.
+        client.update_record(
+            &patient,
+            &record_id,
+            &encrypted_ref(&env, 2),
+            &String::from_str(&env, "PRESCRIPTION_V2"),
+            &policy(&env),
+        );
+        client.update_record(
+            &patient,
+            &record_id,
+            &encrypted_ref(&env, 3),
+            &String::from_str(&env, "PRESCRIPTION_V3"),
+            &policy(&env),
+        );
+
+        // Current version (v3) is accessible via get_record.
+        let current = client.get_record(&patient, &record_id);
+        assert_eq!(current.version, 3);
+        assert_eq!(current.record_type, String::from_str(&env, "PRESCRIPTION_V3"));
+
+        // v1 remains readable.
+        let v1 = client.get_record_version(&patient, &record_id, &1u32);
+        assert_eq!(v1.version, 1);
+        assert_eq!(v1.record_type, String::from_str(&env, "PRESCRIPTION"));
+
+        // v2 remains readable.
+        let v2 = client.get_record_version(&patient, &record_id, &2u32);
+        assert_eq!(v2.version, 2);
+        assert_eq!(v2.record_type, String::from_str(&env, "PRESCRIPTION_V2"));
+
+        // Current version accessible via get_record_version too.
+        let v3 = client.get_record_version(&patient, &record_id, &3u32);
+        assert_eq!(v3.version, 3);
+    }
+
+    /// Retrieving a non-existent version returns VersionNotFound.
+    #[test]
+    fn test_get_nonexistent_version_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, patient, provider) = setup(&env);
+
+        client.grant_consent(&patient, &provider);
+        let record_id = client.create_record(
+            &patient,
+            &provider,
+            &encrypted_ref(&env, 1),
+            &String::from_str(&env, "XRAY"),
+            &policy(&env),
+        );
+
+        // Version 2 does not exist yet.
+        let result = client.try_get_record_version(&patient, &record_id, &2u32);
+        assert_eq!(result, Err(Ok(Error::VersionNotFound)));
+    }
+
+    /// A consented provider can update a record and read prior versions.
+    #[test]
+    fn test_provider_can_update_and_read_versions() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, patient, provider) = setup(&env);
+
+        client.grant_consent(&patient, &provider);
+        let record_id = client.create_record(
+            &patient,
+            &provider,
+            &encrypted_ref(&env, 4),
+            &String::from_str(&env, "BLOOD_WORK"),
+            &policy(&env),
+        );
+
+        client.update_record(
+            &provider,
+            &record_id,
+            &encrypted_ref(&env, 5),
+            &String::from_str(&env, "BLOOD_WORK_V2"),
+            &policy(&env),
+        );
+
+        let v1 = client.get_record_version(&provider, &record_id, &1u32);
+        assert_eq!(v1.record_type, String::from_str(&env, "BLOOD_WORK"));
+
+        let current = client.get_record(&provider, &record_id);
+        assert_eq!(current.version, 2);
+    }
+
+    /// An unauthorized caller cannot update a record.
+    #[test]
+    fn test_unauthorized_update_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, patient, provider) = setup(&env);
+        let stranger = Address::generate(&env);
+
+        client.grant_consent(&patient, &provider);
+        let record_id = client.create_record(
+            &patient,
+            &provider,
+            &encrypted_ref(&env, 6),
+            &String::from_str(&env, "MRI"),
+            &policy(&env),
+        );
+
+        let result = client.try_update_record(
+            &stranger,
+            &record_id,
+            &encrypted_ref(&env, 7),
+            &String::from_str(&env, "MRI_V2"),
+            &policy(&env),
+        );
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
+
+    /// Multi-version diff scenario: encrypted_ref changes track between versions.
+    #[test]
+    fn test_multi_version_diff_encrypted_ref() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, patient, provider) = setup(&env);
+
+        client.grant_consent(&patient, &provider);
+        let ref_v1 = encrypted_ref(&env, 10);
+        let ref_v2 = encrypted_ref(&env, 20);
+        let ref_v3 = encrypted_ref(&env, 30);
+
+        let record_id = client.create_record(
+            &patient,
+            &provider,
+            &ref_v1.clone(),
+            &String::from_str(&env, "CT_SCAN"),
+            &policy(&env),
+        );
+
+        client.update_record(
+            &patient,
+            &record_id,
+            &ref_v2.clone(),
+            &String::from_str(&env, "CT_SCAN"),
+            &policy(&env),
+        );
+        client.update_record(
+            &patient,
+            &record_id,
+            &ref_v3.clone(),
+            &String::from_str(&env, "CT_SCAN"),
+            &policy(&env),
+        );
+
+        let v1 = client.get_record_version(&patient, &record_id, &1u32);
+        let v2 = client.get_record_version(&patient, &record_id, &2u32);
+        let v3 = client.get_record_version(&patient, &record_id, &3u32);
+
+        assert_eq!(v1.encrypted_ref.content_hash, ref_v1.content_hash);
+        assert_eq!(v2.encrypted_ref.content_hash, ref_v2.content_hash);
+        assert_eq!(v3.encrypted_ref.content_hash, ref_v3.content_hash);
+    }
+}

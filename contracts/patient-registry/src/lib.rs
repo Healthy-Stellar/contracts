@@ -13,6 +13,7 @@ use soroban_sdk::{
     xdr::ToXdr, Address, Bytes, BytesN, Env, Map, String, Symbol, Vec,
 };
 use ttl_config::critical::{LEDGER_BUMP_AMOUNT, LEDGER_THRESHOLD};
+use ttl_config::{extend_critical_ttl_if_exists, extend_operational_ttl_if_exists};
 
 pub mod merkle;
 pub mod validation;
@@ -30,6 +31,19 @@ pub enum PatientStatus {
     Deregistered,
 }
 
+/// Retention classification for patient data, aligned with HIPAA minimum standards.
+///
+/// - `Clinical`        → critical TTL (~31 days) for care-critical records
+/// - `Administrative`  → operational TTL (~7 days) for admin/operational records
+/// - `Financial`       → critical TTL (~31 days) for financial/billing records
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RetentionClass {
+    Clinical,
+    Administrative,
+    Financial,
+}
+
 /// --------------------
 /// Patient Structures
 /// --------------------
@@ -41,6 +55,7 @@ pub struct PatientData {
     pub encrypted_metadata_ref: EncryptedEnvelopeRef,
     pub status: PatientStatus,
     pub policy: PolicyMetadata,
+    pub retention_class: RetentionClass,
 }
 
 /// --------------------
@@ -409,6 +424,24 @@ fn build_partial_record(record_data: &RecordData, mask: u32) -> PartialRecord {
     }
 }
 
+/// Delegate TTL extension to the appropriate `ttl-config` helper based on the
+/// patient's `RetentionClass`, calling `extend_*_ttl_if_exists` so that missing
+/// keys are silently skipped.
+fn extend_for_retention_class<K: soroban_sdk::IntoVal<Env, soroban_sdk::Val>>(
+    env: &Env,
+    key: &K,
+    class: &RetentionClass,
+) {
+    match class {
+        RetentionClass::Clinical | RetentionClass::Financial => {
+            extend_critical_ttl_if_exists(env, key);
+        }
+        RetentionClass::Administrative => {
+            extend_operational_ttl_if_exists(env, key);
+        }
+    }
+}
+
 /// Maximum number of records that may be returned in a single paginated call.
 pub const MAX_PAGE_SIZE: u32 = 50;
 
@@ -688,6 +721,7 @@ impl MedicalRegistry {
             encrypted_metadata_ref,
             status: PatientStatus::Active,
             policy,
+            retention_class: RetentionClass::Clinical,
         };
         env.storage().persistent().set(&key, &patient);
         let total_patients: u64 = env
@@ -847,6 +881,7 @@ impl MedicalRegistry {
                 encrypted_metadata_ref: entry.encrypted_metadata_ref.clone(),
                 status: PatientStatus::Active,
                 policy: entry.policy.clone(),
+                retention_class: RetentionClass::Clinical,
             };
             env.storage().persistent().set(&key, &patient);
 
@@ -904,45 +939,29 @@ impl MedicalRegistry {
             patient.require_auth();
         }
 
-        // Extend Patient record TTL
+        // Read patient's retention class to select the appropriate TTL helper.
         let patient_key = DataKey::Patient(patient.clone());
-        if env.storage().persistent().has(&patient_key) {
-            env.storage().persistent().extend_ttl(
-                &patient_key,
-                LEDGER_THRESHOLD,
-                LEDGER_BUMP_AMOUNT,
-            );
-        }
+        let class = env
+            .storage()
+            .persistent()
+            .get::<DataKey, PatientData>(&patient_key)
+            .map(|d| d.retention_class)
+            .unwrap_or(RetentionClass::Clinical);
+
+        // Extend Patient record TTL
+        extend_for_retention_class(&env, &patient_key, &class);
 
         // Extend MedicalRecords TTL
         let records_key = DataKey::MedicalRecords(patient.clone());
-        if env.storage().persistent().has(&records_key) {
-            env.storage().persistent().extend_ttl(
-                &records_key,
-                LEDGER_THRESHOLD,
-                LEDGER_BUMP_AMOUNT,
-            );
-        }
+        extend_for_retention_class(&env, &records_key, &class);
 
         // Extend AuthorizedDoctors TTL
         let access_key = DataKey::AuthorizedDoctors(patient.clone());
-        if env.storage().persistent().has(&access_key) {
-            env.storage().persistent().extend_ttl(
-                &access_key,
-                LEDGER_THRESHOLD,
-                LEDGER_BUMP_AMOUNT,
-            );
-        }
+        extend_for_retention_class(&env, &access_key, &class);
 
         // Extend ConsentAck TTL
         let consent_key = DataKey::ConsentAck(patient.clone());
-        if env.storage().persistent().has(&consent_key) {
-            env.storage().persistent().extend_ttl(
-                &consent_key,
-                LEDGER_THRESHOLD,
-                LEDGER_BUMP_AMOUNT,
-            );
-        }
+        extend_for_retention_class(&env, &consent_key, &class);
     }
 
     pub fn place_hold(
@@ -2381,6 +2400,53 @@ impl MedicalRegistry {
     }
 
     // =====================================================
+    //              RETENTION CLASS MANAGEMENT
+    // =====================================================
+
+    /// Update a patient's data retention class.
+    ///
+    /// Admin-only. Changing the class takes effect on the next TTL bump so that
+    /// subsequent operations use the appropriate `ttl-config` thresholds.
+    pub fn set_patient_retention_class(
+        env: Env,
+        patient: Address,
+        class: RetentionClass,
+    ) -> Result<(), ContractError> {
+        Self::require_not_frozen(&env);
+        Self::require_admin(&env);
+        Self::require_patient_exists(&env, &patient)?;
+
+        let key = DataKey::Patient(patient.clone());
+        let mut data: PatientData = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::NotFound)?;
+        data.retention_class = class.clone();
+        env.storage().persistent().set(&key, &data);
+
+        env.events().publish(
+            (symbol_short!("ret_cls"), patient),
+            symbol_short!("updated"),
+        );
+        Ok(())
+    }
+
+    /// Retrieve the current retention class for a patient.
+    pub fn get_patient_retention_class(
+        env: Env,
+        patient: Address,
+    ) -> Result<RetentionClass, ContractError> {
+        let key = DataKey::Patient(patient);
+        let data: PatientData = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::NotFound)?;
+        Ok(data.retention_class)
+    }
+
+    // =====================================================
     //                  PRIVATE HELPERS
     // =====================================================
 
@@ -2447,8 +2513,16 @@ impl MedicalRegistry {
             .extend_ttl(&root_key, LEDGER_THRESHOLD, LEDGER_BUMP_AMOUNT);
     }
 
-    /// Bump TTL for all critical persistent keys belonging to a patient.
+    /// Bump TTL for all persistent keys belonging to a patient using the
+    /// appropriate `ttl-config` helper for their retention class.
     fn bump_patient_keys(env: &Env, patient: &Address) {
+        let class = env
+            .storage()
+            .persistent()
+            .get::<DataKey, PatientData>(&DataKey::Patient(patient.clone()))
+            .map(|d| d.retention_class)
+            .unwrap_or(RetentionClass::Clinical);
+
         let keys: [DataKey; 6] = [
             DataKey::Patient(patient.clone()),
             DataKey::MedicalRecords(patient.clone()),
@@ -2458,11 +2532,7 @@ impl MedicalRegistry {
             DataKey::MerkleRoot(patient.clone()),
         ];
         for key in keys.iter() {
-            if env.storage().persistent().has(key) {
-                env.storage()
-                    .persistent()
-                    .extend_ttl(key, LEDGER_THRESHOLD, LEDGER_BUMP_AMOUNT);
-            }
+            extend_for_retention_class(env, key, &class);
         }
     }
 }

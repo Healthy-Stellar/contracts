@@ -22,14 +22,16 @@ pub struct MedicalRecord {
     pub timestamp: u64,
     pub integrity_hash: BytesN<32>,
     pub policy: PolicyMetadata,
+    pub version: u32,
 }
 
 #[contracttype]
 pub enum DataKey {
     Record(u64),
     RecordCounter,
-    Consent(Address, Address),     // (patient, provider) -> bool
-    PatientProviders(Address),     // patient -> Vec<Address> of consented providers
+    Consent(Address, Address),        // (patient, provider) -> bool
+    PatientProviders(Address),        // patient -> Vec<Address> of consented providers
+    RecordVersion(u64, u32),          // (record_id, version) -> MedicalRecord snapshot
 }
 
 #[contracterror]
@@ -42,6 +44,7 @@ pub enum Error {
     InvalidEncryptedEnvelope = 4,
     InvalidPolicyMetadata = 5,
     InvalidAddress = 6,
+    VersionNotFound = 7,
 }
 
 fn compute_hash(
@@ -165,6 +168,7 @@ impl HealthRecords {
             timestamp,
             integrity_hash,
             policy,
+            version: 1,
         };
 
         env.storage()
@@ -228,6 +232,99 @@ impl HealthRecords {
 
         let recomputed_bytes: Bytes = recomputed.into();
         Ok(recomputed_bytes == expected_hash)
+    }
+
+    /// Update an existing record, preserving the previous version in the amendment trail.
+    ///
+    /// - Saves the current record under `DataKey::RecordVersion(record_id, current_version)`.
+    /// - Increments `version` by one and stores the updated record under `DataKey::Record(record_id)`.
+    /// - Caller must be the patient or a consented provider.
+    pub fn update_record(
+        env: Env,
+        caller: Address,
+        record_id: u64,
+        new_encrypted_ref: EncryptedEnvelopeRef,
+        new_record_type: String,
+        new_policy: PolicyMetadata,
+    ) -> Result<u32, Error> {
+        validate_nonzero_address(&caller).map_err(|_| Error::InvalidAddress)?;
+        validate_encrypted_ref(&new_encrypted_ref).map_err(|_| Error::InvalidEncryptedEnvelope)?;
+        validate_policy_metadata(&new_policy).map_err(|_| Error::InvalidPolicyMetadata)?;
+        caller.require_auth();
+
+        let mut record: MedicalRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Record(record_id))
+            .ok_or(Error::RecordNotFound)?;
+
+        if caller != record.patient && !has_consent(&env, &record.patient, &caller) {
+            return Err(Error::Unauthorized);
+        }
+
+        // Archive the current version before overwriting.
+        let version_key = DataKey::RecordVersion(record_id, record.version);
+        env.storage().persistent().set(&version_key, &record);
+
+        let new_version = record.version + 1;
+        let timestamp = env.ledger().timestamp();
+
+        let new_integrity_hash = compute_hash(
+            &env,
+            record_id,
+            &record.patient,
+            &record.provider,
+            &new_encrypted_ref,
+            &new_record_type,
+            timestamp,
+        );
+
+        record.encrypted_ref = new_encrypted_ref;
+        record.record_type = new_record_type;
+        record.policy = new_policy;
+        record.timestamp = timestamp;
+        record.integrity_hash = new_integrity_hash;
+        record.version = new_version;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Record(record_id), &record);
+
+        Ok(new_version)
+    }
+
+    /// Retrieve a specific historical version of a record.
+    ///
+    /// - Current version: read directly from `DataKey::Record(record_id)`.
+    /// - Prior versions: read from `DataKey::RecordVersion(record_id, version)`.
+    /// - Caller must be the patient or a consented provider.
+    pub fn get_record_version(
+        env: Env,
+        caller: Address,
+        record_id: u64,
+        version: u32,
+    ) -> Result<MedicalRecord, Error> {
+        validate_nonzero_address(&caller).map_err(|_| Error::InvalidAddress)?;
+        caller.require_auth();
+
+        let current: MedicalRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Record(record_id))
+            .ok_or(Error::RecordNotFound)?;
+
+        if caller != current.patient && !has_consent(&env, &current.patient, &caller) {
+            return Err(Error::Unauthorized);
+        }
+
+        if version == current.version {
+            return Ok(current);
+        }
+
+        env.storage()
+            .persistent()
+            .get(&DataKey::RecordVersion(record_id, version))
+            .ok_or(Error::VersionNotFound)
     }
 
     /// Capture an incident for this contract, optionally linking it to a
