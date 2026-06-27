@@ -100,7 +100,18 @@ pub enum Error {
     SiteNotFound = 26,
     /// The site has reached its per-site enrollment quota
     SiteEnrollmentFull = 27,
+    /// A Vec parameter exceeds its maximum allowed length.
+    InputTooLarge = 28,
 }
+
+/// Maximum number of inclusion or exclusion criteria rules per trial.
+pub const MAX_CRITERIA_RULES: u32 = 64;
+/// Maximum number of evidence items per eligibility check.
+pub const MAX_EVIDENCE_ITEMS: u32 = 32;
+/// Maximum number of DSMB members per trial.
+pub const MAX_DSMB_MEMBERS: u32 = 20;
+/// Maximum number of adverse events per study visit.
+pub const MAX_ADVERSE_EVENTS_PER_VISIT: u32 = 50;
 
 #[contract]
 pub struct ClinicalTrialContract;
@@ -187,6 +198,12 @@ impl ClinicalTrialContract {
         exclusion_criteria: Vec<CriteriaRule>,
     ) -> Result<(), Error> {
         principal_investigator.require_auth();
+        if inclusion_criteria.len() > MAX_CRITERIA_RULES {
+            return Err(Error::InputTooLarge);
+        }
+        if exclusion_criteria.len() > MAX_CRITERIA_RULES {
+            return Err(Error::InputTooLarge);
+        }
 
         // Verify trial exists and PI is authorized
         let trial = storage::get_trial(&env, trial_record_id)?;
@@ -214,6 +231,9 @@ impl ClinicalTrialContract {
         claim_evidence: Vec<EligibilityClaimEvidence>,
     ) -> Result<EligibilityResult, Error> {
         patient_id.require_auth();
+        if claim_evidence.len() > MAX_EVIDENCE_ITEMS {
+            return Err(Error::InputTooLarge);
+        }
 
         // Verify trial exists
         let _trial = storage::get_trial(&env, trial_record_id)?;
@@ -356,6 +376,9 @@ impl ClinicalTrialContract {
         data_collected_hash: BytesN<32>,
         adverse_events: Vec<AdverseEvent>,
     ) -> Result<(), Error> {
+        if adverse_events.len() > MAX_ADVERSE_EVENTS_PER_VISIT {
+            return Err(Error::InputTooLarge);
+        }
         // Verify enrollment exists
         let enrollment = storage::get_enrollment(&env, enrollment_id)?;
         enrollment.patient_id.require_auth();
@@ -674,6 +697,9 @@ impl ClinicalTrialContract {
         members: Vec<Address>,
     ) -> Result<(), Error> {
         principal_investigator.require_auth();
+        if members.len() > MAX_DSMB_MEMBERS {
+            return Err(Error::InputTooLarge);
+        }
 
         let trial = storage::get_trial(&env, trial_record_id)?;
         if trial.principal_investigator != principal_investigator {

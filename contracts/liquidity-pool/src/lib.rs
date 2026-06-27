@@ -17,7 +17,14 @@ pub enum Error {
     SlippageExceeded = 5,
     InsufficientShares = 6,
     Unauthorized = 7,
+    ArithmeticOverflow = 8,
+    RotationPending = 9,
+    NoRotationPending = 10,
+    RotationExpired = 11,
+    NotPendingAdmin = 12,
 }
+
+const ADMIN_ROTATION_WINDOW: u64 = 86_400;
 
 #[contracttype]
 pub enum DataKey {
@@ -26,6 +33,8 @@ pub enum DataKey {
     ReserveB,
     TotalShares,
     Shares(Address),
+    PendingAdmin,
+    RotationExpiry,
 }
 
 #[contracttype]
@@ -81,11 +90,12 @@ impl LiquidityPoolContract {
 
         let shares = if total == 0 {
             // First deposit: geometric mean as initial share supply
-            sqrt(amount_a * amount_b)
+            let product = amount_a.checked_mul(amount_b).ok_or(Error::ArithmeticOverflow)?;
+            sqrt(product)
         } else {
             // Pro-rata: min of both ratios to prevent dilution
-            let s_a = amount_a * total / reserve_a;
-            let s_b = amount_b * total / reserve_b;
+            let s_a = amount_a.checked_mul(total).ok_or(Error::ArithmeticOverflow)? / reserve_a;
+            let s_b = amount_b.checked_mul(total).ok_or(Error::ArithmeticOverflow)? / reserve_b;
             s_a.min(s_b)
         };
 
@@ -196,8 +206,14 @@ impl LiquidityPoolContract {
         }
 
         // Constant-product AMM with fee: (x + dx*(1-fee)) * (y - dy) = x * y
-        let amount_in_with_fee = amount_in * (10_000 - POOL_FEE_BPS) / 10_000;
-        let amount_out = reserve_b * amount_in_with_fee / (reserve_a + amount_in_with_fee);
+        let amount_in_with_fee = amount_in
+            .checked_mul(10_000 - POOL_FEE_BPS)
+            .ok_or(Error::ArithmeticOverflow)?
+            / 10_000;
+        let amount_out = reserve_b
+            .checked_mul(amount_in_with_fee)
+            .ok_or(Error::ArithmeticOverflow)?
+            / (reserve_a + amount_in_with_fee);
 
         if amount_out < min_out {
             return Err(Error::SlippageExceeded);
@@ -213,6 +229,54 @@ impl LiquidityPoolContract {
         env.events()
             .publish((symbol_short!("SWAP"), trader), (amount_in, amount_out));
         Ok(amount_out)
+    }
+
+    /// Propose transferring admin to `new_admin`. Must be confirmed by `new_admin`
+    /// within 24 hours via `accept_admin_rotation`.
+    pub fn propose_admin_rotation(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let stored: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        if admin != stored {
+            return Err(Error::Unauthorized);
+        }
+        if env.storage().instance().has(&DataKey::PendingAdmin) {
+            return Err(Error::RotationPending);
+        }
+        let expiry = env.ledger().timestamp() + ADMIN_ROTATION_WINDOW;
+        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        env.storage().instance().set(&DataKey::RotationExpiry, &expiry);
+        Ok(())
+    }
+
+    /// New admin confirms the rotation proposed by the current admin.
+    pub fn accept_admin_rotation(env: Env, new_admin: Address) -> Result<(), Error> {
+        new_admin.require_auth();
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoRotationPending)?;
+        if new_admin != pending {
+            return Err(Error::NotPendingAdmin);
+        }
+        let expiry: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RotationExpiry)
+            .unwrap_or(0);
+        if env.ledger().timestamp() > expiry {
+            env.storage().instance().remove(&DataKey::PendingAdmin);
+            env.storage().instance().remove(&DataKey::RotationExpiry);
+            return Err(Error::RotationExpired);
+        }
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage().instance().remove(&DataKey::RotationExpiry);
+        Ok(())
     }
 
     pub fn get_stats(env: Env) -> PoolStats {
