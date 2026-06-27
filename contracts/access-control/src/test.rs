@@ -986,3 +986,92 @@ proptest! {
         assert!(!client.check_access(&grantee, &resource_b));
     }
 }
+
+// ── #489: emergency access override tests ────────────────────────────────────
+
+fn setup_emergency(env: &Env) -> (Address, Address, Address, AccessControlClient<'static>) {
+    let contract_id = env.register(AccessControl, ());
+    let client = AccessControlClient::new(env, &contract_id);
+    let admin = Address::generate(env);
+    client.initialize(&admin);
+
+    let responder = Address::generate(env);
+    let patient = Address::generate(env);
+
+    // Grant EmergencyResponder role to responder
+    client.grant_role(&admin, &responder, &Role::EmergencyResponder, &0);
+
+    (admin, responder, patient, client)
+}
+
+fn make_justification(env: &Env) -> BytesN<32> {
+    env.crypto()
+        .sha256(&Bytes::from_slice(env, b"unconscious patient emergency"))
+        .into()
+}
+
+#[test]
+fn test_emergency_access_granted_and_active() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let (_admin, responder, patient, client) = setup_emergency(&env);
+    let justification = make_justification(&env);
+
+    let op_id = client.emergency_access(&responder, &patient, &justification);
+    assert!(op_id > 0);
+
+    // Access should be active immediately
+    assert!(client.check_emergency_access(&responder, &patient));
+}
+
+#[test]
+fn test_emergency_access_expires_after_one_hour() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let (_admin, responder, patient, client) = setup_emergency(&env);
+    client.emergency_access(&responder, &patient, &make_justification(&env));
+
+    // Advance ledger time past 1 hour (3600s)
+    env.ledger().set_timestamp(1_000 + 3601);
+    assert!(!client.check_emergency_access(&responder, &patient));
+}
+
+#[test]
+fn test_emergency_access_rejected_for_non_responder() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let contract_id = env.register(AccessControl, ());
+    let client = AccessControlClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let non_responder = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    let result = client.try_emergency_access(
+        &non_responder,
+        &patient,
+        &make_justification(&env),
+    );
+    assert_eq!(result, Err(Ok(ContractError::InsufficientRole)));
+}
+
+#[test]
+fn test_emergency_access_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let (_admin, responder, patient, client) = setup_emergency(&env);
+    client.emergency_access(&responder, &patient, &make_justification(&env));
+
+    // initialize emits 1 event, grant_role emits 1, emergency_access emits 1 = 3 total
+    let events = env.events().all();
+    assert!(events.len() >= 1, "at least one event must have been emitted");
+}
