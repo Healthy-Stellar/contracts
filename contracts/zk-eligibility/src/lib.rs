@@ -86,6 +86,11 @@ pub struct VerifierKeyEntry {
     pub schema_version: u32,
     /// Whether this key is still active (admin can deprecate old versions).
     pub active: bool,
+    /// When non-zero, this deprecated schema was migrated to `migrated_to`.
+    /// Nullifiers recorded under this schema remain valid after migration.
+    /// When zero the schema was deprecated without migration; its nullifiers
+    /// are treated as expired so subjects can re-verify under a new schema.
+    pub migrated_to: u32,
 }
 
 /// Nullifier record stored on successful proof verification.
@@ -157,6 +162,7 @@ impl ZkEligibility {
             vk,
             schema_version,
             active: true,
+            migrated_to: 0,
         };
         env.storage().persistent().set(&key, &entry);
         env.events()
@@ -185,6 +191,56 @@ impl ZkEligibility {
         env.storage().persistent().set(&key, &entry);
         env.events()
             .publish((symbol_short!("vk_dep"), schema_version), symbol_short!("ok"));
+        Ok(())
+    }
+
+    /// Migrate a deprecated schema to a new version, carrying nullifiers forward.
+    ///
+    /// After a successful migration:
+    /// - `old_version` is marked `deprecated-migrated`; its nullifiers remain
+    ///   valid, preventing replay under the new schema.
+    /// - Nullifiers from schemas deprecated WITHOUT migration are treated as
+    ///   invalid, allowing subjects to re-verify under the new key.
+    ///
+    /// `migration_proof` is verified against the new schema's verifier key.
+    pub fn migrate_schema(
+        env: Env,
+        admin: Address,
+        old_version: u32,
+        new_version: u32,
+        migration_proof: Bytes,
+    ) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        Self::assert_admin(&env, &admin)?;
+
+        let old_key = DataKey::VerifierKey(old_version);
+        let mut old_entry: VerifierKeyEntry = env
+            .storage()
+            .persistent()
+            .get(&old_key)
+            .ok_or(Error::SchemaNotFound)?;
+
+        let new_entry: VerifierKeyEntry = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VerifierKey(new_version))
+            .ok_or(Error::SchemaNotFound)?;
+
+        if !new_entry.active {
+            return Err(Error::SchemaNotFound);
+        }
+
+        if !Self::run_verification(&env, &new_entry.vk, &migration_proof, &Vec::new(&env)) {
+            return Err(Error::VerificationFailed);
+        }
+
+        old_entry.migrated_to = new_version;
+        env.storage().persistent().set(&old_key, &old_entry);
+
+        env.events().publish(
+            (symbol_short!("sch_migr"), old_version),
+            (new_version,),
+        );
         Ok(())
     }
 
@@ -300,6 +356,12 @@ impl ZkEligibility {
 
     // ── internal helpers ──────────────────────────────────────────────────────
 
+    /// Returns `true` when the nullifier for `proof_hash` is active:
+    /// - The record exists and has not yet reached its `expires_at_ledger`.
+    /// - The schema it was recorded against is either still active or was
+    ///   migrated to a new version (deprecated-migrated). Non-migrated
+    ///   deprecated schemas have their nullifiers invalidated so subjects
+    ///   can re-verify under the new key.
     fn nullifier_active(env: &Env, proof_hash: &BytesN<32>) -> bool {
         let record: NullifierRecord = match env
             .storage()
@@ -309,7 +371,19 @@ impl ZkEligibility {
             Some(r) => r,
             None => return false,
         };
-        env.ledger().sequence() < record.expires_at_ledger
+
+        if env.ledger().sequence() >= record.expires_at_ledger {
+            return false;
+        }
+
+        match env
+            .storage()
+            .persistent()
+            .get::<DataKey, VerifierKeyEntry>(&DataKey::VerifierKey(record.schema_version))
+        {
+            Some(entry) => entry.active || entry.migrated_to > 0,
+            None => false,
+        }
     }
 
     fn store_nullifier(env: &Env, proof_hash: &BytesN<32>, schema_version: u32) {
