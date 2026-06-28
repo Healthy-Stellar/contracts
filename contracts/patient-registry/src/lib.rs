@@ -291,6 +291,8 @@ pub enum ContractError {
     NoHistoryFound = 26,
     InvalidAddress = 27,
     ProviderNotRegistered = 28,
+    /// A Vec parameter or accumulator exceeds its maximum allowed length.
+    InputTooLarge = 29,
 }
 
 pub fn validate_cid(cid: &Bytes) -> Result<(), ContractError> {
@@ -471,6 +473,9 @@ pub const MAX_PAGE_SIZE: u32 = 50;
 
 /// Maximum number of entries allowed in a single batch registration call.
 pub const MAX_BATCH_SIZE: u32 = 50;
+
+/// Maximum number of authorized doctors a single patient may have.
+pub const MAX_AUTHORIZED_DOCTORS: u32 = 50;
 
 /// Input entry for `batch_register_patients`.
 #[contracttype]
@@ -1313,6 +1318,9 @@ impl MedicalRegistry {
             .unwrap_or(Map::new(&env));
 
         if !map.contains_key(doctor.clone()) {
+            if map.len() >= MAX_AUTHORIZED_DOCTORS {
+                return Err(ContractError::InputTooLarge);
+            }
             let total_access_grants: u64 = env
                 .storage()
                 .instance()

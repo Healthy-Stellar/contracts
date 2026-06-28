@@ -8,6 +8,7 @@ use soroban_sdk::{
 };
 
 const MAX_PROPOSALS: u32 = 100;
+const ADMIN_ROTATION_WINDOW: u64 = 86_400;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -21,6 +22,10 @@ pub enum Error {
     ProposalClosed    = 6,
     ProposalExpired   = 7,
     InvalidQuorum     = 8,
+    RotationPending   = 9,
+    NoRotationPending = 10,
+    RotationExpired   = 11,
+    NotPendingAdmin   = 12,
 }
 
 #[contracttype]
@@ -51,6 +56,8 @@ pub enum DataKey {
     NextId,
     Proposal(u64),
     Vote(u64, Address),  // (proposal_id, voter) → VoteChoice
+    PendingAdmin,
+    RotationExpiry,
 }
 
 #[contract]
@@ -170,6 +177,53 @@ impl GovernanceVotingContract {
 
     pub fn has_voted(env: Env, proposal_id: u64, voter: Address) -> bool {
         env.storage().persistent().has(&DataKey::Vote(proposal_id, voter))
+    }
+
+    /// Propose transferring admin to `new_admin`. Must be confirmed within 24 hours.
+    pub fn propose_admin_rotation(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let stored: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        if admin != stored {
+            return Err(Error::Unauthorized);
+        }
+        if env.storage().instance().has(&DataKey::PendingAdmin) {
+            return Err(Error::RotationPending);
+        }
+        let expiry = env.ledger().timestamp() + ADMIN_ROTATION_WINDOW;
+        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        env.storage().instance().set(&DataKey::RotationExpiry, &expiry);
+        Ok(())
+    }
+
+    /// New admin confirms the rotation proposed by the current admin.
+    pub fn accept_admin_rotation(env: Env, new_admin: Address) -> Result<(), Error> {
+        new_admin.require_auth();
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoRotationPending)?;
+        if new_admin != pending {
+            return Err(Error::NotPendingAdmin);
+        }
+        let expiry: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RotationExpiry)
+            .unwrap_or(0);
+        if env.ledger().timestamp() > expiry {
+            env.storage().instance().remove(&DataKey::PendingAdmin);
+            env.storage().instance().remove(&DataKey::RotationExpiry);
+            return Err(Error::RotationExpired);
+        }
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage().instance().remove(&DataKey::RotationExpiry);
+        Ok(())
     }
 }
 

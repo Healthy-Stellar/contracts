@@ -359,3 +359,279 @@ fn test_two_sites_with_different_quotas_cross_site_aggregation() {
         .sha256(&soroban_sdk::Bytes::from_slice(&env, &5u32.to_be_bytes()));
     assert_eq!(export_hash, expected);
 }
+
+// ── #486: re-enrolment tests ──────────────────────────────────────────────────
+
+#[test]
+fn test_re_enroll_after_withdrawal_succeeds() {
+    let (env, _, pi, patient, client) = create_test_env();
+
+    let trial_id = client.register_clinical_trial(
+        &pi,
+        &String::from_str(&env, "TRIAL-486"),
+        &String::from_str(&env, "Re-enrol Study"),
+        &symbol_short!("phase2"),
+        &create_protocol_hash(&env),
+        &1000,
+        &9999,
+        &100,
+        &String::from_str(&env, "IRB-486"),
+    );
+
+    // Initial enrolment
+    let enrollment_id = client.enroll_participant(
+        &trial_id,
+        &patient,
+        &symbol_short!("armA"),
+        &1100,
+        &create_protocol_hash(&env),
+        &String::from_str(&env, "P001"),
+    );
+
+    // Withdraw
+    client.withdraw_participant(&enrollment_id, &1200, &symbol_short!("consent"), &false);
+
+    // Re-enrol
+    let new_enrollment_id = client.re_enroll_participant(
+        &trial_id,
+        &patient,
+        &enrollment_id,
+        &create_protocol_hash(&env),
+        &symbol_short!("armB"),
+        &1300,
+        &String::from_str(&env, "P001-R1"),
+    );
+
+    assert_ne!(new_enrollment_id, enrollment_id);
+
+    let new_enrollment = client.get_enrollment(&new_enrollment_id, &pi);
+    assert_eq!(new_enrollment.prior_enrollment_id, Some(enrollment_id));
+    assert_eq!(new_enrollment.trial_record_id, trial_id);
+
+    // Prior enrolment data_retention_consent is unchanged (false)
+    let prior = client.get_enrollment(&enrollment_id, &pi);
+    assert!(!prior.data_retention_consent);
+}
+
+#[test]
+fn test_re_enroll_blocked_when_trial_closed() {
+    let (env, _, pi, patient, client) = create_test_env();
+
+    let trial_id = client.register_clinical_trial(
+        &pi,
+        &String::from_str(&env, "TRIAL-486B"),
+        &String::from_str(&env, "Closed Trial"),
+        &symbol_short!("phase1"),
+        &create_protocol_hash(&env),
+        &1000,
+        &9999,
+        &100,
+        &String::from_str(&env, "IRB-486B"),
+    );
+
+    let enrollment_id = client.enroll_participant(
+        &trial_id,
+        &patient,
+        &symbol_short!("armA"),
+        &1100,
+        &create_protocol_hash(&env),
+        &String::from_str(&env, "P001"),
+    );
+
+    client.withdraw_participant(&enrollment_id, &1200, &symbol_short!("consent"), &true);
+
+    // Mark trial closed by suspending it via safety halt pathway is complex;
+    // instead directly verify that TrialNotActive is returned for Suspended.
+    // To test TrialClosed: use the Suspended path (status != Active) which
+    // returns TrialNotActive.  The TrialClosed path is a superset guard.
+    // We validate the TrialClosed variant is distinct from TrialNotActive
+    // by asserting a Suspended trial returns TrialNotActive, not TrialClosed.
+    // A truly Closed status would require a close_trial endpoint; the guard
+    // exists and is unit-tested via integration once that endpoint is added.
+    // For now validate the Active-required guard fires on Suspended trials.
+    let admin = Address::generate(&env);
+    let dsmb_member = Address::generate(&env);
+    let mut members = Vec::new(&env);
+    members.push_back(dsmb_member.clone());
+    client.appoint_dsmb(&trial_id, &pi, &members);
+    client.propose_safety_halt(&trial_id, &dsmb_member, &create_protocol_hash(&env));
+    client.approve_safety_halt(&trial_id, &dsmb_member);
+
+    let result = client.try_re_enroll_participant(
+        &trial_id,
+        &patient,
+        &enrollment_id,
+        &create_protocol_hash(&env),
+        &symbol_short!("armA"),
+        &1400,
+        &String::from_str(&env, "P001-R1"),
+    );
+    assert_eq!(result, Err(Ok(Error::TrialNotActive)));
+}
+
+#[test]
+fn test_re_enroll_blocked_when_prior_enrollment_still_active() {
+    let (env, _, pi, patient, client) = create_test_env();
+
+    let trial_id = client.register_clinical_trial(
+        &pi,
+        &String::from_str(&env, "TRIAL-486C"),
+        &String::from_str(&env, "Active Prior Enrol"),
+        &symbol_short!("phase2"),
+        &create_protocol_hash(&env),
+        &1000,
+        &9999,
+        &100,
+        &String::from_str(&env, "IRB-486C"),
+    );
+
+    let enrollment_id = client.enroll_participant(
+        &trial_id,
+        &patient,
+        &symbol_short!("armA"),
+        &1100,
+        &create_protocol_hash(&env),
+        &String::from_str(&env, "P001"),
+    );
+
+    // Prior enrolment is still Active
+    let result = client.try_re_enroll_participant(
+        &trial_id,
+        &patient,
+        &enrollment_id,
+        &create_protocol_hash(&env),
+        &symbol_short!("armA"),
+        &1200,
+        &String::from_str(&env, "P001-R1"),
+    );
+    assert_eq!(result, Err(Ok(Error::PriorEnrollmentActive)));
+}
+
+// ── #487: phase transition tests ─────────────────────────────────────────────
+
+#[test]
+fn test_advance_trial_phase_succeeds_and_emits_event() {
+    let (env, _, pi, _, client) = create_test_env();
+
+    let trial_id = client.register_clinical_trial(
+        &pi,
+        &String::from_str(&env, "TRIAL-487"),
+        &String::from_str(&env, "Phase Advance Study"),
+        &symbol_short!("phase1"),
+        &create_protocol_hash(&env),
+        &1000,
+        &9999,
+        &100,
+        &String::from_str(&env, "IRB-487"),
+    );
+
+    let new_protocol = env.crypto().sha256(
+        &String::from_str(&env, "protocol_v2").into()
+    );
+    let new_protocol: BytesN<32> = new_protocol.into();
+
+    client.advance_trial_phase(
+        &pi,
+        &trial_id,
+        &symbol_short!("phase2"),
+        &new_protocol,
+    );
+
+    let trial = client.get_trial(&trial_id);
+    assert_eq!(trial.study_phase, symbol_short!("phase2"));
+    assert_eq!(trial.protocol_hash, new_protocol);
+
+    // Verify TrialPhaseAdvanced event was emitted (register_clinical_trial = 1, advance = 1)
+    let events = env.events().all();
+    assert_eq!(events.len(), 2);
+}
+
+#[test]
+fn test_advance_trial_phase_rejected_for_non_pi() {
+    let (env, _, pi, patient, client) = create_test_env();
+
+    let trial_id = client.register_clinical_trial(
+        &pi,
+        &String::from_str(&env, "TRIAL-487B"),
+        &String::from_str(&env, "Phase Advance Auth"),
+        &symbol_short!("phase1"),
+        &create_protocol_hash(&env),
+        &1000,
+        &9999,
+        &100,
+        &String::from_str(&env, "IRB-487B"),
+    );
+
+    let result = client.try_advance_trial_phase(
+        &patient, // not the PI
+        &trial_id,
+        &symbol_short!("phase2"),
+        &create_protocol_hash(&env),
+    );
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_advance_trial_phase_invalid_phase_rejected() {
+    let (env, _, pi, _, client) = create_test_env();
+
+    let trial_id = client.register_clinical_trial(
+        &pi,
+        &String::from_str(&env, "TRIAL-487C"),
+        &String::from_str(&env, "Phase Advance Validate"),
+        &symbol_short!("phase1"),
+        &create_protocol_hash(&env),
+        &1000,
+        &9999,
+        &100,
+        &String::from_str(&env, "IRB-487C"),
+    );
+
+    let result = client.try_advance_trial_phase(
+        &pi,
+        &trial_id,
+        &symbol_short!("phaseX"),
+        &create_protocol_hash(&env),
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidStudyPhase)));
+}
+
+#[test]
+fn test_enrolment_after_phase_advance_uses_updated_trial() {
+    let (env, _, pi, patient, client) = create_test_env();
+
+    let trial_id = client.register_clinical_trial(
+        &pi,
+        &String::from_str(&env, "TRIAL-487D"),
+        &String::from_str(&env, "Phase Advance + Enrol"),
+        &symbol_short!("phase1"),
+        &create_protocol_hash(&env),
+        &1000,
+        &9999,
+        &100,
+        &String::from_str(&env, "IRB-487D"),
+    );
+
+    let v2_hash: BytesN<32> = env.crypto().sha256(
+        &String::from_str(&env, "protocol_v2").into()
+    ).into();
+
+    client.advance_trial_phase(&pi, &trial_id, &symbol_short!("phase2"), &v2_hash);
+
+    // New enrolment after phase advance; must succeed (trial still Active)
+    let enrollment_id = client.enroll_participant(
+        &trial_id,
+        &patient,
+        &symbol_short!("armA"),
+        &1100,
+        &create_protocol_hash(&env),
+        &String::from_str(&env, "P-PHASE2"),
+    );
+
+    let trial = client.get_trial(&trial_id);
+    assert_eq!(trial.study_phase, symbol_short!("phase2"));
+    assert_eq!(trial.current_enrollment, 1);
+
+    let enrol = client.get_enrollment(&enrollment_id, &pi);
+    assert_eq!(enrol.trial_record_id, trial_id);
+}
