@@ -113,6 +113,9 @@ pub struct UpgradeProposal {
     /// Minimum on-chain schema version the new WASM is compatible with.
     /// `execute_upgrade` rejects proposals where this exceeds the stored `SchemaVersion`.
     pub min_compatible_schema: u32,
+    /// When true this is an emergency fast-track: requires 100 % signer approval
+    /// and skips the timelock delay at execution time.
+    pub is_emergency: bool,
 }
 
 #[contracttype]
@@ -190,6 +193,7 @@ impl UpgradeGovernance {
             status: ProposalStatus::Active,
             domain_tag,
             min_compatible_schema,
+            is_emergency: false,
         };
 
         env.storage()
@@ -201,6 +205,84 @@ impl UpgradeGovernance {
 
         env.events()
             .publish((symbol_short!("proposed"), proposal_id), new_wasm_hash);
+
+        Ok(proposal_id)
+    }
+
+    /// Propose an emergency upgrade that bypasses the timelock and requires unanimous signer approval.
+    ///
+    /// Emergency proposals are identical to standard proposals except:
+    /// - All signers must vote (`100 %` threshold) before execution is allowed.
+    /// - `execute_upgrade` skips the `TIMELOCK_DELAY` for these proposals.
+    /// - A distinct `emrg_prop` audit event is emitted.
+    pub fn propose_emergency_upgrade(
+        env: Env,
+        proposer: Address,
+        new_wasm_hash: BytesN<32>,
+        release_metadata: ReleaseMetadata,
+        artifact_metadata_hash: BytesN<32>,
+        min_compatible_schema: u32,
+    ) -> Result<u64, Error> {
+        Self::assert_initialized(&env)?;
+        proposer.require_auth();
+        Self::assert_signer(&env, &proposer)?;
+        Self::validate_release_metadata(&env, &release_metadata, &artifact_metadata_hash)?;
+
+        let current_schema: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SchemaVersion)
+            .unwrap_or(1);
+        if min_compatible_schema > current_schema {
+            return Err(Error::IncompatibleSchemaVersion);
+        }
+
+        let proposal_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::NextId)
+            .ok_or(Error::NotInitialized)?;
+
+        let domain_tag = Self::compute_domain_tag(&env, proposal_id);
+
+        let mut votes: Vec<Address> = Vec::new(&env);
+        votes.push_back(proposer.clone());
+
+        let signers: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Signers)
+            .ok_or(Error::NotInitialized)?;
+
+        // Auto-approve if the proposer is the sole signer (100 % met immediately).
+        let (status, approved_at) = if votes.len() >= signers.len() {
+            (ProposalStatus::Approved, env.ledger().timestamp())
+        } else {
+            (ProposalStatus::Active, 0)
+        };
+
+        let proposal = UpgradeProposal {
+            new_wasm_hash: new_wasm_hash.clone(),
+            release_metadata,
+            artifact_metadata_hash,
+            votes,
+            proposed_at: env.ledger().timestamp(),
+            approved_at,
+            status,
+            domain_tag,
+            min_compatible_schema,
+            is_emergency: true,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Proposal(proposal_id), &proposal);
+        env.storage()
+            .persistent()
+            .set(&DataKey::NextId, &(proposal_id + 1));
+
+        env.events()
+            .publish((symbol_short!("emrg_prop"), proposal_id), new_wasm_hash);
 
         Ok(proposal_id)
     }
@@ -245,7 +327,19 @@ impl UpgradeGovernance {
             .get(&DataKey::Threshold)
             .ok_or(Error::NotInitialized)?;
 
-        if proposal.status == ProposalStatus::Active && proposal.votes.len() >= threshold {
+        // Emergency proposals require unanimous (100 %) approval.
+        let effective_threshold = if proposal.is_emergency {
+            let signers: Vec<Address> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Signers)
+                .ok_or(Error::NotInitialized)?;
+            signers.len()
+        } else {
+            threshold
+        };
+
+        if proposal.status == ProposalStatus::Active && proposal.votes.len() >= effective_threshold {
             proposal.status = ProposalStatus::Approved;
             proposal.approved_at = env.ledger().timestamp();
             env.events().publish(
@@ -286,10 +380,13 @@ impl UpgradeGovernance {
             return Err(Error::Expired);
         }
 
-        // Enforce timelock: must wait TIMELOCK_DELAY after approval.
-        if env.ledger().timestamp() < proposal.approved_at + TIMELOCK_DELAY {
+        // Enforce timelock for standard proposals; emergency proposals skip it.
+        if !proposal.is_emergency
+            && env.ledger().timestamp() < proposal.approved_at + TIMELOCK_DELAY
+        {
             return Err(Error::TimelockActive);
         }
+
         let approved = env
             .storage()
             .persistent()
@@ -306,6 +403,16 @@ impl UpgradeGovernance {
             &proposal.artifact_metadata_hash,
         )?;
 
+        // Schema compatibility check: reject if on-chain schema is below what the new WASM requires.
+        let current_schema: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SchemaVersion)
+            .unwrap_or(1);
+        if current_schema < proposal.min_compatible_schema {
+            return Err(Error::IncompatibleSchemaVersion);
+        }
+
         proposal.status = ProposalStatus::Executed;
         env.storage()
             .persistent()
@@ -314,10 +421,23 @@ impl UpgradeGovernance {
         env.deployer()
             .update_current_contract_wasm(proposal.new_wasm_hash.clone());
 
-        env.events().publish(
-            (symbol_short!("ct_upgrad"), proposal_id),
-            proposal.new_wasm_hash,
-        );
+        // Advance the schema version to reflect the newly deployed WASM.
+        env.storage()
+            .persistent()
+            .set(&DataKey::SchemaVersion, &(current_schema + 1));
+
+        // Emit a distinct event tag for emergency vs standard upgrades.
+        if proposal.is_emergency {
+            env.events().publish(
+                (symbol_short!("emrg_upg"), proposal_id),
+                proposal.new_wasm_hash,
+            );
+        } else {
+            env.events().publish(
+                (symbol_short!("ct_upgrad"), proposal_id),
+                proposal.new_wasm_hash,
+            );
+        }
         Ok(())
     }
 

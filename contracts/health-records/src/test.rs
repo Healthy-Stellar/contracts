@@ -1,3 +1,18 @@
+#[soroban_sdk::contract]
+pub struct MockProviderRegistry;
+
+#[soroban_sdk::contractimpl]
+impl MockProviderRegistry {
+    pub fn is_provider(env: Env, provider: Address) -> bool {
+        let key = soroban_sdk::Symbol::new(&env, "is_prov");
+        env.storage().instance().get(&key).unwrap_or(true)
+    }
+    pub fn set_is_provider(env: Env, val: bool) {
+        let key = soroban_sdk::Symbol::new(&env, "is_prov");
+        env.storage().instance().set(&key, &val);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{ConsentScope, Error, HealthRecords, HealthRecordsClient, RecordCategory};
@@ -23,8 +38,10 @@ mod tests {
     }
 
     fn setup(env: &Env) -> (HealthRecordsClient<'static>, Address, Address) {
+        let mock_pr_id = env.register(crate::test::MockProviderRegistry, ());
         let contract_id = env.register(HealthRecords, ());
         let client = HealthRecordsClient::new(env, &contract_id);
+        client.initialize(&mock_pr_id);
         let patient = Address::generate(env);
         let provider = Address::generate(env);
         (client, patient, provider)
@@ -227,6 +244,62 @@ mod tests {
         let short_hash = Bytes::from_array(&env, &[0u8; 16]);
         assert!(!client.verify_record_integrity(&patient, &record_id, &short_hash));
     }
+
+    #[test]
+    fn test_create_record_fails_if_provider_not_registered() {
+        let env = Env::default();
+        env.mock_all_auths();
+        
+        let mock_pr_id = env.register(crate::test::MockProviderRegistry, ());
+        let mock_pr_client = crate::test::MockProviderRegistryClient::new(&env, &mock_pr_id);
+        mock_pr_client.set_is_provider(&false);
+        
+        let contract_id = env.register(HealthRecords, ());
+        let client = HealthRecordsClient::new(&env, &contract_id);
+        client.initialize(&mock_pr_id);
+        
+        let patient = Address::generate(&env);
+        let provider = Address::generate(&env);
+        
+        client.grant_consent(&patient, &provider, &full_scope());
+        let reference = encrypted_ref(&env, 1);
+        let rtype = RecordCategory::Imaging;
+        let rdesc = Some(String::from_str(&env, "XRAY"));
+        
+        let result = client.try_create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
+        assert_eq!(result, Err(Ok(Error::ProviderNotRegistered)));
+    }
+
+    #[test]
+    fn test_create_records_batch_fails_if_provider_not_registered() {
+        let env = Env::default();
+        env.mock_all_auths();
+        
+        let mock_pr_id = env.register(crate::test::MockProviderRegistry, ());
+        let mock_pr_client = crate::test::MockProviderRegistryClient::new(&env, &mock_pr_id);
+        mock_pr_client.set_is_provider(&false);
+        
+        let contract_id = env.register(HealthRecords, ());
+        let client = HealthRecordsClient::new(&env, &contract_id);
+        client.initialize(&mock_pr_id);
+        
+        let patient = Address::generate(&env);
+        let provider = Address::generate(&env);
+        
+        client.grant_consent(&patient, &provider, &full_scope());
+        
+        let mut records = soroban_sdk::Vec::new(&env);
+        records.push_back(crate::BatchRecordEntry {
+            patient: patient.clone(),
+            encrypted_ref: encrypted_ref(&env, 1),
+            record_category: RecordCategory::Imaging,
+            description: Some(String::from_str(&env, "XRAY")),
+            policy: policy(&env),
+        });
+        
+        let result = client.try_create_records_batch(&provider, &records);
+        assert_eq!(result, Err(Ok(Error::ProviderNotRegistered)));
+    }
 }
 
 #[cfg(test)]
@@ -245,10 +318,13 @@ mod cross_contract_correlation_tests {
         HealthRecordsClient<'static>,
         MedicalRegistryClient<'static>,
     ) {
+        let mock_pr_id = env.register(crate::test::MockProviderRegistry, ());
         let hr_id = env.register(HealthRecords, ());
         let pr_id = env.register(MedicalRegistry, ());
+        let hr_client = HealthRecordsClient::new(env, &hr_id);
+        hr_client.initialize(&mock_pr_id);
         (
-            HealthRecordsClient::new(env, &hr_id),
+            hr_client,
             MedicalRegistryClient::new(env, &pr_id),
         )
     }
@@ -552,8 +628,10 @@ mod batch_creation_tests {
     use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String, Symbol, Vec};
 
     fn setup(env: &Env) -> (HealthRecordsClient<'static>, Address, Address) {
+        let mock_pr_id = env.register(crate::test::MockProviderRegistry, ());
         let contract_id = env.register(HealthRecords, ());
         let client = HealthRecordsClient::new(env, &contract_id);
+        client.initialize(&mock_pr_id);
         let patient = Address::generate(env);
         let provider = Address::generate(env);
         (client, patient, provider)
@@ -820,8 +898,10 @@ mod consent_scope_tests {
     };
 
     fn setup(env: &Env) -> (HealthRecordsClient<'static>, Address, Address) {
+        let mock_pr_id = env.register(crate::test::MockProviderRegistry, ());
         let contract_id = env.register(HealthRecords, ());
         let client = HealthRecordsClient::new(env, &contract_id);
+        client.initialize(&mock_pr_id);
         let patient = Address::generate(env);
         let provider = Address::generate(env);
         (client, patient, provider)

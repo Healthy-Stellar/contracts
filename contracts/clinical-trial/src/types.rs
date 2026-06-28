@@ -90,6 +90,8 @@ pub enum TrialStatus {
     Active,
     Suspended,
     Completed,
+    /// Trial is permanently closed; no new enrolments permitted.
+    Closed,
 }
 
 /// Eligibility criteria for a trial
@@ -118,6 +120,8 @@ pub struct ParticipantEnrollment {
     pub data_retention_consent: bool,
     pub retention_class: DataRetentionClass,
     pub site_id: Option<u64>,
+    /// Links a re-enrolment to the prior withdrawn enrolment, if any.
+    pub prior_enrollment_id: Option<u64>,
 }
 
 /// Enrollment status enumeration
@@ -258,4 +262,6 @@ pub enum DataKey {
     Site(u64, u64),
     /// List of site_ids for a trial.
     TrialSites(u64),
+    /// Current phase protocol hash for a trial (updated on phase advance).
+    TrialPhaseProtocol(u64),
 }
