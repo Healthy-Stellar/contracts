@@ -102,19 +102,15 @@ pub enum DataKey {
     Admin,
     /// Stores the `ResultQuality` for a report job accepted under a degraded policy.
     JobResultQuality(u64),
-    /// Cumulative CPU units consumed by a specific requester across completed jobs.
-    RequesterCpuUsed(Address),
-    /// Cumulative memory units consumed by a specific requester across completed jobs.
-    RequesterMemoryUsed(Address),
-    /// Admin-configurable per-requester CPU cap. Defaults to u64::MAX (no limit).
-    RequesterCpuLimit,
-    /// Admin-configurable per-requester memory cap. Defaults to u64::MAX (no limit).
-    RequesterMemoryLimit,
+    PendingAdmin,
+    RotationExpiry,
 }
 
 /// --------------------
 /// Errors
 /// --------------------
+
+pub const ADMIN_ROTATION_WINDOW: u64 = 86_400;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -130,10 +126,10 @@ pub enum Error {
     ResourceOverrun = 8,
     JobFailure = 9,
     ArithmeticOverflow = 10,
-    /// `throttle_threshold_pct` must be in the range [0, 100].
-    InvalidThreshold = 11,
-    /// This requester has exceeded their per-requester CPU or memory quota.
-    RequesterThrottled = 12,
+    RotationPending = 11,
+    NoRotationPending = 12,
+    RotationExpired = 13,
+    NotPendingAdmin = 14,
 }
 
 #[contract]
@@ -486,6 +482,10 @@ impl HealthcareAnalytics {
         Ok(())
     }
 
+    /// Propose transferring admin to `new_admin`. Must be confirmed within 24 hours.
+    pub fn propose_admin_rotation(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let stored: Address = env
     /// Configure per-requester CPU and memory caps (admin only).
     pub fn set_requester_limits(
         env: Env,
@@ -499,6 +499,45 @@ impl HealthcareAnalytics {
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::Unauthorized)?;
+        if admin != stored {
+            return Err(Error::Unauthorized);
+        }
+        if env.storage().instance().has(&DataKey::PendingAdmin) {
+            return Err(Error::RotationPending);
+        }
+        let expiry = env.ledger().timestamp() + ADMIN_ROTATION_WINDOW;
+        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        env.storage().instance().set(&DataKey::RotationExpiry, &expiry);
+        Ok(())
+    }
+
+    /// New admin confirms the rotation proposed by the current admin.
+    pub fn accept_admin_rotation(env: Env, new_admin: Address) -> Result<(), Error> {
+        new_admin.require_auth();
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoRotationPending)?;
+        if new_admin != pending {
+            return Err(Error::NotPendingAdmin);
+        }
+        let expiry: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RotationExpiry)
+            .unwrap_or(0);
+        if env.ledger().timestamp() > expiry {
+            env.storage().instance().remove(&DataKey::PendingAdmin);
+            env.storage().instance().remove(&DataKey::RotationExpiry);
+            return Err(Error::RotationExpired);
+        }
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage().instance().remove(&DataKey::RotationExpiry);
+        Ok(())
+    }
+
         if admin != stored_admin {
             return Err(Error::Unauthorized);
         }

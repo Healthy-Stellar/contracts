@@ -37,9 +37,14 @@ pub enum ContractError {
     RoleAlreadyGranted = 21,
     RoleNotFound = 22,
     RateLimitExceeded = 23,
-    /// Caller does not hold the EmergencyResponder role
-    NotEmergencyResponder = 24,
+    /// A Vec parameter or accumulator exceeds its maximum allowed length.
+    InputTooLarge = 24,
 }
+
+/// Maximum number of access permissions a single grantee may accumulate.
+pub const MAX_ACCESS_LIST_LEN: u32 = 200;
+/// Maximum number of addresses authorized for a single resource.
+pub const MAX_RESOURCE_AUTHORIZED: u32 = 200;
 
 /// --------------------
 /// Role Types (RBAC)
@@ -549,6 +554,9 @@ impl AccessControl {
             .get(&access_key)
             .unwrap_or(Vec::new(&env));
 
+        if access_list.len() >= MAX_ACCESS_LIST_LEN {
+            return Err(ContractError::InputTooLarge);
+        }
         access_list.push_back(permission);
         env.storage().persistent().set(&access_key, &access_list);
 
@@ -562,6 +570,9 @@ impl AccessControl {
             .persistent()
             .get(&resource_key)
             .unwrap_or(Vec::new(&env));
+        if authorized.len() >= MAX_RESOURCE_AUTHORIZED {
+            return Err(ContractError::InputTooLarge);
+        }
         authorized.push_back(grantee.clone());
         env.storage().persistent().set(&resource_key, &authorized);
 
