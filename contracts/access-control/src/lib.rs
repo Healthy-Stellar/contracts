@@ -39,12 +39,20 @@ pub enum ContractError {
     RateLimitExceeded = 23,
     /// A Vec parameter or accumulator exceeds its maximum allowed length.
     InputTooLarge = 24,
+    /// A commit-reveal commit has expired (older than COMMIT_EXPIRY_SECS).
+    CommitExpired = 25,
+    /// The batch of role assignments exceeds the maximum allowed size.
+    BatchTooLarge = 26,
 }
 
 /// Maximum number of access permissions a single grantee may accumulate.
 pub const MAX_ACCESS_LIST_LEN: u32 = 200;
 /// Maximum number of addresses authorized for a single resource.
 pub const MAX_RESOURCE_AUTHORIZED: u32 = 200;
+/// Maximum entries in a grant_roles_batch call.
+pub const BATCH_SIZE_LIMIT: u32 = 20;
+/// Commit-reveal window: commits older than this many seconds are rejected.
+pub const COMMIT_EXPIRY_SECS: u64 = 3600;
 
 /// --------------------
 /// Role Types (RBAC)
@@ -69,6 +77,16 @@ pub struct RoleAssignment {
     pub granted_by: Address,
     pub granted_at: u64,
     pub expires_at: u64,
+}
+
+/// Entry in a bulk role-assignment batch (#491).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoleBatchEntry {
+    pub entity: Address,
+    pub role: Role,
+    /// Role lifetime in seconds from the time of the batch call; 0 = no expiry.
+    pub duration_secs: u64,
 }
 
 /// --------------------
@@ -1268,8 +1286,66 @@ impl AccessControl {
             return Err(ContractError::CommitAlreadyUsed);
         }
 
+        if env.ledger().timestamp() > commit.committed_at + COMMIT_EXPIRY_SECS {
+            return Err(ContractError::CommitExpired);
+        }
+
         commit.used = true;
         env.storage().temporary().set(&key, &commit);
+        Ok(())
+    }
+
+    /// Grant a role to multiple entities in a single atomic call (#491).
+    ///
+    /// # Arguments
+    /// * `admin`       - Must hold the `Admin` role.
+    /// * `assignments` - Vec of `RoleBatchEntry`; capped at `BATCH_SIZE_LIMIT`.
+    pub fn grant_roles_batch(
+        env: Env,
+        admin: Address,
+        assignments: Vec<RoleBatchEntry>,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        Self::require_role(&env, &admin, &Role::Admin)?;
+
+        if assignments.len() > BATCH_SIZE_LIMIT {
+            return Err(ContractError::BatchTooLarge);
+        }
+
+        let now = env.ledger().timestamp();
+
+        // Validate all entries before writing any (atomicity guarantee).
+        for i in 0..assignments.len() {
+            let entry = assignments.get(i).unwrap();
+            let key = DataKey::RoleAssignment(entry.entity.clone(), entry.role.clone());
+            if env.storage().persistent().has(&key) {
+                if Self::load_active_role(&env, &entry.entity, &entry.role).is_some() {
+                    return Err(ContractError::RoleAlreadyGranted);
+                }
+            }
+        }
+
+        // Write phase.
+        for i in 0..assignments.len() {
+            let entry = assignments.get(i).unwrap();
+            let expires_at = if entry.duration_secs == 0 {
+                0u64
+            } else {
+                now + entry.duration_secs
+            };
+            let key = DataKey::RoleAssignment(entry.entity.clone(), entry.role.clone());
+            let assignment = RoleAssignment {
+                granted_by: admin.clone(),
+                granted_at: now,
+                expires_at,
+            };
+            env.storage().persistent().set(&key, &assignment);
+            env.events().publish(
+                (symbol_short!("role_grt"), entry.entity, entry.role),
+                symbol_short!("batch"),
+            );
+        }
+
         Ok(())
     }
 }
