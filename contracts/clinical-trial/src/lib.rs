@@ -66,6 +66,20 @@ pub struct SafetyHaltApproved {
     pub approval_count: u32,
 }
 
+#[contractevent]
+pub struct TrialPhaseAdvanced {
+    pub trial_record_id: u64,
+    pub new_phase: Symbol,
+    pub new_protocol_hash: BytesN<32>,
+}
+
+#[contractevent]
+pub struct ParticipantReEnrolled {
+    pub enrollment_id: u64,
+    pub prior_enrollment_id: u64,
+    pub trial_record_id: u64,
+}
+
 /// Error codes for clinical trial operations
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -100,6 +114,10 @@ pub enum Error {
     SiteNotFound = 26,
     /// The site has reached its per-site enrollment quota
     SiteEnrollmentFull = 27,
+    /// Re-enrolment is blocked because the trial is closed
+    TrialClosed = 28,
+    /// Re-enrolment is blocked because the prior enrolment is still active
+    PriorEnrollmentActive = 29,
 }
 
 #[contract]
@@ -314,6 +332,7 @@ impl ClinicalTrialContract {
             data_retention_consent: true,
             retention_class: DataRetentionClass::Optional,
             site_id: None,
+            prior_enrollment_id: None,
         };
 
         // Store enrollment record
@@ -893,6 +912,7 @@ impl ClinicalTrialContract {
             data_retention_consent: true,
             retention_class: DataRetentionClass::Optional,
             site_id: Some(site_id),
+            prior_enrollment_id: None,
         };
 
         storage::save_enrollment(&env, &enrollment);
@@ -913,6 +933,144 @@ impl ClinicalTrialContract {
         .publish(&env);
 
         Ok(enrollment_id)
+    }
+
+    /// Re-enrol a previously withdrawn participant.
+    ///
+    /// Creates a brand-new enrolment record linked to the prior enrolment via
+    /// `prior_enrollment_id`.  The prior enrolment's data-deletion decision is
+    /// never reversed — this function only creates a fresh record.
+    ///
+    /// # Errors
+    /// - `TrialClosed`           — trial status is `Closed`
+    /// - `TrialNotActive`        — trial is not `Active`
+    /// - `EnrollmentNotFound`    — `prior_enrollment_id` does not exist
+    /// - `PriorEnrollmentActive` — prior enrolment is still `Active`
+    /// - `EnrollmentFull`        — trial has reached its target
+    /// - `DuplicateEnrollment`   — patient already has an active enrolment
+    pub fn re_enroll_participant(
+        env: Env,
+        trial_record_id: u64,
+        patient_id: Address,
+        prior_enrollment_id: u64,
+        new_consent_hash: BytesN<32>,
+        study_arm: Symbol,
+        enrollment_date: u64,
+        participant_id: String,
+    ) -> Result<u64, Error> {
+        patient_id.require_auth();
+
+        validation::validate_date_not_future(&env, enrollment_date)?;
+
+        if !Self::is_valid_consent(&env, &new_consent_hash) {
+            return Err(Error::InvalidConsent);
+        }
+
+        // Verify trial
+        let mut trial = storage::get_trial(&env, trial_record_id)?;
+        if trial.status == TrialStatus::Closed {
+            return Err(Error::TrialClosed);
+        }
+        if trial.status != TrialStatus::Active {
+            return Err(Error::TrialNotActive);
+        }
+
+        // Validate prior enrolment
+        let prior = storage::get_enrollment(&env, prior_enrollment_id)?;
+        if prior.trial_record_id != trial_record_id {
+            return Err(Error::EnrollmentNotFound);
+        }
+        if prior.status == EnrollmentStatus::Active {
+            return Err(Error::PriorEnrollmentActive);
+        }
+
+        if trial.current_enrollment >= trial.enrollment_target {
+            return Err(Error::EnrollmentFull);
+        }
+
+        if storage::check_duplicate_enrollment(&env, trial_record_id, &patient_id) {
+            return Err(Error::DuplicateEnrollment);
+        }
+
+        let enrollment_id = storage::get_next_enrollment_id(&env);
+
+        let enrollment = ParticipantEnrollment {
+            enrollment_id,
+            trial_record_id,
+            patient_id: patient_id.clone(),
+            study_arm,
+            enrollment_date,
+            informed_consent_hash: new_consent_hash,
+            participant_id: participant_id.clone(),
+            status: EnrollmentStatus::Active,
+            withdrawal_date: None,
+            withdrawal_reason: None,
+            data_retention_consent: true,
+            retention_class: DataRetentionClass::Optional,
+            site_id: prior.site_id,
+            prior_enrollment_id: Some(prior_enrollment_id),
+        };
+
+        storage::save_enrollment(&env, &enrollment);
+        storage::add_trial_enrollment(&env, trial_record_id, enrollment_id);
+        storage::add_patient_enrollment(&env, &patient_id, enrollment_id);
+
+        trial.current_enrollment += 1;
+        storage::save_trial(&env, &trial);
+
+        ParticipantReEnrolled {
+            enrollment_id,
+            prior_enrollment_id,
+            trial_record_id,
+        }
+        .publish(&env);
+
+        Ok(enrollment_id)
+    }
+
+    /// Advance a trial to the next study phase (PI only).
+    ///
+    /// Updates the trial's `study_phase` and `protocol_hash`.  New enrolments
+    /// after this call use the updated eligibility criteria (the PI must call
+    /// `define_eligibility_criteria` separately to update criteria for the new
+    /// phase).  Existing enrolments are unaffected.
+    ///
+    /// # Errors
+    /// - `Unauthorized`      — caller is not the trial's PI
+    /// - `TrialNotFound`     — trial does not exist
+    /// - `TrialNotActive`    — trial is not `Active`
+    /// - `InvalidStudyPhase` — `new_phase` is not a valid phase symbol
+    pub fn advance_trial_phase(
+        env: Env,
+        principal_investigator: Address,
+        trial_record_id: u64,
+        new_phase: Symbol,
+        new_protocol_hash: BytesN<32>,
+    ) -> Result<(), Error> {
+        principal_investigator.require_auth();
+
+        validation::validate_study_phase(&new_phase)?;
+
+        let mut trial = storage::get_trial(&env, trial_record_id)?;
+        if trial.principal_investigator != principal_investigator {
+            return Err(Error::Unauthorized);
+        }
+        if trial.status != TrialStatus::Active {
+            return Err(Error::TrialNotActive);
+        }
+
+        trial.study_phase = new_phase.clone();
+        trial.protocol_hash = new_protocol_hash.clone();
+        storage::save_trial(&env, &trial);
+
+        TrialPhaseAdvanced {
+            trial_record_id,
+            new_phase,
+            new_protocol_hash,
+        }
+        .publish(&env);
+
+        Ok(())
     }
 
     fn evaluate_rule(
