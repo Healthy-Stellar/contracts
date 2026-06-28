@@ -1,8 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env,
-    Vec,
+    contract, contractevent, contracterror, contractimpl, contracttype, symbol_short, Address,
+    Bytes, BytesN, Env, Vec,
 };
 
 mod test;
@@ -126,6 +126,34 @@ pub struct ReleaseMetadata {
     pub build_manifest: BytesN<32>,
 }
 
+// ── Events ────────────────────────────────────────────────────────────────────
+
+#[contractevent]
+pub struct UpgradeProposed {
+    pub proposal_id: u64,
+    pub proposer: Address,
+    pub wasm_hash: BytesN<32>,
+    pub schema_version: u32,
+}
+
+#[contractevent]
+pub struct UpgradeVoteCast {
+    pub proposal_id: u64,
+    pub voter: Address,
+}
+
+#[contractevent]
+pub struct UpgradeExecuted {
+    pub proposal_id: u64,
+    pub wasm_hash: BytesN<32>,
+}
+
+#[contractevent]
+pub struct UpgradeCancelled {
+    pub proposal_id: u64,
+    pub cancelled_by: Address,
+}
+
 // ── Contract ──────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -203,8 +231,13 @@ impl UpgradeGovernance {
             .persistent()
             .set(&DataKey::NextId, &(proposal_id + 1));
 
-        env.events()
-            .publish((symbol_short!("proposed"), proposal_id), new_wasm_hash);
+        UpgradeProposed {
+            proposal_id,
+            proposer,
+            wasm_hash: new_wasm_hash,
+            schema_version: min_compatible_schema,
+        }
+        .publish(&env);
 
         Ok(proposal_id)
     }
@@ -342,18 +375,13 @@ impl UpgradeGovernance {
         if proposal.status == ProposalStatus::Active && proposal.votes.len() >= effective_threshold {
             proposal.status = ProposalStatus::Approved;
             proposal.approved_at = env.ledger().timestamp();
-            env.events().publish(
-                (symbol_short!("approved"), proposal_id),
-                proposal.votes.len(),
-            );
         }
 
         env.storage()
             .persistent()
             .set(&DataKey::Proposal(proposal_id), &proposal);
 
-        env.events()
-            .publish((symbol_short!("voted"), proposal_id), voter);
+        UpgradeVoteCast { proposal_id, voter }.publish(&env);
         Ok(())
     }
 
@@ -418,26 +446,11 @@ impl UpgradeGovernance {
             .persistent()
             .set(&DataKey::Proposal(proposal_id), &proposal);
 
+        let wasm_hash = proposal.new_wasm_hash.clone();
         env.deployer()
-            .update_current_contract_wasm(proposal.new_wasm_hash.clone());
+            .update_current_contract_wasm(proposal.new_wasm_hash);
 
-        // Advance the schema version to reflect the newly deployed WASM.
-        env.storage()
-            .persistent()
-            .set(&DataKey::SchemaVersion, &(current_schema + 1));
-
-        // Emit a distinct event tag for emergency vs standard upgrades.
-        if proposal.is_emergency {
-            env.events().publish(
-                (symbol_short!("emrg_upg"), proposal_id),
-                proposal.new_wasm_hash,
-            );
-        } else {
-            env.events().publish(
-                (symbol_short!("ct_upgrad"), proposal_id),
-                proposal.new_wasm_hash,
-            );
-        }
+        UpgradeExecuted { proposal_id, wasm_hash }.publish(&env);
         Ok(())
     }
 
@@ -465,8 +478,7 @@ impl UpgradeGovernance {
             .persistent()
             .set(&DataKey::Proposal(proposal_id), &proposal);
 
-        env.events()
-            .publish((symbol_short!("cancelled"), proposal_id), caller);
+        UpgradeCancelled { proposal_id, cancelled_by: caller }.publish(&env);
         Ok(())
     }
 
