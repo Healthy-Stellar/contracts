@@ -4,7 +4,7 @@
 use shared::privacy::validate_nonzero_address;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
-    String, Vec,
+    String, Symbol, Vec,
 };
 
 /// --------------------
@@ -21,6 +21,7 @@ pub enum Error {
     NoReviewersFound = 5,
     NotAuthorized = 6,
     InvalidAddress = 7,
+    BatchSizeExceeded = 8,
 }
 
 #[contracttype]
@@ -46,9 +47,21 @@ pub struct CredentialAnchor {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoveragePlan {
+    pub plan_id: u64,
+    pub tier: Symbol,
+    pub services: Vec<String>,
+    pub copay_bps: u32,
+    pub deductible: i128,
+}
+
+#[contracttype]
 pub enum DataKey {
     Insurer(Address),
     ClaimsReviewers(Address),
+    CoveragePlans(Address),
+    CoveragePlanCounter(Address),
 }
 
 #[contract]
@@ -170,7 +183,7 @@ impl InsurerRegistry {
         Ok(())
     }
 
-    /// Update insurance company coverage policies
+    /// Update insurance company coverage policies (free-form human-readable notes)
     ///
     /// # Arguments
     /// * `wallet` - The wallet address of the insurance company
@@ -239,6 +252,79 @@ impl InsurerRegistry {
     }
 
     // =====================================================
+    //            STRUCTURED COVERAGE PLANS
+    // =====================================================
+
+    /// Add a structured coverage plan for an insurer.
+    /// Returns the auto-assigned plan ID (unique and incrementing per insurer).
+    ///
+    /// # Arguments
+    /// * `wallet` - The wallet address of the insurance company
+    /// * `tier` - Coverage tier label (e.g. bronze, silver, gold)
+    /// * `services` - List of covered service codes or names
+    /// * `copay_bps` - Copay as basis points (e.g. 2000 = 20%)
+    /// * `deductible` - Annual deductible amount in the smallest currency unit
+    pub fn add_coverage_plan(
+        env: Env,
+        wallet: Address,
+        tier: Symbol,
+        services: Vec<String>,
+        copay_bps: u32,
+        deductible: i128,
+    ) -> Result<u64, Error> {
+        validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
+        wallet.require_auth();
+
+        let insurer_key = DataKey::Insurer(wallet.clone());
+        if !env.storage().persistent().has(&insurer_key) {
+            return Err(Error::InsurerNotFound);
+        }
+
+        let counter_key = DataKey::CoveragePlanCounter(wallet.clone());
+        let next_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&counter_key)
+            .unwrap_or(0_u64)
+            + 1;
+
+        let plan = CoveragePlan {
+            plan_id: next_id,
+            tier,
+            services,
+            copay_bps,
+            deductible,
+        };
+
+        let plans_key = DataKey::CoveragePlans(wallet.clone());
+        let mut plans: Vec<CoveragePlan> = env
+            .storage()
+            .persistent()
+            .get(&plans_key)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        plans.push_back(plan);
+        env.storage().persistent().set(&plans_key, &plans);
+        env.storage().persistent().set(&counter_key, &next_id);
+
+        env.events()
+            .publish((symbol_short!("add_plan"), wallet), next_id);
+        Ok(next_id)
+    }
+
+    /// Retrieve all structured coverage plans for an insurer.
+    ///
+    /// # Arguments
+    /// * `wallet` - The wallet address of the insurance company
+    pub fn get_coverage_plans(env: Env, wallet: Address) -> Vec<CoveragePlan> {
+        let plans_key = DataKey::CoveragePlans(wallet);
+        env.storage()
+            .persistent()
+            .get(&plans_key)
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    // =====================================================
     //            CLAIMS REVIEWERS MANAGEMENT
     // =====================================================
 
@@ -282,6 +368,72 @@ impl InsurerRegistry {
         env.events().publish(
             (symbol_short!("add_rev"), insurer_wallet, reviewer_wallet),
             symbol_short!("success"),
+        );
+        Ok(())
+    }
+
+    /// Add multiple claims reviewers in a single call (max 20 per batch).
+    /// The entire batch is validated before any changes are committed — a duplicate
+    /// in the batch or against the existing list rolls back the whole operation.
+    ///
+    /// # Arguments
+    /// * `insurer_wallet` - The wallet address of the insurance company
+    /// * `reviewers` - List of reviewer wallet addresses (max 20)
+    pub fn add_claims_reviewers_batch(
+        env: Env,
+        insurer_wallet: Address,
+        reviewers: Vec<Address>,
+    ) -> Result<(), Error> {
+        validate_nonzero_address(&insurer_wallet).map_err(|_| Error::InvalidAddress)?;
+        insurer_wallet.require_auth();
+
+        if reviewers.len() > 20 {
+            return Err(Error::BatchSizeExceeded);
+        }
+
+        let insurer_key = DataKey::Insurer(insurer_wallet.clone());
+        if !env.storage().persistent().has(&insurer_key) {
+            return Err(Error::InsurerNotFound);
+        }
+
+        let reviewers_key = DataKey::ClaimsReviewers(insurer_wallet.clone());
+        let existing: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&reviewers_key)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        // Validate entire batch before committing: check against existing list and within batch
+        let mut validated: Vec<Address> = Vec::new(&env);
+
+        for i in 0..reviewers.len() {
+            let reviewer = reviewers.get(i).unwrap();
+
+            for j in 0..existing.len() {
+                if existing.get(j).unwrap() == reviewer {
+                    return Err(Error::ReviewerAlreadyAuthorized);
+                }
+            }
+
+            for k in 0..validated.len() {
+                if validated.get(k).unwrap() == reviewer {
+                    return Err(Error::ReviewerAlreadyAuthorized);
+                }
+            }
+
+            validated.push_back(reviewer);
+        }
+
+        // All checks passed — commit atomically
+        let mut updated = existing;
+        for i in 0..validated.len() {
+            updated.push_back(validated.get(i).unwrap());
+        }
+        env.storage().persistent().set(&reviewers_key, &updated);
+
+        env.events().publish(
+            (symbol_short!("batch_rev"), insurer_wallet),
+            validated.len(),
         );
         Ok(())
     }
