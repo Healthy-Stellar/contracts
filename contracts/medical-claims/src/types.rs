@@ -31,6 +31,9 @@ pub enum Error {
     PaymentNotFound = 12,
     PaymentAlreadyReconciled = 13,
     InvalidReconciliationAmount = 14,
+    DisputeNotFound = 15,
+    DisputeAlreadyResolved = 16,
+    NotAuthorizedReviewer = 17,
 }
 
 #[contracttype]
@@ -50,6 +53,30 @@ pub enum ReconciliationStatus {
     PartiallyPaid,
     FullyReconciled,
     Disputed,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DisputeStatus {
+    Open,
+    Resolved,
+    Escalated,
+    Closed,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeRecord {
+    pub dispute_id: u64,
+    pub claim_id: u64,
+    pub opened_by: Address,
+    pub status: DisputeStatus,
+    pub reason_hash: BytesN<32>,
+    pub opened_at: u64,
+    pub resolved_by: Option<Address>,
+    pub resolution_hash: Option<BytesN<32>>,
+    pub resolved_at: Option<u64>,
+    pub escalation_level: u32,
 }
 
 #[contracttype]
@@ -134,4 +161,8 @@ pub enum DataKey {
     FinancialRecordsId,
     ReconciliationThreshold, // configurable threshold in seconds for unreconciled claims
     InsurerUnreconciledClaims(Address), // insurer_id -> Vec<u64> of claim_ids
+    DisputeCounter,
+    Dispute(u64),
+    ClaimDisputes(u64),
+    AuthorizedReviewers,
 }

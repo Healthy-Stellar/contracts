@@ -7,7 +7,8 @@ mod types;
 use shared::privacy::{validate_policy_metadata, PolicyMetadata};
 use soroban_sdk::{contract, contractclient, contractimpl, symbol_short, Address, BytesN, Env, String, Vec};
 use types::{
-    ClaimRecord, ClaimReconciledEvent, ClaimStatus, DataKey, DenialInfo, Error, InsurerPaymentRecord,
+    ClaimRecord, ClaimReconciledEvent, ClaimStatus, DataKey, DenialInfo, DisputeRecord,
+    DisputeStatus, Error, InsurerPaymentRecord,
     PatientPaymentRecord, ReconciliationStatus, ServiceLine,
 };
 
@@ -733,5 +734,188 @@ impl MedicalClaimsSystem {
         env.storage()
             .persistent()
             .set(&DataKey::InsurerUnreconciledClaims(insurer_id.clone()), &new_claims);
+    }
+
+    // ── Dispute Resolution Functions (Issue #520) ────────────────────────────────
+    //
+    // Three-tier dispute resolution:
+    // 1. Claimant (patient/provider) opens a dispute
+    // 2. Authorized reviewer resolves the dispute
+    // 3. Admin can escalate unresolved disputes
+
+    /// Admin-only: register an address as an authorized dispute reviewer.
+    pub fn register_reviewer(env: Env, admin: Address, reviewer: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        if admin != stored_admin {
+            return Err(Error::NotAuthorized);
+        }
+
+        let mut reviewers: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AuthorizedReviewers)
+            .unwrap_or(Vec::new(&env));
+
+        // Avoid duplicate registrations
+        for existing in reviewers.iter() {
+            if existing == reviewer {
+                return Ok(());
+            }
+        }
+
+        reviewers.push_back(reviewer);
+        env.storage()
+            .persistent()
+            .set(&DataKey::AuthorizedReviewers, &reviewers);
+        Ok(())
+    }
+
+    /// Open a dispute on a claim. Only the claimant (patient or provider) can open.
+    pub fn open_dispute(
+        env: Env,
+        claim_id: u64,
+        claimant: Address,
+        reason_hash: BytesN<32>,
+    ) -> Result<u64, Error> {
+        claimant.require_auth();
+
+        let claim = Self::load_claim(&env, claim_id)?;
+
+        // Only patient or provider (claimant) can open a dispute
+        if claimant != claim.patient_id && claimant != claim.provider_id {
+            return Err(Error::NotAuthorized);
+        }
+
+        let dispute_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DisputeCounter)
+            .unwrap_or(0);
+        let dispute_id = dispute_count + 1;
+
+        let dispute = DisputeRecord {
+            dispute_id,
+            claim_id,
+            opened_by: claimant,
+            status: DisputeStatus::Open,
+            reason_hash,
+            opened_at: env.ledger().timestamp(),
+            resolved_by: None,
+            resolution_hash: None,
+            resolved_at: None,
+            escalation_level: 0,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::DisputeCounter, &dispute_id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Dispute(dispute_id), &dispute);
+
+        // Track disputes per claim
+        let mut claim_disputes: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ClaimDisputes(claim_id))
+            .unwrap_or(Vec::new(&env));
+        claim_disputes.push_back(dispute_id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ClaimDisputes(claim_id), &claim_disputes);
+
+        Ok(dispute_id)
+    }
+
+    /// Resolve a dispute. Only an authorized reviewer can resolve.
+    pub fn resolve_dispute(
+        env: Env,
+        dispute_id: u64,
+        reviewer: Address,
+        resolution_hash: BytesN<32>,
+    ) -> Result<(), Error> {
+        reviewer.require_auth();
+
+        // Verify reviewer is authorized
+        let reviewers: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AuthorizedReviewers)
+            .unwrap_or(Vec::new(&env));
+
+        let mut is_authorized = false;
+        for authorized_reviewer in reviewers.iter() {
+            if authorized_reviewer == reviewer {
+                is_authorized = true;
+                break;
+            }
+        }
+
+        if !is_authorized {
+            return Err(Error::NotAuthorizedReviewer);
+        }
+
+        let mut dispute: DisputeRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Dispute(dispute_id))
+            .ok_or(Error::DisputeNotFound)?;
+
+        if dispute.status != DisputeStatus::Open {
+            return Err(Error::DisputeAlreadyResolved);
+        }
+
+        dispute.status = DisputeStatus::Resolved;
+        dispute.resolved_by = Some(reviewer);
+        dispute.resolution_hash = Some(resolution_hash);
+        dispute.resolved_at = Some(env.ledger().timestamp());
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Dispute(dispute_id), &dispute);
+
+        Ok(())
+    }
+
+    /// Escalate a dispute. Only admin can escalate.
+    pub fn escalate_dispute(
+        env: Env,
+        dispute_id: u64,
+        admin: Address,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        if admin != stored_admin {
+            return Err(Error::NotAuthorized);
+        }
+
+        let mut dispute: DisputeRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Dispute(dispute_id))
+            .ok_or(Error::DisputeNotFound)?;
+
+        if dispute.status == DisputeStatus::Closed {
+            return Err(Error::InvalidStateTransition);
+        }
+
+        dispute.status = DisputeStatus::Escalated;
+        dispute.escalation_level = dispute.escalation_level.saturating_add(1);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Dispute(dispute_id), &dispute);
+
+        Ok(())
     }
 }
