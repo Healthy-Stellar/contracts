@@ -37,7 +37,14 @@ pub enum ContractError {
     RoleAlreadyGranted = 21,
     RoleNotFound = 22,
     RateLimitExceeded = 23,
+    /// A Vec parameter or accumulator exceeds its maximum allowed length.
+    InputTooLarge = 24,
 }
+
+/// Maximum number of access permissions a single grantee may accumulate.
+pub const MAX_ACCESS_LIST_LEN: u32 = 200;
+/// Maximum number of addresses authorized for a single resource.
+pub const MAX_RESOURCE_AUTHORIZED: u32 = 200;
 
 /// --------------------
 /// Role Types (RBAC)
@@ -158,6 +165,20 @@ pub struct PendingCommit {
 }
 
 /// --------------------
+/// #489: Emergency access override record
+/// --------------------
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyAccessRecord {
+    pub responder: Address,
+    pub justification_hash: BytesN<32>,
+    pub granted_at: u64,
+    /// Expires one hour (3600 seconds) after `granted_at`.
+    pub expires_at: u64,
+    pub op_id: u64,
+}
+
+/// --------------------
 /// Storage Keys
 /// --------------------
 #[contracttype]
@@ -182,6 +203,8 @@ pub enum DataKey {
     RoleAssignment(Address, Role),
     // Rate limiting: (address, ledger_sequence) -> u32 count
     RateLimit(Address, u32),
+    // #489: (responder, patient) -> EmergencyAccessRecord
+    EmergencyAccess(Address, Address),
 }
 
 #[contract]
@@ -531,6 +554,9 @@ impl AccessControl {
             .get(&access_key)
             .unwrap_or(Vec::new(&env));
 
+        if access_list.len() >= MAX_ACCESS_LIST_LEN {
+            return Err(ContractError::InputTooLarge);
+        }
         access_list.push_back(permission);
         env.storage().persistent().set(&access_key, &access_list);
 
@@ -544,6 +570,9 @@ impl AccessControl {
             .persistent()
             .get(&resource_key)
             .unwrap_or(Vec::new(&env));
+        if authorized.len() >= MAX_RESOURCE_AUTHORIZED {
+            return Err(ContractError::InputTooLarge);
+        }
         authorized.push_back(grantee.clone());
         env.storage().persistent().set(&resource_key, &authorized);
 
@@ -1027,6 +1056,76 @@ impl AccessControl {
             .persistent()
             .get(&DataKey::Consent(subject, grantee, purpose_code))
             .ok_or(ContractError::ConsentNotFound)
+    }
+
+    // -----------------------------------------------------------------------
+    // #489: Emergency access override
+    // -----------------------------------------------------------------------
+
+    /// Grant 1-hour read-only emergency access to `patient` data.
+    ///
+    /// Caller must hold the `EmergencyResponder` role.  An
+    /// `EmergencyAccessGranted` event is always emitted and cannot be
+    /// suppressed.  On the patient's next interaction the emitted event
+    /// serves as the notification flag.
+    ///
+    /// # Arguments
+    /// * `responder`          - Must hold `Role::EmergencyResponder`
+    /// * `patient`            - The patient whose data is being accessed
+    /// * `justification_hash` - sha256 of the written justification (stored off-chain)
+    pub fn emergency_access(
+        env: Env,
+        responder: Address,
+        patient: Address,
+        justification_hash: BytesN<32>,
+    ) -> Result<u64, ContractError> {
+        responder.require_auth();
+
+        // Only EmergencyResponder role (or admin) may call this.
+        Self::require_role(&env, &responder, &Role::EmergencyResponder)?;
+
+        let now = env.ledger().timestamp();
+        let expires_at = now + 3600; // 1 hour
+
+        let op_id: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::OpCounter)
+            .unwrap_or(0u64)
+            + 1;
+        env.storage().instance().set(&DataKey::OpCounter, &op_id);
+
+        let record = EmergencyAccessRecord {
+            responder: responder.clone(),
+            justification_hash: justification_hash.clone(),
+            granted_at: now,
+            expires_at,
+            op_id,
+        };
+
+        // Stored as temporary so it naturally expires; TTL = 3600 ledgers.
+        let key = DataKey::EmergencyAccess(responder.clone(), patient.clone());
+        env.storage().temporary().set(&key, &record);
+        env.storage().temporary().extend_ttl(&key, 3600, 3600);
+
+        // Mandatory, unsuppressable audit event.
+        env.events().publish(
+            (symbol_short!("emrg_acc"), responder, patient),
+            (justification_hash, expires_at, op_id),
+        );
+
+        Ok(op_id)
+    }
+
+    /// Check whether an active (non-expired) emergency access grant exists for
+    /// `(responder, patient)`.  Safe to call as a view.
+    pub fn check_emergency_access(env: Env, responder: Address, patient: Address) -> bool {
+        let key = DataKey::EmergencyAccess(responder, patient);
+        let record: Option<EmergencyAccessRecord> = env.storage().temporary().get(&key);
+        match record {
+            Some(r) => env.ledger().timestamp() < r.expires_at,
+            None => false,
+        }
     }
 
     // -----------------------------------------------------------------------

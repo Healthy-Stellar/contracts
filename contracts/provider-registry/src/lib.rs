@@ -13,6 +13,8 @@ mod test;
 
 /// Maximum entries per batch call.
 pub const MAX_BATCH_SIZE: u32 = 50;
+/// Admin rotation confirmation window (24 hours in seconds).
+pub const ADMIN_ROTATION_WINDOW: u64 = 86_400;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -25,6 +27,10 @@ pub enum Error {
     RecordNotFound     = 5,
     BatchTooLarge      = 6,
     InvalidAddress     = 7,
+    RotationPending    = 8,
+    NoRotationPending  = 9,
+    RotationExpired    = 10,
+    NotPendingAdmin    = 11,
 }
 
 /// Input entry for `batch_register_providers`.
@@ -88,6 +94,8 @@ pub enum DataKey {
     ProviderRate(Address),
     ProviderReputation(Address),
     ProviderRatingByPatient(Address, Address),
+    PendingAdmin,
+    RotationExpiry,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -266,6 +274,47 @@ impl ProviderRegistry {
             .persistent()
             .get(&DataKey::Record(record_id))
             .ok_or(Error::RecordNotFound)
+    }
+
+    /// Propose transferring admin to `new_admin`. Must be confirmed within 24 hours.
+    pub fn propose_admin_rotation(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        Self::assert_admin(&env, &admin)?;
+        if env.storage().persistent().has(&DataKey::PendingAdmin) {
+            return Err(Error::RotationPending);
+        }
+        let expiry = env.ledger().timestamp() + ADMIN_ROTATION_WINDOW;
+        env.storage().persistent().set(&DataKey::PendingAdmin, &new_admin);
+        env.storage().persistent().set(&DataKey::RotationExpiry, &expiry);
+        Ok(())
+    }
+
+    /// New admin confirms the rotation proposed by the current admin.
+    pub fn accept_admin_rotation(env: Env, new_admin: Address) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        new_admin.require_auth();
+        let pending: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoRotationPending)?;
+        if new_admin != pending {
+            return Err(Error::NotPendingAdmin);
+        }
+        let expiry: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RotationExpiry)
+            .unwrap_or(0);
+        if env.ledger().timestamp() > expiry {
+            env.storage().persistent().remove(&DataKey::PendingAdmin);
+            env.storage().persistent().remove(&DataKey::RotationExpiry);
+            return Err(Error::RotationExpired);
+        }
+        env.storage().persistent().set(&DataKey::Admin, &new_admin);
+        env.storage().persistent().remove(&DataKey::PendingAdmin);
+        env.storage().persistent().remove(&DataKey::RotationExpiry);
+        Ok(())
     }
 
     // ── guards ────────────────────────────────────────────────────────────────

@@ -53,6 +53,11 @@ pub enum Error {
     TooManyPublicInputs  = 7,
     ProofAlreadyUsed     = 8,
     VerificationFailed   = 9,
+    ProofExpired         = 10,
+    RotationPending      = 11,
+    NoRotationPending    = 12,
+    RotationExpired      = 13,
+    NotPendingAdmin      = 14,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -210,6 +215,16 @@ impl ZkEligibility {
             return Err(Error::TooManyPublicInputs);
         }
 
+        // ── Expiry check (public_inputs[0] = big-endian u64 expiry timestamp) ─
+        let expiry_input = bundle
+            .public_inputs
+            .get(EXPIRY_INPUT_IDX)
+            .ok_or(Error::ProofExpired)?;
+        let expiry = Self::decode_expiry_u64(&expiry_input);
+        if expiry <= env.ledger().timestamp() {
+            return Err(Error::ProofExpired);
+        }
+
         // ── Verifier key lookup ───────────────────────────────────────────────
         let vk_entry: VerifierKeyEntry = env
             .storage()
@@ -320,6 +335,56 @@ impl ZkEligibility {
             return Err(Error::Unauthorized);
         }
         Ok(())
+    }
+
+    /// Propose transferring admin to `new_admin`. Must be confirmed within 24 hours.
+    pub fn propose_admin_rotation(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        Self::assert_admin(&env, &admin)?;
+        if env.storage().persistent().has(&DataKey::PendingAdmin) {
+            return Err(Error::RotationPending);
+        }
+        let expiry = env.ledger().timestamp() + ADMIN_ROTATION_WINDOW;
+        env.storage().persistent().set(&DataKey::PendingAdmin, &new_admin);
+        env.storage().persistent().set(&DataKey::RotationExpiry, &expiry);
+        Ok(())
+    }
+
+    /// New admin confirms the rotation proposed by the current admin.
+    pub fn accept_admin_rotation(env: Env, new_admin: Address) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        new_admin.require_auth();
+        let pending: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoRotationPending)?;
+        if new_admin != pending {
+            return Err(Error::NotPendingAdmin);
+        }
+        let expiry: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RotationExpiry)
+            .unwrap_or(0);
+        if env.ledger().timestamp() > expiry {
+            env.storage().persistent().remove(&DataKey::PendingAdmin);
+            env.storage().persistent().remove(&DataKey::RotationExpiry);
+            return Err(Error::RotationExpired);
+        }
+        env.storage().persistent().set(&DataKey::Admin, &new_admin);
+        env.storage().persistent().remove(&DataKey::PendingAdmin);
+        env.storage().persistent().remove(&DataKey::RotationExpiry);
+        Ok(())
+    }
+
+    /// Decode a big-endian u64 from the first 8 bytes of a public input scalar.
+    fn decode_expiry_u64(input: &BytesN<32>) -> u64 {
+        let mut ts: u64 = 0;
+        for i in 0..8u32 {
+            ts = (ts << 8) | (input.get(i).unwrap_or(0) as u64);
+        }
+        ts
     }
 
     /// Cryptographic verification stub.
