@@ -7,7 +7,7 @@ use soroban_sdk::testutils::Ledger as _;
 #[test]
 fn test_prescription_lifecycle_invariants() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let provider = Address::generate(&env);
@@ -70,7 +70,7 @@ fn test_prescription_lifecycle_invariants() {
 #[test]
 fn test_prescription_transfer_ownership_verification() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let provider = Address::generate(&env);
@@ -128,7 +128,7 @@ fn test_prescription_transfer_ownership_verification() {
 #[test]
 fn test_controlled_substance_transfer_limits() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let provider = Address::generate(&env);
@@ -187,7 +187,7 @@ fn test_controlled_substance_transfer_limits() {
 #[test]
 fn test_refill_lifecycle_management() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let provider = Address::generate(&env);
@@ -251,7 +251,7 @@ fn test_refill_lifecycle_management() {
 #[test]
 fn test_prescription_cancellation_safety() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let provider = Address::generate(&env);
@@ -325,7 +325,7 @@ fn test_valid_until_zero_is_rejected() {
     env.mock_all_auths();
 
     // Default ledger timestamp is 0.
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let provider = Address::generate(&env);
@@ -359,7 +359,7 @@ fn test_valid_until_max_u64_is_rejected() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let provider = Address::generate(&env);
@@ -394,7 +394,7 @@ fn test_valid_until_at_and_beyond_window_limit() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let provider = Address::generate(&env);
@@ -461,7 +461,7 @@ fn test_refill_timestamp_near_max_u64_returns_error() {
     let near_max: u64 = u64::MAX - 100;
     env.ledger().set_timestamp(near_max);
 
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let provider = Address::generate(&env);
@@ -553,7 +553,7 @@ fn make_dea_test_req(
 fn test_controlled_with_valid_dea_number_accepted() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let provider = Address::generate(&env);
@@ -578,7 +578,7 @@ fn test_controlled_with_valid_dea_number_accepted() {
 fn test_controlled_missing_dea_number_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let provider = Address::generate(&env);
@@ -595,7 +595,7 @@ fn test_controlled_missing_dea_number_rejected() {
 fn test_controlled_dea_number_wrong_length_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let provider = Address::generate(&env);
@@ -620,7 +620,7 @@ fn test_controlled_dea_number_wrong_length_rejected() {
 fn test_controlled_dea_number_too_long_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let provider = Address::generate(&env);
@@ -645,7 +645,7 @@ fn test_controlled_dea_number_too_long_rejected() {
 fn test_controlled_dea_number_first_char_not_letter_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let provider = Address::generate(&env);
@@ -671,7 +671,7 @@ fn test_controlled_dea_number_first_char_not_letter_rejected() {
 fn test_controlled_dea_number_bad_check_digit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let provider = Address::generate(&env);
@@ -695,7 +695,7 @@ fn test_controlled_dea_number_bad_check_digit_rejected() {
 fn test_non_controlled_none_dea_accepted() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let provider = Address::generate(&env);
@@ -712,7 +712,7 @@ fn test_non_controlled_none_dea_accepted() {
 fn test_non_controlled_with_dea_accepted() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let provider = Address::generate(&env);
@@ -737,7 +737,7 @@ fn test_non_controlled_with_dea_accepted() {
 fn test_controlled_no_schedule_skips_dea_check() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let provider = Address::generate(&env);
@@ -758,7 +758,7 @@ fn test_controlled_no_schedule_skips_dea_check() {
 fn test_controlled_alternative_valid_dea_number_accepted() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let provider = Address::generate(&env);
@@ -783,7 +783,7 @@ fn test_controlled_alternative_valid_dea_number_accepted() {
 fn test_rate_limit_exceeded_after_default_cap() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -825,7 +825,7 @@ fn test_rate_limit_exceeded_after_default_cap() {
 fn test_rate_limit_resets_after_window() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -873,7 +873,7 @@ fn test_rate_limit_resets_after_window() {
 fn test_admin_set_provider_limit_works() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -917,7 +917,7 @@ fn test_admin_set_provider_limit_works() {
 fn test_bypass_with_missing_reason_hash_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let provider = Address::generate(&env);
@@ -949,7 +949,7 @@ fn test_bypass_with_missing_reason_hash_rejected() {
 fn test_non_bypass_prescription_unaffected() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let provider = Address::generate(&env);
@@ -984,7 +984,7 @@ fn test_non_bypass_prescription_unaffected() {
 fn test_create_and_issue_from_template() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let provider = Address::generate(&env);
@@ -1027,7 +1027,7 @@ fn test_create_and_issue_from_template() {
 fn test_non_owning_provider_cannot_use_template() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, PrescriptionContract);
+    let contract_id = env.register(PrescriptionContract, ());
     let client = PrescriptionContractClient::new(&env, &contract_id);
 
     let owner = Address::generate(&env);

@@ -5,7 +5,7 @@ use soroban_sdk::{testutils::Address as _, Address, Env, String};
 #[test]
 fn test_create_doctor_profile() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, DoctorRegistry);
+    let contract_id = env.register(DoctorRegistry, ());
     let client = DoctorRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -35,7 +35,7 @@ fn test_create_doctor_profile() {
 #[test]
 fn test_update_doctor_profile() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, DoctorRegistry);
+    let contract_id = env.register(DoctorRegistry, ());
     let client = DoctorRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -77,7 +77,7 @@ fn test_update_doctor_profile() {
 #[test]
 fn test_duplicate_profile_creation() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, DoctorRegistry);
+    let contract_id = env.register(DoctorRegistry, ());
     let client = DoctorRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -111,7 +111,7 @@ fn test_duplicate_profile_creation() {
 #[test]
 fn test_get_nonexistent_profile() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, DoctorRegistry);
+    let contract_id = env.register(DoctorRegistry, ());
     let client = DoctorRegistryClient::new(&env, &contract_id);
 
     let doctor_wallet = Address::generate(&env);
@@ -123,7 +123,7 @@ fn test_get_nonexistent_profile() {
 #[test]
 fn test_update_nonexistent_profile() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, DoctorRegistry);
+    let contract_id = env.register(DoctorRegistry, ());
     let client = DoctorRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -146,7 +146,7 @@ fn test_update_nonexistent_profile() {
 #[test]
 fn test_multiple_doctors() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, DoctorRegistry);
+    let contract_id = env.register(DoctorRegistry, ());
     let client = DoctorRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -190,7 +190,7 @@ fn test_multiple_doctors() {
 #[test]
 fn test_double_initialize_fails() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, DoctorRegistry);
+    let contract_id = env.register(DoctorRegistry, ());
     let client = DoctorRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -206,7 +206,7 @@ fn test_double_initialize_fails() {
 #[test]
 fn test_create_without_initialize_fails() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, DoctorRegistry);
+    let contract_id = env.register(DoctorRegistry, ());
     let client = DoctorRegistryClient::new(&env, &contract_id);
 
     let non_admin = Address::generate(&env);
@@ -230,7 +230,7 @@ fn test_create_without_initialize_fails() {
 #[test]
 fn test_non_admin_cannot_create_profile() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, DoctorRegistry);
+    let contract_id = env.register(DoctorRegistry, ());
     let client = DoctorRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);

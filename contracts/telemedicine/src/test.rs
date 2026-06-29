@@ -13,7 +13,7 @@ fn test_telemedicine_lifecycle() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, TelemedicineContract);
+    let contract_id = env.register(TelemedicineContract, ());
     let client = TelemedicineContractClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);
@@ -114,7 +114,7 @@ fn test_auth_and_eligibility_failures() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, TelemedicineContract);
+    let contract_id = env.register(TelemedicineContract, ());
     let client = TelemedicineContractClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);
@@ -170,7 +170,7 @@ fn test_session_tokens_are_unique_bound_expiring_and_non_replayable() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, TelemedicineContract);
+    let contract_id = env.register(TelemedicineContract, ());
     let client = TelemedicineContractClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);

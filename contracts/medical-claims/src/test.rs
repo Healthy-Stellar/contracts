@@ -63,7 +63,7 @@ fn setup(
     // Mock financial records contract (not needed for these tests)
     let fr_id = Address::generate(env);
 
-    let contract_id = env.register_contract(None, MedicalClaimsSystem);
+    let contract_id = env.register(MedicalClaimsSystem, ());
     let client = MedicalClaimsSystemClient::new(env, &contract_id);
     let admin = Address::generate(env);
     let provider = Address::generate(env);
