@@ -80,6 +80,7 @@ pub enum ResourceKey {
     TotalCpuUsed,     // u64 - cumulative CPU usage this period
     TotalMemoryUsed,  // u64 - cumulative memory usage this period
     JobPriority(u64), // Quick lookup for priority
+    ReportTypeThreshold(String), // Threshold for a specific report type
 }
 
 /// Default resource quotas by job type
@@ -113,8 +114,23 @@ pub fn set_system_limits(env: &Env, limits: SystemResourceLimits) {
         .set(&ResourceKey::SystemLimits, &limits);
 }
 
+/// Get threshold for a specific report type (or global default)
+pub fn get_report_type_threshold(env: &Env, report_type: &String) -> u64 {
+    env.storage()
+        .instance()
+        .get(&ResourceKey::ReportTypeThreshold(report_type.clone()))
+        .unwrap_or_else(|| get_system_limits(env).throttle_threshold)
+}
+
+/// Set threshold for a specific report type
+pub fn set_report_type_threshold(env: &Env, report_type: String, threshold: u64) {
+    env.storage()
+        .instance()
+        .set(&ResourceKey::ReportTypeThreshold(report_type), &threshold);
+}
+
 /// Check if a job should be throttled due to resource constraints
-pub fn should_throttle_job(env: &Env) -> bool {
+pub fn should_throttle_job(env: &Env, report_type: &String) -> bool {
     let limits = get_system_limits(env);
     let cpu_used: u64 = env
         .storage()
@@ -129,8 +145,9 @@ pub fn should_throttle_job(env: &Env) -> bool {
 
     let cpu_percent = (cpu_used * 100) / limits.total_cpu_budget;
     let memory_percent = (memory_used * 100) / limits.total_memory_budget;
+    let threshold = get_report_type_threshold(env, report_type);
 
-    cpu_percent > limits.throttle_threshold || memory_percent > limits.throttle_threshold
+    cpu_percent > threshold || memory_percent > threshold
 }
 
 /// Check if current system can accept a new job

@@ -203,7 +203,7 @@ impl HealthcareAnalytics {
             return Err(Error::RequesterThrottled);
         }
 
-        let throttled = should_throttle_job(&env);
+        let throttled = should_throttle_job(&env, &report_type);
 
         if throttled {
             match degradation_mode {
@@ -497,7 +497,7 @@ impl HealthcareAnalytics {
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::Unauthorized)?;
-        if admin != stored {
+        if admin != stored_admin {
             return Err(Error::Unauthorized);
         }
         if env.storage().instance().has(&DataKey::PendingAdmin) {
@@ -558,6 +558,29 @@ impl HealthcareAnalytics {
         env.storage()
             .instance()
             .set(&DataKey::RequesterMemoryLimit, &memory_limit);
+        Ok(())
+    }
+
+    /// Configure report type specific throttle threshold (admin only)
+    pub fn set_report_type_threshold(
+        env: Env,
+        admin: Address,
+        report_type: String,
+        threshold_pct: u64,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+        if threshold_pct > 100 {
+            return Err(Error::InvalidThreshold);
+        }
+        shared::resource_management::set_report_type_threshold(&env, report_type, threshold_pct);
         Ok(())
     }
 
