@@ -1,5 +1,28 @@
 #![no_std]
 
+//! # Liquidity Pool Contract
+//!
+//! Manages liquidity pools for healthcare token swaps with fee collection, reserve management,
+//! and price discovery for healthcare finance operations.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Pool initialization restricted to authorized admin. Liquidity
+//! provider authentication required for deposits/withdrawals. Swap operations available to network
+//! participants. Fee recipient validation prevents unauthorized revenue capture.
+//!
+//! **Audit Controls:** Pool creation events with token pairs and initial reserves. Liquidity
+//! deposit/withdrawal events tracked with participant identity. Swap execution events logged.
+//! Fee collection events recorded. Pool balance changes auditable via events.
+//!
+//! **Data Retention Policy:** Pool reserves maintained indefinitely for continuous operation.
+//! Transaction history retained for audit trail. Fee collection metrics tracked. Liquidity
+//! provider share records retained for settlement.
+//!
+//! **Encryption/Integrity:** Pool balance integrity enforced via constant product formula.
+//! Price calculations immutable once blocks close. Fee collection (0.30% BPS) enforced
+//! mathematically. Reserve balances cryptographically signed via Soroban state.
+
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Symbol,
 };

@@ -1,6 +1,27 @@
 #![no_std]
 
-//! Governance voting contract: proposal lifecycle with yes/no voting and quorum tracking.
+//! # Governance Voting Contract
+//!
+//! Proposal lifecycle management with yes/no voting, quorum tracking, and admin rotation control
+//! for decentralized governance of healthcare network policies.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Admin role required for proposal creation. Member voting restricted
+//! to registered network participants. Vote authorization via require_auth. Quorum requirements ensure
+//! legitimate governance decisions. Admin rotation with pending window prevents unauthorized takeover.
+//!
+//! **Audit Controls:** Proposal creation events with proposer, title, and vote window. Vote cast
+//! events tracking voter, proposal ID, and choice. Proposal closure events with pass/reject status.
+//! Admin rotation events log admin transitions. Full event trail enables governance auditing.
+//!
+//! **Data Retention Policy:** Proposals retained indefinitely for governance history. Completed
+//! proposals archived with final status and vote counts. Admin rotation window (24 hours) enforced
+//! before rotation takes effect. Expiry timestamps prevent indefinite voting windows.
+//!
+//! **Encryption/Integrity:** Proposal storage keyed by immutable proposal ID. Vote counts tracked
+//! per proposal with yes/no separation. Admin address validated via Soroban auth. Proposal status
+//! enum (Active, Passed, Rejected, Expired) prevents vote tampering post-closure.
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short,

@@ -2,6 +2,31 @@
 #![allow(deprecated)]
 #![allow(clippy::too_many_arguments)]
 
+//! # HAI Tracking Contract
+//!
+//! Tracks healthcare-associated infections (HAIs) with incident severity classification, temporal
+//! validation, and infection correlation analysis across facilities.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Hospital/facility authentication required for HAI reporting.
+//! Provider access validation via registry checks. Patient consent requirements for HAI disclosure.
+//! Administrator access for HAI investigation and closure.
+//!
+//! **Audit Controls:** HAI incident reporting events with onset date, discovery date, and pathogen.
+//! Severity levels tracked (Low, Medium, High, Critical). Incident closure events log resolution
+//! status and recovery information. Infection correlation events link related HAIs across facilities.
+//! Temporal audit trail prevents backdated incident reports.
+//!
+//! **Data Retention Policy:** HAI records retained indefinitely for epidemiological tracking.
+//! Closed incidents archived with resolution date. Temporal validation enforces logical event
+//! sequencing (onset before discovery before closure). Infection clusters tracked by facility
+//! and pathogen type.
+//!
+//! **Encryption/Integrity:** Pathogen information stored encrypted in persistent state. Patient
+//! identifiers hashed to prevent unauthorized disclosure. Facility registry validation ensures
+//! only authorized hospitals report HAIs. Temporal sequence validation prevents tampering.
+
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
     String, Symbol, Vec,

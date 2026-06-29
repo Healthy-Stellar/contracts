@@ -1,6 +1,29 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
 
+//! # Medical Claims Contract
+//!
+//! Manages healthcare insurance claims processing, claim reconciliation, dispute handling, and
+//! payer adjudication with encrypted claim data and privacy policy enforcement.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Provider authorization required for claim submission. Payer
+//! (insurer) authentication for claim processing. Patient access to claim status. Dispute
+//! authorization restricted to submitting provider and payer. Policy metadata enforces encryption.
+//!
+//! **Audit Controls:** Claim submission events with provider, patient, and amount. Claim status
+//! transition events (submitted, approved, denied, reconciled). Denial reason logged with decision.
+//! Dispute creation and resolution events tracked. Reconciliation events emitted for financial audit.
+//!
+//! **Data Retention Policy:** Claims retained indefinitely for insurance history. Approved claims
+//! maintained for payment verification. Denied claims archived with denial reason. Disputes retained
+//! with resolution. Reconciliation records maintained for billing audit.
+//!
+//! **Encryption/Integrity:** Claim data encrypted via EncryptedEnvelopeRef and PolicyMetadata.
+//! Claim amount validation prevents overflow. Status enumeration (Pending, Approved, Denied,
+//! Disputed, Reconciled) prevents invalid states. Patient-provider linkage validated.
+
 mod test;
 mod types;
 

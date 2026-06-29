@@ -1,4 +1,27 @@
 #![no_std]
+
+//! # Clinical Guideline Contract
+//!
+//! Provides evidence-based clinical decision support through guideline recommendations, dosage
+//! calculations, risk scoring, and care pathway recommendations.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Authorization checks for guideline access. Provider-based access
+//! control to clinical recommendations. Query access restricted to authorized providers and clinicians.
+//!
+//! **Audit Controls:** Guideline recommendations include strength and evidence level for traceability.
+//! Risk scores documented with calculator type and interpretation. Care pathway recommendations tracked
+//! with clinical decision points for audit trails.
+//!
+//! **Data Retention Policy:** Guideline recommendations stored immutably for clinical reference.
+//! Risk score history retained with timestamps. Care pathway milestones tracked for longitudinal
+//! patient journey documentation.
+//!
+//! **Encryption/Integrity:** Guideline evidence levels classified (e.g., A, B, C) for strength
+//! determination. Dosage recommendations include validation against renal function and monitoring
+//! requirements. Clinical decision data stored in contract state for integrity.
+
 use soroban_sdk::{
     Address, BytesN, Env, String, Symbol, Vec, contract, contracterror, contractimpl, contracttype,
 };

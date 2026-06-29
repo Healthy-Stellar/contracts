@@ -1,6 +1,29 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
 
+//! # Imaging Radiology Contract
+//!
+//! Manages medical imaging requests, radiology results, study ordering, and image metadata with
+//! pagination support and temporal validation.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Radiologist authentication for result documentation. Ordering
+//! provider validation via registry. Patient consent required for imaging studies. Result access
+//! restricted to ordering provider and patient. PACS system integration validation.
+//!
+//! **Audit Controls:** Imaging order events logged with modality, study date, and ordering provider.
+//! Result documentation events tracked with radiologist identity. Report completion events emitted.
+//! Image retrieval events logged for access audit. Pagination queries tracked with page results.
+//!
+//! **Data Retention Policy:** Imaging studies retained indefinitely per medical record requirements.
+//! Radiology reports archived with final approval status. Protocol parameters maintained for
+//! consistency. Temporal validation ensures logical imaging sequences.
+//!
+//! **Encryption/Integrity:** DICOM metadata stored encrypted in persistent storage. Image location
+//! references (PACS integration) validated. Study date temporal validation. Radiologist digital
+//! signature via address authentication. Report integrity enforced via immutable storage.
+
 use soroban_sdk::{
     contract, contractevent, contracterror, contractimpl, contracttype, Address, BytesN, Env,
     String, Symbol,

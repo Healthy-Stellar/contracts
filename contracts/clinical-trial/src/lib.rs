@@ -2,6 +2,29 @@
 #![allow(deprecated)]
 #![allow(clippy::too_many_arguments)]
 
+//! # Clinical Trial Contract
+//!
+//! Manages clinical trial enrollment, informed consent, adverse event tracking, and
+//! participant data collection for regulated research studies.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Participant enrollment requires informed consent. Principal
+//! investigator authorization for trial creation and management. Event reporting restricted to
+//! enrolled participants and authorized clinical staff. Role-based access to trial data.
+//!
+//! **Audit Controls:** Trial registration events with enrollment status. Adverse event capture with
+//! severity classification. Event reporting timestamps tracked. Participant modification events
+//! emitted for compliance auditing. Incident tracking with correlation IDs for multi-contract events.
+//!
+//! **Data Retention Policy:** Enrolled participants tracked with enrollment timestamp and status.
+//! Adverse events retained indefinitely for pharmacovigilance. Consent forms stored with expiration
+//! dates. Deregistration removes participant from active trials while retaining historical data.
+//!
+//! **Encryption/Integrity:** Adverse event descriptions encrypted. Incident evidence attachment
+//! with SHA256 hashing. Correlation IDs link related events across contracts. Trial metadata
+//! stored in persistent contract state for integrity.
+
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, symbol_short, Address, Bytes, BytesN,
     Env, String, Symbol, Vec,

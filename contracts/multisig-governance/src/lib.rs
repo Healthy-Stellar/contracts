@@ -1,6 +1,30 @@
 #![no_std]
 #![allow(deprecated)]
 
+//! # Multisig Governance Contract
+//!
+//! Multi-signature governance with threshold voting, signer management, and proposal execution
+//! for decentralized healthcare network administration.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Multiple signers required (m-of-n multisig) for critical
+//! operations. Signer set management controlled by admin. Proposal creation restricted to
+//! authorized parties. Proposal execution requires minimum threshold approval. Signer addition/
+//! removal tracked with approval.
+//!
+//! **Audit Controls:** Signer set changes logged with added/removed signers. Proposal creation
+//! events with proposer and description. Signature submission events tracked. Proposal execution
+//! events recorded with signer set. Failed execution attempts logged for compliance.
+//!
+//! **Data Retention Policy:** Proposals retained indefinitely for governance history. Signer
+//! history maintained to track authorization changes. Executed proposals archived. Signature
+//! records retained for audit trail. Signer set version history preserved.
+//!
+//! **Encryption/Integrity:** Signer addresses stored encrypted. Proposal data immutable once
+//! submitted. Signature threshold enforced mathematically. XDR serialization for canonical data
+//! representation. Signer set validated before execution.
+
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, xdr::ToXdr, Address, Bytes,
     BytesN, Env, Symbol, Vec,

@@ -1,5 +1,30 @@
 #![no_std]
 
+//! # Immunization Registry Contract
+//!
+//! Manages vaccine records, vaccination series tracking, adverse events, and immunization history
+//! for population health management and outbreak response.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Immunization provider authentication required for record updates.
+//! Patient consent for vaccine record access. Public health authority access for epidemiological
+//! queries. Adverse event reporting restricted to authorized reporters. Registry data access
+//! controlled per role.
+//!
+//! **Audit Controls:** Vaccine administration events logged with vaccine type, date, and provider.
+//! Series completion events tracked. Adverse event reports captured with severity. Population
+//! immunization coverage calculated from records. Audit trail enables vaccine safety monitoring.
+//!
+//! **Data Retention Policy:** Vaccine records retained indefinitely for lifetime immunity tracking.
+//! Series status tracked with completion date. Adverse events retained for pharmacovigilance.
+//! Exemptions and contraindications documented. Deregistration marks patient records as deleted
+//! without removal.
+//!
+//! **Encryption/Integrity:** Vaccine type enumerations prevent invalid vaccines. Series status
+//! tracking prevents duplicate administrations. Adverse event records encrypted. Patient identity
+//! validated via address. Timestamps immutable once recorded.
+
 mod test;
 mod types;
 

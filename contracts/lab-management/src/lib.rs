@@ -1,6 +1,30 @@
 #![no_std]
 #![allow(deprecated)]
 
+//! # Lab Management Contract
+//!
+//! Manages laboratory test ordering, specimen tracking, result documentation, and quality assurance
+//! with turnaround time tracking and critical value alerts.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Lab technician/pathologist authentication for result entry.
+//! Ordering provider validation. Patient consent for testing. Result access restricted to
+//! ordering provider and patient. Critical value notification authorization.
+//!
+//! **Audit Controls:** Test order events logged with specimen type and order provider. Result
+//! entry events tracked with pathologist identity. Critical value alerts emitted with severity.
+//! Quality assurance check results documented. Turnaround time metrics tracked for audit.
+//!
+//! **Data Retention Policy:** Lab results retained indefinitely per medical record standards.
+//! Specimen tracking maintained until test completion. Quality assurance metrics archived.
+//! Critical values retained for liability protection. Reference ranges versioned for historical
+//! comparison.
+//!
+//! **Encryption/Integrity:** Lab values stored encrypted in persistent storage. Test result
+//! reference ranges validated. Pathologist digital signature via address authentication. Critical
+//! value thresholds immutable. Specimen type enumeration prevents invalid tests.
+
 use soroban_sdk::{
     Address, BytesN, Env, String, Symbol, Vec, contract, contracterror, contractimpl, contracttype,
 };

@@ -2,6 +2,28 @@
 #![allow(deprecated)]
 #![allow(clippy::too_many_arguments)]
 
+//! # Allergy Tracking Contract
+//!
+//! Tracks patient allergies with batch operations, severity levels, temporal validation,
+//! and patient deletion support for longitudinal allergy history.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Patient authorization required for operations. Batch operations
+//! with per-patient access validation. Unauthorized access returns error on invalid patient request.
+//!
+//! **Audit Controls:** Events emitted for allergy operations. Batch operations tracked with
+//! individual record IDs. Temporal validation prevents invalid date sequences (onset before resolution).
+//! Historical tracking via persistent storage allows audit replay.
+//!
+//! **Data Retention Policy:** Allergies marked as Deleted when patient deregisters. Batch size
+//! limits (configurable) prevent unbounded operations. Duplicate detection ensures consistency.
+//! Resolution date and reason retained with resolved allergies.
+//!
+//! **Encryption/Integrity:** SHA256 content hashing used for data integrity. Allergen type
+//! classification (Medication, Food, Environmental, Other) enables category-specific retention rules.
+//! Severity enumeration (Mild, Moderate, Severe, LifeThreatening) provides structured risk levels.
+
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, Env, String,
     Symbol, Vec,

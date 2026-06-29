@@ -2,6 +2,28 @@
 #![allow(deprecated)]
 #![allow(clippy::too_many_arguments)]
 
+//! # Care Plan Contract
+//!
+//! Manages patient care plans with goals, conditions, review scheduling, and provider authorization.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Provider authentication required for care plan creation and updates.
+//! Patient enrollment with provider validation. Goal and adjustment authorization by enrolled providers.
+//! Read access restricted to authorized parties via access control checks.
+//!
+//! **Audit Controls:** Events emitted for plan creation, goal achievement, plan completion, and
+//! adjustments. Review dates tracked with last_review_date capturing modification history. Provider
+//! and patient addresses logged with all operations for auditability.
+//!
+//! **Data Retention Policy:** Active care plans retain all historical review data. Completion status
+//! captured with end date. Review frequency enforced with next_review_date tracking. Plan deregistration
+//! cleans up all patient-specific care plan state.
+//!
+//! **Encryption/Integrity:** Care plan data stored in persistent storage with version tracking.
+//! Timestamp integrity maintained via ledger timestamp. Provider registry validation ensures
+//! only authorized providers manage plans.
+
 mod storage;
 mod types;
 

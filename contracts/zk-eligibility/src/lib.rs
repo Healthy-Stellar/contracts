@@ -1,24 +1,31 @@
 #![no_std]
 
-//! ZK Eligibility Contract
+//! # ZK Eligibility Contract
 //!
-//! Manages verifier key versioning and on-chain proof verification for
-//! eligibility-sensitive operations (e.g. telemedicine cross-state licensing,
-//! insurance claim gating).
+//! Manages verifier key versioning and zero-knowledge proof verification for eligibility-sensitive
+//! healthcare operations (telemedicine cross-state licensing, insurance claim gating, etc).
 //!
-//! ## Design
-//! - Admin registers versioned verifier keys (VK). Each VK is bound to a
-//!   schema version so proof/public-input formats can evolve without breaking
-//!   existing proofs.
-//! - Callers submit a (proof, public_inputs, schema_version) tuple.
-//!   The contract looks up the active VK for that version and runs
-//!   verification.
-//! - Verification cost is bounded: public_inputs length is capped at
-//!   MAX_PUBLIC_INPUTS and proof length at MAX_PROOF_BYTES.
-//! - A successful verification is recorded on-chain (nullifier pattern) so
-//!   the same proof cannot be replayed.
-//! - Integration point: other contracts call `verify_eligibility` and receive
-//!   a typed `Ok(())` / `Err(Error)` they can gate their own logic on.
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Admin registers verifier keys (VK) with versioning for schema
+//! evolution. Proof verification validates eligibility without exposing sensitive data. Nullifier
+//! pattern prevents proof replay attacks. Proof/public-input length bounded to prevent DoS.
+//! Integration point allows callers to gate access on verification results.
+//!
+//! **Audit Controls:** Verifier key registration events logged with schema version. Proof
+//! verification events tracked with result (success/failure). Nullifier usage prevents replay
+//! and links proof to user. Verification failure events logged for audit. Schema version updates
+//! tracked.
+//!
+//! **Data Retention Policy:** Verifier keys retained indefinitely for proof verification.
+//! Nullifier set (replay prevention) maintained indefinitely. Verification history retained
+//! via event stream. Schema versions archived with effective dates. No direct proof storage
+//! (privacy-preserving).
+//!
+//! **Encryption/Integrity:** Zero-knowledge proofs cryptographically verified without exposing
+//! underlying data. Public inputs bounded to MAX_PUBLIC_INPUTS. Proof size bounded to MAX_PROOF_BYTES.
+//! Nullifiers prevent replay. Schema version immutable for given VK. Verifier key content
+//! immutable once registered.
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror, symbol_short, Address, Bytes, BytesN,

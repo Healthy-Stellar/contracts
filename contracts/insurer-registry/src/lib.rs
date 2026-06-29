@@ -1,6 +1,29 @@
 #![no_std]
 #![allow(deprecated)]
 
+//! # Insurer Registry Contract
+//!
+//! Maintains registry of health insurance providers with policy information, network participation,
+//! and claims validation for healthcare payment processing.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Admin-only insurer registration. Address nonzero validation
+//! prevents invalid entries. Network participation authorization required before claims processing.
+//! Update authorization restricted to insurer admin or network admin.
+//!
+//! **Audit Controls:** Insurer registration events logged with insurer address and name. Network
+//! participation events tracked. Policy information update events recorded. Claims approval authority
+//! logged. Insurer deactivation events tracked.
+//!
+//! **Data Retention Policy:** Insurer records retained indefinitely for claims history. Network
+//! participation status maintained. Policy information persisted for contract validation. Deactivated
+//! insurers retain historical data without deletion.
+//!
+//! **Encryption/Integrity:** Insurer addresses validated via nonzero checks. Address immutable
+//! once registered. Insurer metadata stored encrypted in persistent state. Network participation
+//! status validated before claims processing.
+
 use shared::privacy::validate_nonzero_address;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,

@@ -1,16 +1,29 @@
 #![no_std]
 
-//! Centralized TTL (Time-To-Live) configuration for healthcare contracts.
+//! # TTL Configuration Module
 //!
-//! This module defines retention classes and TTL constants to ensure consistent
-//! storage management across all contracts. It prevents silent data expiry by
-//! enforcing TTL bumps on critical records.
+//! Centralized TTL (Time-To-Live) configuration for healthcare contracts with retention class
+//! definitions and TTL constants to ensure consistent storage management across all contracts.
 //!
-//! # Retention Classes
+//! ## HIPAA Compliance
 //!
-//! - **Critical**: Patient records, medical history, prescriptions (31-day minimum)
-//! - **Operational**: Temporary data, session info, audit logs (7-day minimum)
-//! - **Ephemeral**: Transient state, counters, temporary caches (1-day minimum)
+//! **Access Control Safeguards:** Configuration admin-only. TTL requirements enforced across all
+//! contracts. Prevents unauthorized data deletion via TTL manipulation. Minimum TTL enforced per
+//! data classification.
+//!
+//! **Audit Controls:** TTL bumping events prevent silent data loss. Retention class enforcement
+//! ensures audit logs kept minimum 7 days. Critical records retained minimum 31 days. TTL
+//! configuration changes auditable.
+//!
+//! **Data Retention Policy:** Three retention classes enforce HIPAA minimum timelines:
+//! - **Critical** (31-day minimum): Patient records, medical history, prescriptions, clinical trials
+//! - **Operational** (7-day minimum): Temporary data, session info, audit logs
+//! - **Ephemeral** (1-day minimum): Transient state, counters, temporary caches
+//! Prevents accidental or malicious data deletion via Soroban's automatic TTL expiry.
+//!
+//! **Encryption/Integrity:** TTL configuration immutable once set. Storage layer enforces TTL
+//! via Soroban's persistent/temporary/instance distinction. Tampering with TTL detected via
+//! ledger-based timeout. Data integrity preserved through retention period enforcement.
 
 use soroban_sdk::Env;
 

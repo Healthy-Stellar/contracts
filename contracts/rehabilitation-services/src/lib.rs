@@ -1,6 +1,30 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
 
+//! # Rehabilitation Services Contract
+//!
+//! Manages rehabilitation programs, therapy goals, session tracking, progress measurement, and
+//! outcome documentation for physical, occupational, and speech therapies.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Therapist authentication for goal creation and session logging.
+//! Patient consent for therapy record access. Authorized providers can view progress. Discharge
+//! authorization by supervising therapist. Access control per therapy type.
+//!
+//! **Audit Controls:** Rehabilitation program creation events with therapy type and goals.
+//! Session events logged with date, provider, and outcomes. Goal progress events tracked.
+//! Discharge events recorded with final status. Adverse events logged. Progress measurement
+//! events emitted.
+//!
+//! **Data Retention Policy:** Rehabilitation programs retained with discharge summary. Therapy
+//! goals archived with achievement status. Session records maintained indefinitely. Progress
+//! measurements retained for outcome analysis. Patient deregistration removes rehab records.
+//!
+//! **Encryption/Integrity:** Goal descriptions stored encrypted. Session notes encrypted in
+//! storage. Progress metrics immutable once recorded. Therapist identity validated. Patient
+//! linkage encrypted. Therapy outcome enumeration prevents invalid status values.
+
 use soroban_sdk::{
     contract, contractimpl, contracttype, Address, BytesN, Env, String, Symbol, Vec,
 };

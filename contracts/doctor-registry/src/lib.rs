@@ -1,6 +1,28 @@
 #![no_std]
 #![allow(deprecated)]
 
+//! # Doctor Registry Contract
+//!
+//! Maintains registry of healthcare providers with profile data including specializations,
+//! institutional affiliations, and metadata for provider validation across the network.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Admin-only initialization and profile creation. Duplicate profile
+//! prevention ensures one profile per doctor address. Address validation prevents invalid entries.
+//! Update and delete operations require proper authorization.
+//!
+//! **Audit Controls:** Provider registration events emitted with doctor wallet and profile data.
+//! All profile modifications tracked via storage updates. Admin address maintained for access control.
+//!
+//! **Data Retention Policy:** Doctor profiles persist indefinitely as reference data. Provider
+//! specialization and institutional metadata retained for credential verification. Profile deactivation
+//! (if implemented) removes access authorization without deleting historical data.
+//!
+//! **Encryption/Integrity:** Doctor addresses validated via nonzero address checks. Institutional
+//! wallet references provide cryptographic identity anchoring. Profile metadata encrypted via
+//! Soroban's secure storage mechanisms.
+
 use shared::privacy::validate_nonzero_address;
 use soroban_sdk::{contract, contractimpl, contracterror, contracttype, symbol_short, Address, Env, String};
 

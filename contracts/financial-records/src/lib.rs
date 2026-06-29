@@ -1,4 +1,29 @@
 #![no_std]
+
+//! # Financial Records Contract
+//!
+//! Manages patient financial records including tax documents, insurance claims, payment records,
+//! and billing information with encrypted storage and access control.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Patient authentication required for record access. Authorization
+//! checks validate requestor eligibility (patient, authorized providers, insurers). Tax and payment
+//! records access restricted to authorized financial/billing personnel. Encrypted envelope validation
+//! ensures data integrity.
+//!
+//! **Audit Controls:** Record retrieval and modification events emitted with user identity. Access
+//! grants and revocations logged. Financial transaction timestamps tracked. Record type enumeration
+//! (TaxDocument, InsuranceClaim, PaymentRecord, BillingInfo) enables category-specific auditing.
+//!
+//! **Data Retention Policy:** Tax documents retained per regulatory requirements. Insurance claims
+//! retained with resolution status. Payment records archived indefinitely. Policy metadata enforces
+//! retention rules per record type. Patient deregistration removes all financial records.
+//!
+//! **Encryption/Integrity:** EncryptedEnvelopeRef with content hashing for integrity verification.
+//! PolicyMetadata enforces encryption requirements per record type. Persistent storage for financial
+//! data. Access control grants tracked per (patient, requester) pair.
+
 use shared::privacy::{
     validate_encrypted_ref, validate_policy_metadata, EncryptedEnvelopeRef, PolicyMetadata,
 };

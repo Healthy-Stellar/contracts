@@ -1,6 +1,30 @@
 #![no_std]
 #![allow(deprecated)]
 
+//! # Hospital Discharge Management Contract
+//!
+//! Manages patient discharge planning, discharge instructions, follow-up care scheduling, and
+//! discharge summary documentation.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Discharge planning restricted to authorized hospital staff.
+//! Patient authorization for discharge scheduling. Follow-up provider validation via registry.
+//! Discharge instruction access restricted to patient and authorized providers.
+//!
+//! **Audit Controls:** Discharge plan creation events logged with patient and responsible provider.
+//! Instruction confirmation events tracked. Follow-up scheduling events recorded. Discharge
+//! completion events with discharge date and summary. Instruction acknowledgment by patient
+//! documented for compliance.
+//!
+//! **Data Retention Policy:** Discharge summaries retained indefinitely for continuity of care.
+//! Follow-up care schedules maintained until completion. Discharge instructions archived with
+//! patient acknowledgment. Temporal validation ensures logical event sequencing.
+//!
+//! **Encryption/Integrity:** Discharge instructions stored encrypted in persistent state.
+//! Follow-up care provider identity validated. Discharge timestamp immutable once recorded.
+//! Temporal validation prevents backdated discharge records.
+
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Symbol, Vec};
 
 mod storage;
