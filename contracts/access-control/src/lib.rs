@@ -272,8 +272,28 @@ impl AccessControl {
         Some(assignment)
     }
 
+    /// Returns `Ok(assignment)` if the role is active, `Err(ConsentExpired)` if the
+    /// role exists but has expired, or `Err(RoleNotFound)` if it was never granted.
+    fn check_role_expiry(
+        env: &Env,
+        address: &Address,
+        role: &Role,
+    ) -> Result<RoleAssignment, ContractError> {
+        let key = DataKey::RoleAssignment(address.clone(), role.clone());
+        let assignment: RoleAssignment = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::RoleNotFound)?;
+        let now = env.ledger().timestamp();
+        if assignment.expires_at != 0 && assignment.expires_at <= now {
+            return Err(ContractError::ConsentExpired);
+        }
+        Ok(assignment)
+    }
+
     /// Asserts that `caller` holds `role` (and the role has not expired).
-    /// Returns `InsufficientRole` if the check fails.
+    /// Returns `ConsentExpired` if expired, `InsufficientRole` otherwise.
     fn require_role(
         env: &Env,
         caller: &Address,
@@ -286,10 +306,11 @@ impl AccessControl {
                 return Ok(());
             }
         }
-        if Self::load_active_role(env, caller, role).is_some() {
-            return Ok(());
+        match Self::check_role_expiry(env, caller, role) {
+            Ok(_) => Ok(()),
+            Err(ContractError::ConsentExpired) => Err(ContractError::ConsentExpired),
+            Err(_) => Err(ContractError::InsufficientRole),
         }
-        Err(ContractError::InsufficientRole)
     }
 
     // -------------------------------------------------------------------------
@@ -324,11 +345,14 @@ impl AccessControl {
     // Role management
     // -------------------------------------------------------------------------
 
-    /// Grant `role` to `grantee`. Only an address that itself holds the
-    /// `Admin` role (or is the stored admin address) may call this.
+    /// Grant `role` to `grantee`. The grantor must hold the `Admin` role **or**
+    /// hold a role whose level is strictly higher than the role being granted.
+    ///
+    /// Role hierarchy (higher value = more privileged):
+    ///   Admin(4) > Doctor(3) > Nurse(2) > Patient/Insurer/Auditor/Provider/... (1)
     ///
     /// # Arguments
-    /// * `granter`    - Must hold the `Admin` role.
+    /// * `granter`    - Must hold a role with level > role_level(role).
     /// * `grantee`    - Address receiving the role.
     /// * `role`       - The role to grant.
     /// * `expires_at` - Expiry timestamp; pass `0` for no expiry.
@@ -340,7 +364,14 @@ impl AccessControl {
         expires_at: u64,
     ) -> Result<(), ContractError> {
         granter.require_auth();
-        Self::require_role(&env, &granter, &Role::Admin)?;
+
+        // Determine the granter's highest active role level.
+        let granter_level = Self::highest_role_level(&env, &granter);
+        let required_level = Self::role_level(&role);
+
+        if granter_level <= required_level {
+            return Err(ContractError::InsufficientRole);
+        }
 
         let key = DataKey::RoleAssignment(grantee.clone(), role.clone());
         if env.storage().persistent().has(&key) {
@@ -1213,6 +1244,49 @@ impl AccessControl {
     // Internal helpers
     // -----------------------------------------------------------------------
 
+    /// Numeric role level for hierarchy enforcement (#488).
+    /// Higher value = more privileged.  Admin must be strictly highest.
+    fn role_level(role: &Role) -> u8 {
+        match role {
+            Role::Admin => 4,
+            Role::Doctor => 3,
+            Role::Nurse => 2,
+            _ => 1,
+        }
+    }
+
+    /// Returns the highest active role level held by `address`, or 0 if none.
+    /// The stored admin address is unconditionally treated as level 5.
+    fn highest_role_level(env: &Env, address: &Address) -> u8 {
+        let admin_opt: Option<Address> = env.storage().persistent().get(&DataKey::Admin);
+        if let Some(ref admin) = admin_opt {
+            if address == admin {
+                return 5;
+            }
+        }
+        let roles = [
+            Role::Admin,
+            Role::Doctor,
+            Role::Nurse,
+            Role::Patient,
+            Role::Insurer,
+            Role::Auditor,
+            Role::Provider,
+            Role::PayerReviewer,
+            Role::EmergencyResponder,
+        ];
+        let mut max_level: u8 = 0;
+        for role in &roles {
+            if Self::load_active_role(env, address, role).is_some() {
+                let lvl = Self::role_level(role);
+                if lvl > max_level {
+                    max_level = lvl;
+                }
+            }
+        }
+        max_level
+    }
+
     fn validate_did(did: &Bytes) -> Result<(), ContractError> {
         // Minimum: "did:a:b" = 7 bytes
         if did.len() < 7 {
@@ -1298,7 +1372,7 @@ impl AccessControl {
     /// Grant a role to multiple entities in a single atomic call (#491).
     ///
     /// # Arguments
-    /// * `admin`       - Must hold the `Admin` role.
+    /// * `admin`       - Must hold a role level strictly higher than each role being granted.
     /// * `assignments` - Vec of `RoleBatchEntry`; capped at `BATCH_SIZE_LIMIT`.
     pub fn grant_roles_batch(
         env: Env,
@@ -1306,17 +1380,21 @@ impl AccessControl {
         assignments: Vec<RoleBatchEntry>,
     ) -> Result<(), ContractError> {
         admin.require_auth();
-        Self::require_role(&env, &admin, &Role::Admin)?;
 
         if assignments.len() > BATCH_SIZE_LIMIT {
             return Err(ContractError::BatchTooLarge);
         }
 
+        let granter_level = Self::highest_role_level(&env, &admin);
         let now = env.ledger().timestamp();
 
         // Validate all entries before writing any (atomicity guarantee).
         for i in 0..assignments.len() {
             let entry = assignments.get(i).unwrap();
+            // Hierarchy check
+            if granter_level <= Self::role_level(&entry.role) {
+                return Err(ContractError::InsufficientRole);
+            }
             let key = DataKey::RoleAssignment(entry.entity.clone(), entry.role.clone());
             if env.storage().persistent().has(&key) {
                 if Self::load_active_role(&env, &entry.entity, &entry.role).is_some() {

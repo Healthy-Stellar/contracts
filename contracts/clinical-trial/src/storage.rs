@@ -3,7 +3,8 @@ use soroban_sdk::{Address, Env, Vec};
 
 use crate::{
     AdverseEventReport, ClinicalTrial, DataKey, EligibilityCriteria, Error,
-    ParticipantEnrollment, ProtocolDeviation, SafetyHaltProposal, SafetyReport, StudyVisit,
+    ParticipantEnrollment, ProtocolAmendment, ProtocolDeviation, SafetyHaltProposal, SafetyReport,
+    StudyVisit,
 };
 
 /// Get the next trial record ID and increment counter
@@ -264,4 +265,24 @@ pub fn add_trial_site(env: &Env, trial_record_id: u64, site_id: u64) {
         .unwrap_or(Vec::new(env));
     sites.push_back(site_id);
     env.storage().persistent().set(&key, &sites);
+}
+
+/// Append a protocol amendment record to the trial's amendment log (#485).
+pub fn append_amendment(env: &Env, amendment: &ProtocolAmendment) {
+    let key = DataKey::AmendmentLog(amendment.trial_record_id);
+    let mut log: Vec<ProtocolAmendment> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(Vec::new(env));
+    log.push_back(amendment.clone());
+    env.storage().persistent().set(&key, &log);
+}
+
+/// Return the full amendment history for a trial (#485).
+pub fn get_amendment_log(env: &Env, trial_record_id: u64) -> Vec<ProtocolAmendment> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::AmendmentLog(trial_record_id))
+        .unwrap_or(Vec::new(env))
 }

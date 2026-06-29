@@ -236,6 +236,18 @@ pub struct SafetyHaltProposal {
     pub proposed_at: u64,
 }
 
+/// On-chain protocol amendment record for ICH E6(R2) audit trail (#485).
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ProtocolAmendment {
+    pub trial_record_id: u64,
+    pub old_hash: BytesN<32>,
+    pub new_hash: BytesN<32>,
+    pub amended_by: Address,
+    pub reason_hash: BytesN<32>,
+    pub timestamp: u64,
+}
+
 /// Storage keys for the contract
 #[contracttype]
 #[derive(Clone)]
@@ -264,4 +276,6 @@ pub enum DataKey {
     TrialSites(u64),
     /// Current phase protocol hash for a trial (updated on phase advance).
     TrialPhaseProtocol(u64),
+    /// Ordered list of ProtocolAmendment records for a trial (#485).
+    AmendmentLog(u64),
 }
