@@ -1,13 +1,34 @@
 use crate::types::{DataKey, Error, Referral, ReferralStatus};
 use shared::privacy::validate_nonzero_address;
 use shared_contracts::safe_increment;
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Symbol, Vec, vec};
 
 #[contract]
 pub struct ReferralContract;
 
 #[contractimpl]
 impl ReferralContract {
+    pub fn initialize(env: Env, provider_registry: Address) -> Result<(), Error> {
+        validate_nonzero_address(&provider_registry).map_err(|_| Error::InvalidAddress)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::ProviderRegistry, &provider_registry);
+        Ok(())
+    }
+
+    fn is_provider_registered(env: &Env, provider: &Address) -> bool {
+        if let Ok(provider_registry) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::ProviderRegistry)
+        {
+            let args = vec![env, provider.clone().into_val(env)];
+            env.invoke_contract(&provider_registry, &Symbol::new(env, "is_provider"), args)
+        } else {
+            false
+        }
+    }
+
     pub fn create_referral(
         env: Env,
         referring_provider: Address,
@@ -23,6 +44,10 @@ impl ReferralContract {
         validate_nonzero_address(&patient_id).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&referred_to).map_err(|_| Error::InvalidAddress)?;
         referring_provider.require_auth();
+
+        if !Self::is_provider_registered(&env, &referred_to) {
+            return Err(Error::ProviderNotRegistered);
+        }
 
         let referral_id = safe_increment(&env, &DataKey::ReferralCount);
 

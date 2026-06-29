@@ -2,7 +2,8 @@
 #![allow(deprecated)]
 
 use crate::contract::{ReferralContract, ReferralContractClient};
-use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String, Symbol, Vec};
+use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String, Symbol, Vec, vec};
+use provider_registry::{ProviderRegistry, ProviderRegistryClient};
 
 #[test]
 fn test_referral_lifecycle() {
@@ -140,4 +141,74 @@ fn test_auth_failures() {
     let wrong_provider = Address::generate(&env);
     let res = client.try_accept_referral(&referral_id, &wrong_provider, &None);
     assert!(res.is_err()); // NotAuthorized
+}
+
+#[test]
+fn test_provider_registration_verification() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Register ProviderRegistry and initialize it
+    let provider_registry_id = env.register_contract(None, ProviderRegistry);
+    let pr_client = ProviderRegistryClient::new(&env, &provider_registry_id);
+    let admin = Address::generate(&env);
+    pr_client.initialize(&admin);
+
+    // Register Referral contract and initialize it with ProviderRegistry
+    let referral_id = env.register_contract(None, ReferralContract);
+    let client = ReferralContractClient::new(&env, &referral_id);
+    client.initialize(&provider_registry_id);
+
+    let referring_provider = Address::generate(&env);
+    let patient_id = Address::generate(&env);
+    let unregistered_provider = Address::generate(&env);
+    let registered_provider = Address::generate(&env);
+
+    // Register one provider but not the other
+    pr_client.register_provider(
+        &admin,
+        &registered_provider,
+        &String::from_str(&env, "Dr. Smith"),
+        &String::from_str(&env, "Cardiology"),
+        &String::from_str(&env, "LIC123"),
+        &BytesN::from_array(&env, &[1; 32]),
+        &admin,
+        &BytesN::from_array(&env, &[2; 32]),
+        &(env.ledger().timestamp() + 86400),
+        &BytesN::from_array(&env, &[3; 32]),
+    );
+
+    let specialty = Symbol::new(&env, "Cardio");
+    let reason = String::from_str(&env, "Heart palpitations");
+    let priority = Symbol::new(&env, "Urgent");
+    let clinical_summary_hash = BytesN::from_array(&env, &[1; 32]);
+    let requested_services = Vec::new(&env);
+
+    // Try to create referral to unregistered provider
+    let res = client.try_create_referral(
+        &referring_provider,
+        &patient_id,
+        &unregistered_provider,
+        &specialty,
+        &reason,
+        &priority,
+        &clinical_summary_hash,
+        &requested_services,
+    );
+    assert!(res.is_err()); // ProviderNotRegistered
+
+    // Create referral to registered provider should succeed
+    let result = client.try_create_referral(
+        &referring_provider,
+        &patient_id,
+        &registered_provider,
+        &specialty,
+        &reason,
+        &priority,
+        &clinical_summary_hash,
+        &requested_services,
+    );
+    assert!(result.is_ok());
+    let referral_id_created = result.unwrap();
+    assert_eq!(referral_id_created, 1);
 }
