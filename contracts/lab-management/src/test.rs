@@ -1,6 +1,7 @@
 #![cfg(test)]
 use super::*;
-use soroban_sdk::{Address, Env, String, testutils::Address as _, vec};
+use soroban_sdk::{Address, BytesN, Env, String, Symbol, testutils::Address as _, vec};
+use provider_registry::{ProviderRegistry, ProviderRegistryClient};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -275,4 +276,49 @@ fn test_order_id_overflow_panics() {
 
     // This must panic with OrderIdOverflow (error code 5).
     client.order_lab_test(&provider, &patient, &make_req(&env));
+}
+
+#[test]
+fn test_provider_registration_verification() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Register ProviderRegistry and initialize it
+    let provider_registry_id = env.register_contract(None, ProviderRegistry);
+    let pr_client = ProviderRegistryClient::new(&env, &provider_registry_id);
+    let admin = Address::generate(&env);
+    pr_client.initialize(&admin);
+
+    // Register LabManagementContract and initialize it with ProviderRegistry
+    let lab_contract_id = env.register(LabManagementContract, ());
+    let client = LabManagementContractClient::new(&env, &lab_contract_id);
+    client.initialize(&provider_registry_id);
+
+    let unregistered_provider = Address::generate(&env);
+    let registered_provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    // Register one provider but not the other
+    pr_client.register_provider(
+        &admin,
+        &registered_provider,
+        &String::from_str(&env, "Dr. Lab"),
+        &String::from_str(&env, "Pathology"),
+        &String::from_str(&env, "LAB123"),
+        &BytesN::from_array(&env, &[1; 32]),
+        &admin,
+        &BytesN::from_array(&env, &[2; 32]),
+        &(env.ledger().timestamp() + 86400),
+        &BytesN::from_array(&env, &[3; 32]),
+    );
+
+    // Try to order from unregistered provider
+    let res = client.try_order_lab_test(&unregistered_provider, &patient, &make_req(&env));
+    assert!(res.is_err()); // ProviderNotRegistered
+
+    // Order from registered provider should succeed
+    let result = client.try_order_lab_test(&registered_provider, &patient, &make_req(&env));
+    assert!(result.is_ok());
+    let order_id = result.unwrap();
+    assert_eq!(order_id, 0);
 }
