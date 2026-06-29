@@ -104,6 +104,10 @@ pub enum DataKey {
     JobResultQuality(u64),
     PendingAdmin,
     RotationExpiry,
+    RequesterCpuLimit,
+    RequesterMemoryLimit,
+    RequesterCpuUsed(Address),
+    RequesterMemoryUsed(Address),
 }
 
 /// --------------------
@@ -130,6 +134,8 @@ pub enum Error {
     NoRotationPending = 12,
     RotationExpired = 13,
     NotPendingAdmin = 14,
+    RequesterThrottled = 15,
+    InvalidThreshold = 16,
 }
 
 #[contract]
@@ -196,7 +202,7 @@ impl HealthcareAnalytics {
             return Err(Error::RequesterThrottled);
         }
 
-        let throttled = should_throttle_job(&env);
+        let throttled = should_throttle_job(&env, &report_type);
 
         if throttled {
             match degradation_mode {
@@ -485,21 +491,12 @@ impl HealthcareAnalytics {
     /// Propose transferring admin to `new_admin`. Must be confirmed within 24 hours.
     pub fn propose_admin_rotation(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
         admin.require_auth();
-        let stored: Address = env
-    /// Configure per-requester CPU and memory caps (admin only).
-    pub fn set_requester_limits(
-        env: Env,
-        admin: Address,
-        cpu_limit: u64,
-        memory_limit: u64,
-    ) -> Result<(), Error> {
-        admin.require_auth();
         let stored_admin: Address = env
             .storage()
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::Unauthorized)?;
-        if admin != stored {
+        if admin != stored_admin {
             return Err(Error::Unauthorized);
         }
         if env.storage().instance().has(&DataKey::PendingAdmin) {
@@ -538,6 +535,19 @@ impl HealthcareAnalytics {
         Ok(())
     }
 
+    /// Configure per-requester CPU and memory caps (admin only).
+    pub fn set_requester_limits(
+        env: Env,
+        admin: Address,
+        cpu_limit: u64,
+        memory_limit: u64,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::Unauthorized)?;
         if admin != stored_admin {
             return Err(Error::Unauthorized);
         }
@@ -547,6 +557,29 @@ impl HealthcareAnalytics {
         env.storage()
             .instance()
             .set(&DataKey::RequesterMemoryLimit, &memory_limit);
+        Ok(())
+    }
+
+    /// Configure report type specific throttle threshold (admin only)
+    pub fn set_report_type_threshold(
+        env: Env,
+        admin: Address,
+        report_type: String,
+        threshold_pct: u64,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+        if threshold_pct > 100 {
+            return Err(Error::InvalidThreshold);
+        }
+        shared::resource_management::set_report_type_threshold(&env, report_type, threshold_pct);
         Ok(())
     }
 
