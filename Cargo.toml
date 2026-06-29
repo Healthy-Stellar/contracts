@@ -45,6 +45,9 @@ members = [
 ]
 exclude = ["contracts/patient-registry/benches"]
 
+[workspace.lints.rust]
+unused_imports = "deny"
+
 [workspace.dependencies]
 soroban-sdk = "23"
 shared = { path = "contracts/shared" }

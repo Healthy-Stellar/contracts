@@ -1,4 +1,5 @@
 [package]
+lints = { workspace = true }
 name = "health-records"
 version = "0.0.0"
 edition = "2021"

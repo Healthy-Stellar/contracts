@@ -1,5 +1,4 @@
 #![no_std]
-#![allow(deprecated)]
 
 use shared::pagination::PageResult;
 

@@ -10,7 +10,7 @@ fn test_record_vital_signs() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, PatientVitalsContract);
+    let contract_id = env.register(PatientVitalsContract, ());
     let client = PatientVitalsContractClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);
@@ -46,7 +46,7 @@ fn test_set_monitoring_parameters() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, PatientVitalsContract);
+    let contract_id = env.register(PatientVitalsContract, ());
     let client = PatientVitalsContractClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);
@@ -75,7 +75,7 @@ fn test_device_registration_and_reading() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, PatientVitalsContract);
+    let contract_id = env.register(PatientVitalsContract, ());
     let client = PatientVitalsContractClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);
@@ -118,7 +118,7 @@ fn test_trigger_vital_alert() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, PatientVitalsContract);
+    let contract_id = env.register(PatientVitalsContract, ());
     let client = PatientVitalsContractClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);
@@ -137,7 +137,7 @@ fn test_calculate_vital_statistics() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, PatientVitalsContract);
+    let contract_id = env.register(PatientVitalsContract, ());
     let client = PatientVitalsContractClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);
@@ -196,7 +196,7 @@ fn setup_heart_rate_thresholds(client: &PatientVitalsContractClient, patient_id:
 fn test_threshold_breach_creates_alert() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, PatientVitalsContract);
+    let contract_id = env.register(PatientVitalsContract, ());
     let client = PatientVitalsContractClient::new(&env, &contract_id);
     let patient_id = Address::generate(&env);
 
@@ -226,7 +226,7 @@ fn test_threshold_breach_creates_alert() {
 fn test_critical_threshold_severity() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, PatientVitalsContract);
+    let contract_id = env.register(PatientVitalsContract, ());
     let client = PatientVitalsContractClient::new(&env, &contract_id);
     let patient_id = Address::generate(&env);
 
@@ -254,7 +254,7 @@ fn test_critical_threshold_severity() {
 fn test_normal_reading_no_alert() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, PatientVitalsContract);
+    let contract_id = env.register(PatientVitalsContract, ());
     let client = PatientVitalsContractClient::new(&env, &contract_id);
     let patient_id = Address::generate(&env);
 
@@ -282,7 +282,7 @@ fn test_normal_reading_no_alert() {
 fn test_cooldown_suppresses_duplicate_alert() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, PatientVitalsContract);
+    let contract_id = env.register(PatientVitalsContract, ());
     let client = PatientVitalsContractClient::new(&env, &contract_id);
     let patient_id = Address::generate(&env);
 
@@ -314,7 +314,7 @@ fn test_cooldown_suppresses_duplicate_alert() {
 fn test_alert_after_cooldown_expires() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, PatientVitalsContract);
+    let contract_id = env.register(PatientVitalsContract, ());
     let client = PatientVitalsContractClient::new(&env, &contract_id);
     let patient_id = Address::generate(&env);
 
@@ -348,7 +348,7 @@ fn test_deregister_patient_clears_vitals_history() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, PatientVitalsContract);
+    let contract_id = env.register(PatientVitalsContract, ());
     let client = PatientVitalsContractClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);
@@ -393,7 +393,7 @@ fn test_deregister_patient_clears_alerts() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, PatientVitalsContract);
+    let contract_id = env.register(PatientVitalsContract, ());
     let client = PatientVitalsContractClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);

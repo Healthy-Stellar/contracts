@@ -1,5 +1,4 @@
 #![no_std]
-#![allow(deprecated)]
 
 use shared::privacy::validate_nonzero_address;
 use soroban_sdk::{contract, contractimpl, contracterror, contracttype, symbol_short, Address, Env, String};

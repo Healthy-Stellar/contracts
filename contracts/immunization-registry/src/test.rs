@@ -9,7 +9,7 @@ fn test_record_immunization() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, ImmunizationRegistry);
+    let contract_id = env.register(ImmunizationRegistry, ());
     let client = ImmunizationRegistryClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);
@@ -47,7 +47,7 @@ fn test_record_adverse_event() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, ImmunizationRegistry);
+    let contract_id = env.register(ImmunizationRegistry, ());
     let client = ImmunizationRegistryClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);
@@ -94,7 +94,7 @@ fn test_vaccine_series_and_due() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, ImmunizationRegistry);
+    let contract_id = env.register(ImmunizationRegistry, ());
     let client = ImmunizationRegistryClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);

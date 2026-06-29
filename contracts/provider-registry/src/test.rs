@@ -2,12 +2,10 @@
 
 use super::*;
 use soroban_sdk::{
+use shared::test_utils::{dummy_hash};
     testutils::Address as _, Address, BytesN, Env, String,
 };
 
-fn dummy_hash(env: &Env, byte: u8) -> BytesN<32> {
-    BytesN::from_array(env, &[byte; 32])
-}
 
 fn register_provider_with_anchor(
     env: &Env,
@@ -32,7 +30,7 @@ fn register_provider_with_anchor(
 
 fn setup() -> (Env, Address, ProviderRegistryClient<'static>) {
     let env = Env::default();
-    let contract_id = env.register_contract(None, ProviderRegistry);
+    let contract_id = env.register(ProviderRegistry, ());
     let client = ProviderRegistryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
     env.mock_all_auths();
@@ -53,7 +51,7 @@ fn test_double_initialize_returns_error() {
 fn test_mutable_call_before_init_returns_error() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, ProviderRegistry);
+    let contract_id = env.register(ProviderRegistry, ());
     let client = ProviderRegistryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
     let provider = Address::generate(&env);
