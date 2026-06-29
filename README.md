@@ -164,14 +164,47 @@ soroban contract deploy \
 
 ### Testnet Deployment
 
+#### Automated Full Deployment (Recommended)
+
+Deploy all contracts in dependency order with a single command:
+
+```bash
+./scripts/deploy_all.sh \
+  --network testnet \
+  --identity my-testnet-identity \
+  --admin-address <ADMIN_ADDRESS>
+```
+
+This script will:
+- Build all contracts in the workspace
+- Optimize WASM artifacts for size/gas efficiency
+- Deploy in dependency order (registries → feature contracts)
+- Record contract IDs to `deployments/testnet.json`
+- Skip re-deployment of existing contracts (idempotent)
+
+**Options:**
+```
+--network <name>           Network name (default: testnet)
+--identity <name>          Stellar CLI identity (default: from env)
+--admin-address <address>  Admin address for contract initialization
+--dry-run                  Show deployment plan without executing
+--skip-build               Use existing WASM artifacts
+--skip-optimize            Skip WASM optimization
+--skip-init                Don't initialize contracts after deployment
+--cli-bin <binary>         Stellar CLI binary (default: stellar)
+```
+
+#### Manual Single Contract Deployment
+
 1. Build optimized contracts:
 ```bash
-soroban contract optimize --wasm target/wasm32-unknown-unknown/release/patient_registry.wasm
+stellar contract build --target wasm32-unknown-unknown --release
+stellar contract optimize --wasm target/wasm32-unknown-unknown/release/patient_registry.wasm
 ```
 
 2. Deploy to Stellar Testnet:
 ```bash
-soroban contract deploy \
+stellar contract deploy \
   --wasm target/wasm32-unknown-unknown/release/patient_registry.optimized.wasm \
   --source admin \
   --network testnet
@@ -179,13 +212,69 @@ soroban contract deploy \
 
 3. Initialize contracts:
 ```bash
-soroban contract invoke \
+stellar contract invoke \
   --id <CONTRACT_ID> \
   --source admin \
   --network testnet \
   -- initialize \
   --admin <ADMIN_ADDRESS>
 ```
+
+#### Testnet Deployment Status
+
+Current testnet contract IDs are recorded in `deployments/testnet.json`:
+
+```json
+{
+  "_network": "testnet",
+  "_status": "COMPLETE",
+  "provider-registry": "CXXXXXX...",
+  "patient-registry": "CXXXXXX...",
+  "referral": "CXXXXXX...",
+  "lab-management": "CXXXXXX..."
+}
+```
+
+### Mainnet Deployment & TTL Management
+
+#### TTL Extension for Mainnet Contracts
+
+Soroban contracts on Stellar Mainnet require periodic TTL (Time-To-Live) extension to prevent expiration and data loss. The system automatically extends TTLs every 90 days via a scheduled GitHub Actions workflow.
+
+**Manual TTL Extension:**
+
+```bash
+./scripts/extend-ttls.sh \
+  --network mainnet \
+  --identity my-mainnet-identity \
+  --ledgers-to-extend 535680
+```
+
+This extends the instance storage TTL for all deployed contracts by ~1 year. TTL parameters:
+- `535680` ledgers = ~1 year at 5 seconds per ledger
+- Recommended to extend every 90 days (leaves 9 months buffer)
+- Critical threshold: 86400 ledgers (~1 day) remaining
+
+**Options:**
+```
+--network <name>              Network name (mainnet, testnet)
+--identity <name>             Stellar CLI identity (required)
+--ledgers-to-extend <count>   Ledgers to extend (default: 535680)
+--critical-threshold <ledgers> Alert if below threshold (default: 86400)
+--dry-run                     Preview extensions without executing
+--cli-bin <binary>            Stellar CLI binary (default: stellar)
+```
+
+**Automated TTL Extension (GitHub Actions):**
+
+A scheduled workflow (`.github/workflows/extend-ttls.yml`) runs every 90 days to automatically extend TTLs for mainnet contracts. This ensures production contracts never expire.
+
+To trigger manually:
+```bash
+gh workflow run extend-ttls.yml -f network=mainnet
+```
+
+**Important:** Failing to extend TTLs will cause contracts to expire, making them inaccessible and data permanently lost. Monitor TTL status in CI/CD logs.
 
 ## Upgrade Guide
 
