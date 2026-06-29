@@ -21,7 +21,7 @@ pub enum Error {
     NoReviewersFound = 5,
     NotAuthorized = 6,
     InvalidAddress = 7,
-    BatchSizeExceeded = 8,
+    CredentialExpired = 8,
 }
 
 #[contracttype]
@@ -44,6 +44,8 @@ pub struct CredentialAnchor {
     pub expires_at: u64,
     pub revocation_reference: BytesN<32>,
     pub revoked_at: Option<u64>,
+    pub revocation_reason: Option<Symbol>,
+    pub revoked_by: Option<Address>,
 }
 
 #[contracttype]
@@ -111,6 +113,8 @@ impl InsurerRegistry {
                 expires_at,
                 revocation_reference,
                 revoked_at: None,
+                revocation_reason: None,
+                revoked_by: None,
             },
         };
 
@@ -141,6 +145,8 @@ impl InsurerRegistry {
             .get(&key)
             .ok_or(Error::InsurerNotFound)?;
 
+        Self::assert_credential_valid(&env, &insurer)?;
+
         insurer.metadata = metadata;
         env.storage()
             .persistent()
@@ -170,6 +176,8 @@ impl InsurerRegistry {
             .persistent()
             .get(&key)
             .ok_or(Error::InsurerNotFound)?;
+
+        Self::assert_credential_valid(&env, &insurer)?;
 
         insurer.contact_details = contact_details;
         env.storage()
@@ -202,6 +210,8 @@ impl InsurerRegistry {
             .persistent()
             .get(&key)
             .ok_or(Error::InsurerNotFound)?;
+
+        Self::assert_credential_valid(&env, &insurer)?;
 
         insurer.coverage_policies = coverage_policies;
         env.storage()
@@ -238,15 +248,13 @@ impl InsurerRegistry {
         }
     }
 
-    fn assert_active_insurer(env: &Env, wallet: &Address) -> Result<(), Error> {
-        let key = DataKey::Insurer(wallet.clone());
-        let insurer: InsurerData = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::InsurerNotFound)?;
+    fn assert_credential_valid(env: &Env, insurer: &InsurerData) -> Result<(), Error> {
+        let now = env.ledger().timestamp();
+        if insurer.credential.expires_at != 0 && now >= insurer.credential.expires_at {
+            return Err(Error::CredentialExpired);
+        }
         if insurer.credential.revoked_at.is_some() {
-            return Err(Error::InsurerNotFound);
+            return Err(Error::NotAuthorized);
         }
         Ok(())
     }
@@ -342,11 +350,14 @@ impl InsurerRegistry {
         validate_nonzero_address(&reviewer_wallet).map_err(|_| Error::InvalidAddress)?;
         insurer_wallet.require_auth();
 
-        // Verify insurer exists
+        // Verify insurer exists and credential is valid
         let insurer_key = DataKey::Insurer(insurer_wallet.clone());
-        if !env.storage().persistent().has(&insurer_key) {
-            return Err(Error::InsurerNotFound);
-        }
+        let insurer: InsurerData = env
+            .storage()
+            .persistent()
+            .get(&insurer_key)
+            .ok_or(Error::InsurerNotFound)?;
+        Self::assert_credential_valid(&env, &insurer)?;
 
         let reviewers_key = DataKey::ClaimsReviewers(insurer_wallet.clone());
         let mut reviewers: Vec<Address> = env
@@ -451,7 +462,14 @@ impl InsurerRegistry {
         validate_nonzero_address(&insurer_wallet).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&reviewer_wallet).map_err(|_| Error::InvalidAddress)?;
         insurer_wallet.require_auth();
-        Self::assert_active_insurer(&env, &insurer_wallet)?;
+
+        let rm_insurer_key = DataKey::Insurer(insurer_wallet.clone());
+        let rm_insurer: InsurerData = env
+            .storage()
+            .persistent()
+            .get(&rm_insurer_key)
+            .ok_or(Error::InsurerNotFound)?;
+        Self::assert_credential_valid(&env, &rm_insurer)?;
 
         let reviewers_key = DataKey::ClaimsReviewers(insurer_wallet.clone());
         let reviewers: Vec<Address> = env
@@ -483,6 +501,53 @@ impl InsurerRegistry {
         env.events().publish(
             (symbol_short!("rm_rev"), insurer_wallet, reviewer_wallet),
             symbol_short!("success"),
+        );
+        Ok(())
+    }
+
+    /// Revoke an insurer's credential, recording the reason and revoking authority (#494).
+    ///
+    /// Only the credential's original issuer may call this; the insurer cannot self-revoke.
+    ///
+    /// # Arguments
+    /// * `admin`  - Must be the issuer stored in the credential.
+    /// * `wallet` - The insurer whose credential is being revoked.
+    /// * `reason` - A short symbol code describing the revocation reason.
+    pub fn revoke_credential(
+        env: Env,
+        admin: Address,
+        wallet: Address,
+        reason: Symbol,
+    ) -> Result<(), Error> {
+        validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
+        admin.require_auth();
+
+        let key = DataKey::Insurer(wallet.clone());
+        let mut insurer: InsurerData = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::InsurerNotFound)?;
+
+        // Only the credential issuer is authorised to revoke.
+        if admin != insurer.credential.issuer {
+            return Err(Error::NotAuthorized);
+        }
+        // Insurer cannot self-revoke.
+        if admin == wallet {
+            return Err(Error::NotAuthorized);
+        }
+
+        let now = env.ledger().timestamp();
+        insurer.credential.revoked_at = Some(now);
+        insurer.credential.revocation_reason = Some(reason.clone());
+        insurer.credential.revoked_by = Some(admin.clone());
+        env.storage().persistent().set(&key, &insurer);
+
+        env.events().publish(
+            (symbol_short!("cred_rev"), wallet, admin),
+            reason,
         );
         Ok(())
     }
