@@ -13,4 +13,5 @@ doctest = false
 soroban-sdk = { workspace = true }
 
 [dev-dependencies]
+regex = "1.10"
 soroban-sdk = { workspace = true, features = ["testutils"] }
