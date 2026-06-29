@@ -40,6 +40,7 @@ pub enum JobState {
     Completed,
     Failed,
     Throttled,
+    Cancelled,
 }
 
 /// Report job descriptor
@@ -368,4 +369,42 @@ pub fn get_next_job_for_execution(env: &Env) -> Option<u64> {
     }
 
     best_job.map(|(job_id, _)| job_id)
+}
+
+/// Cancel a queued job, transitioning its state to Cancelled and removing it from the queue
+pub fn cancel_queued_job(env: &Env, job_id: u64) -> Result<(), ()> {
+    let mut job: ReportJob = env
+        .storage()
+        .persistent()
+        .get(&ResourceKey::ReportJob(job_id))
+        .ok_or(())?;
+
+    if job.state != JobState::Queued {
+        return Err(());
+    }
+
+    job.state = JobState::Cancelled;
+    env.storage()
+        .persistent()
+        .set(&ResourceKey::ReportJob(job_id), &job);
+
+    // Remove from QueuedJobs
+    let queued: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&ResourceKey::QueuedJobs)
+        .unwrap_or(Vec::new(env));
+    let mut new_queued = Vec::new(env);
+    for i in 0..queued.len() {
+        if let Some(id) = queued.get(i) {
+            if id != job_id {
+                new_queued.push_back(id);
+            }
+        }
+    }
+    env.storage()
+        .persistent()
+        .set(&ResourceKey::QueuedJobs, &new_queued);
+
+    Ok(())
 }

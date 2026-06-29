@@ -104,6 +104,10 @@ pub enum DataKey {
     JobResultQuality(u64),
     PendingAdmin,
     RotationExpiry,
+    RequesterCpuUsed(Address),
+    RequesterMemoryUsed(Address),
+    RequesterCpuLimit,
+    RequesterMemoryLimit,
 }
 
 /// --------------------
@@ -130,6 +134,9 @@ pub enum Error {
     NoRotationPending = 12,
     RotationExpired = 13,
     NotPendingAdmin = 14,
+    RequesterThrottled = 15,
+    InvalidThreshold = 16,
+    JobAlreadyExecuting = 17,
 }
 
 #[contract]
@@ -359,7 +366,7 @@ impl HealthcareAnalytics {
             let hash: Bytes = env.crypto().sha256(
                 &Bytes::from_slice(&env, b"resource_usage_exceeded_quota")
             ).into();
-            let _ = attach_evidence(&env, incident_id, EvidenceType::ContextData, hash, job.requested_by);
+            let _ = attach_evidence(&env, incident_id, EvidenceType::ContextData, hash, job.requested_by.clone());
         }
 
         // Update per-requester cumulative usage.
@@ -397,7 +404,7 @@ impl HealthcareAnalytics {
         env.storage().persistent().set(&ResourceKey::ReportJob(job_id), &job);
 
         // Remove from running jobs
-        let mut running: Vec<u64> = env
+        let running: Vec<u64> = env
             .storage()
             .persistent()
             .get(&ResourceKey::RunningJobs)
@@ -486,15 +493,6 @@ impl HealthcareAnalytics {
     pub fn propose_admin_rotation(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
         admin.require_auth();
         let stored: Address = env
-    /// Configure per-requester CPU and memory caps (admin only).
-    pub fn set_requester_limits(
-        env: Env,
-        admin: Address,
-        cpu_limit: u64,
-        memory_limit: u64,
-    ) -> Result<(), Error> {
-        admin.require_auth();
-        let stored_admin: Address = env
             .storage()
             .instance()
             .get(&DataKey::Admin)
@@ -538,6 +536,19 @@ impl HealthcareAnalytics {
         Ok(())
     }
 
+    /// Configure per-requester CPU and memory caps (admin only).
+    pub fn set_requester_limits(
+        env: Env,
+        admin: Address,
+        cpu_limit: u64,
+        memory_limit: u64,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::Unauthorized)?;
         if admin != stored_admin {
             return Err(Error::Unauthorized);
         }
@@ -790,6 +801,33 @@ impl HealthcareAnalytics {
         }
 
         Ok(results)
+    }
+
+    /// Cancel a queued report job.
+    pub fn cancel_report(env: Env, requester: Address, job_id: u64) -> Result<(), Error> {
+        requester.require_auth();
+
+        let job = get_job(&env, job_id).map_err(|_| Error::JobNotFound)?;
+
+        if job.requested_by != requester {
+            return Err(Error::Unauthorized);
+        }
+
+        if job.state == JobState::Running {
+            return Err(Error::JobAlreadyExecuting);
+        }
+
+        if job.state != JobState::Queued {
+            return Err(Error::JobNotFound);
+        }
+
+        shared::resource_management::cancel_queued_job(&env, job_id)
+            .map_err(|_| Error::JobNotFound)?;
+
+        env.events()
+            .publish((symbol_short!("rep_canc"), requester), job_id);
+
+        Ok(())
     }
 }
 
