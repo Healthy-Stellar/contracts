@@ -2,6 +2,29 @@
 #![allow(deprecated)]
 #![allow(non_snake_case)]
 
+//! # Contracts Root Module
+//!
+//! Root module aggregating all healthcare smart contracts with unified HIPAA compliance across
+//! the entire healthcare blockchain network.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Each contract implements role-based access control with
+//! authentication. Cross-contract authorization via shared actor verification module. Patient
+//! consent enforced per contract type. Emergency override mechanisms with audit trails.
+//!
+//! **Audit Controls:** Unified event versioning via EVENT_VERSION. Temporal sequencing prevents
+//! audit trail tampering. Incident tracking with correlation IDs across contracts. All contract
+//! operations emit audit events. Compliance reports generated from event streams.
+//!
+//! **Data Retention Policy:** Each contract enforces specific retention rules. Deregistration
+//! cascades across related contracts. Historical data preserved without deletion. Temporal
+//! validation ensures logical event ordering. Audit trail immutable once recorded.
+//!
+//! **Encryption/Integrity:** All sensitive data encrypted via EncryptedEnvelopeRef. PolicyMetadata
+//! enforces per-record encryption requirements. Cryptographic hashing validates integrity.
+//! Patient address immutable. Contracts validate data integrity on read.
+
 use soroban_sdk::{
     contract, contractevent, contracterror, contractimpl, contracttype, symbol_short, Address, Env,
     String, Symbol, Vec,
