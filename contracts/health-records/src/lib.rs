@@ -77,6 +77,8 @@ pub enum DataKey {
     Consent(Address, Address),     // (patient, provider) -> ConsentScope
     PatientProviders(Address),     // patient -> Vec<Address> of consented providers
     CategoryIndex(RecordCategory), // category -> Vec<u64> of record ids in that category, for prefix-style queries
+    ProviderRegistry,
+    RecordVersion(u64, u32),
 }
 
 #[contracterror]
@@ -90,6 +92,13 @@ pub enum Error {
     InvalidPolicyMetadata = 5,
     InvalidAddress = 6,
     BatchTooLarge = 7,
+    ProviderNotRegistered = 8,
+    VersionNotFound = 9,
+}
+
+#[soroban_sdk::contractclient(name = "ProviderRegistryClient")]
+pub trait ProviderRegistryInterface {
+    fn is_provider(env: Env, provider: Address) -> bool;
 }
 
 /// Append `record_category`'s record ID to its `CategoryIndex` so
@@ -143,11 +152,23 @@ fn get_active_consent(env: &Env, patient: &Address, provider: &Address) -> Optio
     })
 }
 
+fn has_consent(env: &Env, patient: &Address, provider: &Address) -> bool {
+    get_active_consent(env, patient, provider).is_some()
+}
+
 #[contract]
 pub struct HealthRecords;
 
 #[contractimpl]
 impl HealthRecords {
+    /// Initialize the contract with the provider registry address.
+    pub fn initialize(env: Env, provider_registry: Address) {
+        if env.storage().instance().has(&DataKey::ProviderRegistry) {
+            panic!("already initialized");
+        }
+        env.storage().instance().set(&DataKey::ProviderRegistry, &provider_registry);
+    }
+
     /// Patient grants a provider scoped consent to act on their records.
     ///
     /// `scope.expires_at == 0` means the consent never expires.
@@ -214,6 +235,12 @@ impl HealthRecords {
         provider.require_auth();
         validate_encrypted_ref(&encrypted_ref).map_err(|_| Error::InvalidEncryptedEnvelope)?;
         validate_policy_metadata(&policy).map_err(|_| Error::InvalidPolicyMetadata)?;
+
+        let registry_addr: Address = env.storage().instance().get(&DataKey::ProviderRegistry).unwrap();
+        let provider_client = ProviderRegistryClient::new(&env, &registry_addr);
+        if !provider_client.is_provider(&provider) {
+            return Err(Error::ProviderNotRegistered);
+        }
 
         match get_active_consent(&env, &patient, &provider) {
             None => return Err(Error::ConsentNotGranted),
@@ -282,6 +309,12 @@ impl HealthRecords {
     ) -> Result<Vec<u64>, Error> {
         validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
         provider.require_auth();
+
+        let registry_addr: Address = env.storage().instance().get(&DataKey::ProviderRegistry).unwrap();
+        let provider_client = ProviderRegistryClient::new(&env, &registry_addr);
+        if !provider_client.is_provider(&provider) {
+            return Err(Error::ProviderNotRegistered);
+        }
 
         if records.len() > MAX_BATCH_SIZE {
             return Err(Error::BatchTooLarge);

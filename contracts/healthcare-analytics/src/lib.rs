@@ -102,11 +102,15 @@ pub enum DataKey {
     Admin,
     /// Stores the `ResultQuality` for a report job accepted under a degraded policy.
     JobResultQuality(u64),
+    PendingAdmin,
+    RotationExpiry,
 }
 
 /// --------------------
 /// Errors
 /// --------------------
+
+pub const ADMIN_ROTATION_WINDOW: u64 = 86_400;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -122,6 +126,10 @@ pub enum Error {
     ResourceOverrun = 8,
     JobFailure = 9,
     ArithmeticOverflow = 10,
+    RotationPending = 11,
+    NoRotationPending = 12,
+    RotationExpired = 13,
+    NotPendingAdmin = 14,
 }
 
 #[contract]
@@ -160,6 +168,33 @@ impl HealthcareAnalytics {
         degradation_mode: DegradationPolicy,
     ) -> Result<ReportJobAccepted, Error> {
         requester.require_auth();
+
+        // Per-requester throttle check — enforced independently of the global budget.
+        let req_cpu_used: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RequesterCpuUsed(requester.clone()))
+            .unwrap_or(0);
+        let req_mem_used: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RequesterMemoryUsed(requester.clone()))
+            .unwrap_or(0);
+        let req_cpu_limit: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RequesterCpuLimit)
+            .unwrap_or(u64::MAX);
+        let req_mem_limit: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RequesterMemoryLimit)
+            .unwrap_or(u64::MAX);
+        if req_cpu_used.saturating_add(estimated_cpu) > req_cpu_limit
+            || req_mem_used.saturating_add(estimated_memory) > req_mem_limit
+        {
+            return Err(Error::RequesterThrottled);
+        }
 
         let throttled = should_throttle_job(&env);
 
@@ -327,6 +362,26 @@ impl HealthcareAnalytics {
             let _ = attach_evidence(&env, incident_id, EvidenceType::ContextData, hash, job.requested_by);
         }
 
+        // Update per-requester cumulative usage.
+        let req_cpu: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RequesterCpuUsed(job.requested_by.clone()))
+            .unwrap_or(0);
+        let req_mem: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RequesterMemoryUsed(job.requested_by.clone()))
+            .unwrap_or(0);
+        env.storage().persistent().set(
+            &DataKey::RequesterCpuUsed(job.requested_by.clone()),
+            &(req_cpu + cpu_used),
+        );
+        env.storage().persistent().set(
+            &DataKey::RequesterMemoryUsed(job.requested_by.clone()),
+            &(req_mem + memory_used),
+        );
+
         env.events()
             .publish((symbol_short!("job_done"), job_id), (cpu_used, memory_used));
 
@@ -410,6 +465,10 @@ impl HealthcareAnalytics {
             return Err(Error::Unauthorized);
         }
 
+        if throttle_percent > 100 {
+            return Err(Error::InvalidThreshold);
+        }
+
         set_system_limits(
             &env,
             shared::resource_management::SystemResourceLimits {
@@ -420,6 +479,118 @@ impl HealthcareAnalytics {
             },
         );
 
+        Ok(())
+    }
+
+    /// Propose transferring admin to `new_admin`. Must be confirmed within 24 hours.
+    pub fn propose_admin_rotation(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let stored: Address = env
+    /// Configure per-requester CPU and memory caps (admin only).
+    pub fn set_requester_limits(
+        env: Env,
+        admin: Address,
+        cpu_limit: u64,
+        memory_limit: u64,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::Unauthorized)?;
+        if admin != stored {
+            return Err(Error::Unauthorized);
+        }
+        if env.storage().instance().has(&DataKey::PendingAdmin) {
+            return Err(Error::RotationPending);
+        }
+        let expiry = env.ledger().timestamp() + ADMIN_ROTATION_WINDOW;
+        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        env.storage().instance().set(&DataKey::RotationExpiry, &expiry);
+        Ok(())
+    }
+
+    /// New admin confirms the rotation proposed by the current admin.
+    pub fn accept_admin_rotation(env: Env, new_admin: Address) -> Result<(), Error> {
+        new_admin.require_auth();
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoRotationPending)?;
+        if new_admin != pending {
+            return Err(Error::NotPendingAdmin);
+        }
+        let expiry: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RotationExpiry)
+            .unwrap_or(0);
+        if env.ledger().timestamp() > expiry {
+            env.storage().instance().remove(&DataKey::PendingAdmin);
+            env.storage().instance().remove(&DataKey::RotationExpiry);
+            return Err(Error::RotationExpired);
+        }
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage().instance().remove(&DataKey::RotationExpiry);
+        Ok(())
+    }
+
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::RequesterCpuLimit, &cpu_limit);
+        env.storage()
+            .instance()
+            .set(&DataKey::RequesterMemoryLimit, &memory_limit);
+        Ok(())
+    }
+
+    /// Return cumulative resource usage for a specific requester.
+    pub fn get_requester_usage(env: Env, requester: Address) -> ResourceUsage {
+        let cpu_used: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RequesterCpuUsed(requester.clone()))
+            .unwrap_or(0);
+        let memory_used: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RequesterMemoryUsed(requester.clone()))
+            .unwrap_or(0);
+        ResourceUsage {
+            cpu_used,
+            memory_used,
+            start_time: 0,
+            end_time: 0,
+        }
+    }
+
+    /// Reset per-requester usage counters (admin only).
+    pub fn reset_requester_usage(
+        env: Env,
+        admin: Address,
+        requester: Address,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+        env.storage()
+            .persistent()
+            .remove(&DataKey::RequesterCpuUsed(requester.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::RequesterMemoryUsed(requester.clone()));
         Ok(())
     }
     /// Privacy is preserved by accepting only pre-anonymized, aggregate-ready
