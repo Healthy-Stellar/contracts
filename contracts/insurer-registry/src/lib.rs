@@ -21,6 +21,20 @@ pub enum Error {
     NoReviewersFound = 5,
     NotAuthorized = 6,
     InvalidAddress = 7,
+    PlanNotFound = 8,
+}
+
+/// Structured coverage plan with service-code allowlist used by downstream
+/// contracts (e.g. prior-authorization) to verify benefit eligibility.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoveragePlan {
+    pub plan_id: u64,
+    pub plan_name: String,
+    pub service_codes: Vec<String>,
+    pub is_active: bool,
+    pub effective_from: u64,
+    pub effective_until: Option<u64>,
 }
 
 #[contracttype]
@@ -49,6 +63,8 @@ pub struct CredentialAnchor {
 pub enum DataKey {
     Insurer(Address),
     ClaimsReviewers(Address),
+    /// insurer_wallet -> Vec<CoveragePlan>
+    CoveragePlans(Address),
 }
 
 #[contract]
@@ -223,6 +239,34 @@ impl InsurerRegistry {
         } else {
             false
         }
+    }
+
+    /// Replace the full coverage-plan catalog for an insurer.
+    pub fn set_coverage_plans(
+        env: Env,
+        insurer_wallet: Address,
+        plans: Vec<CoveragePlan>,
+    ) -> Result<(), Error> {
+        validate_nonzero_address(&insurer_wallet).map_err(|_| Error::InvalidAddress)?;
+        insurer_wallet.require_auth();
+
+        let insurer_key = DataKey::Insurer(insurer_wallet.clone());
+        if !env.storage().persistent().has(&insurer_key) {
+            return Err(Error::InsurerNotFound);
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::CoveragePlans(insurer_wallet), &plans);
+        Ok(())
+    }
+
+    /// Return all coverage plans registered for an insurer.
+    pub fn get_coverage_plans(env: Env, insurer_wallet: Address) -> Vec<CoveragePlan> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::CoveragePlans(insurer_wallet))
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     fn assert_active_insurer(env: &Env, wallet: &Address) -> Result<(), Error> {

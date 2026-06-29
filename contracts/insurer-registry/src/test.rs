@@ -355,3 +355,31 @@ fn test_full_workflow() {
     assert_eq!(reviewers.len(), 1);
     assert_eq!(reviewers.get(0).unwrap(), reviewer2);
 }
+
+#[test]
+fn test_coverage_plans_round_trip() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, InsurerRegistry);
+    let client = InsurerRegistryClient::new(&env, &contract_id);
+
+    let insurer_wallet = Address::generate(&env);
+    env.mock_all_auths();
+    register_insurer_with_anchor(&env, &client, &insurer_wallet);
+
+    let mut service_codes = soroban_sdk::Vec::new(&env);
+    service_codes.push_back(String::from_str(&env, "CPT99213"));
+    let mut plans = soroban_sdk::Vec::new(&env);
+    plans.push_back(CoveragePlan {
+        plan_id: 1,
+        plan_name: String::from_str(&env, "PPO Gold"),
+        service_codes,
+        is_active: true,
+        effective_from: 0,
+        effective_until: None,
+    });
+
+    client.set_coverage_plans(&insurer_wallet, &plans);
+    let loaded = client.get_coverage_plans(&insurer_wallet);
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded.get(0).unwrap().plan_name, String::from_str(&env, "PPO Gold"));
+}
