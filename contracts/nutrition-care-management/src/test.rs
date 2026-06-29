@@ -1485,3 +1485,107 @@ fn test_outcome_tracking_all_valid_metrics() {
     let outcomes = client.get_plan_outcomes(&care_plan_id);
     assert_eq!(outcomes.len(), metrics.len() as u32);
 }
+
+// -----------------------------------------------------------------------
+// #566 — get_outcome_history (paginated)
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_get_outcome_history_first_page() {
+    let (env, patient, dietitian, _provider) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    for i in 0u64..5 {
+        client.link_outcome(
+            &care_plan_id,
+            &dietitian,
+            &String::from_str(&env, "weight_kg"),
+            &(7000i64 + i as i64),
+            &(1_000_000u64 + i),
+        );
+    }
+
+    let page = client.get_outcome_history(&patient, &0u32, &3u32);
+    assert_eq!(page.outcome_ids.len(), 3);
+    assert!(page.has_more);
+}
+
+#[test]
+fn test_get_outcome_history_last_page() {
+    let (env, patient, dietitian, _provider) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    for i in 0u64..5 {
+        client.link_outcome(
+            &care_plan_id,
+            &dietitian,
+            &String::from_str(&env, "weight_kg"),
+            &(7000i64 + i as i64),
+            &(1_000_000u64 + i),
+        );
+    }
+
+    let page = client.get_outcome_history(&patient, &1u32, &3u32);
+    assert_eq!(page.outcome_ids.len(), 2); // 5 total, 3 on first page → 2 left
+    assert!(!page.has_more);
+}
+
+#[test]
+fn test_get_outcome_history_empty() {
+    let (env, patient, _dietitian, _provider) = setup();
+    let client = register(&env);
+
+    let page = client.get_outcome_history(&patient, &0u32, &10u32);
+    assert_eq!(page.outcome_ids.len(), 0);
+    assert!(!page.has_more);
+}
+
+// -----------------------------------------------------------------------
+// #566 — link_to_care_plan
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_link_to_care_plan_no_address_configured() {
+    let (env, patient, dietitian, _provider) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    let outcome_id = client.link_outcome(
+        &care_plan_id,
+        &dietitian,
+        &String::from_str(&env, "weight_kg"),
+        &7000i64,
+        &1_000_000u64,
+    );
+
+    // No care-plan contract address set → must fail gracefully.
+    let result = client.try_link_to_care_plan(&outcome_id, &42u64);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_link_to_care_plan_success_and_idempotent() {
+    let (env, patient, dietitian, _provider) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    let outcome_id = client.link_outcome(
+        &care_plan_id,
+        &dietitian,
+        &String::from_str(&env, "weight_kg"),
+        &7000i64,
+        &1_000_000u64,
+    );
+
+    let admin = Address::generate(&env);
+    let dummy_care_plan_contract = Address::generate(&env);
+    client.set_care_plan_contract(&admin, &dummy_care_plan_contract);
+
+    // First link — should succeed.
+    client.link_to_care_plan(&outcome_id, &99u64);
+
+    // Second link to same care plan — idempotent, must not panic.
+    client.link_to_care_plan(&outcome_id, &99u64);
+}

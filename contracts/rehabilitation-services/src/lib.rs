@@ -140,6 +140,25 @@ pub struct DischargeRecord {
     pub home_exercise_program_hash: BytesN<32>,
 }
 
+pub const MAX_PAGE_SIZE: u32 = 50;
+
+/// Paginated page of therapy sessions.
+// TODO: consolidate with shared PageResult when #515 lands
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TherapyPage {
+    pub items: Vec<TherapySession>,
+    pub has_more: bool,
+}
+
+/// Paginated page of progress notes.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NotePage {
+    pub items: Vec<ProgressNote>,
+    pub has_more: bool,
+}
+
 /// A measurable rehabilitation goal with a numeric target value.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -889,6 +908,62 @@ impl RehabilitationServicesContract {
             .instance()
             .get(&DataKey::MeasurableGoal(goal_id))
             .ok_or(Error::NotFound)
+    }
+
+    // ── Paginated getters (#564) ───────────────────────────────────────────────
+
+    /// Paginated therapy session history for a treatment plan.
+    ///
+    /// `page` is 0-indexed. `page_size` is capped at `MAX_PAGE_SIZE`.
+    /// The existing `get_therapy_sessions` full-list getter is deprecated in
+    /// favour of this function for large session lists.
+    pub fn get_therapy_sessions_paged(
+        env: Env,
+        treatment_plan_id: u64,
+        page: u32,
+        page_size: u32,
+    ) -> TherapyPage {
+        let page_size = page_size.min(MAX_PAGE_SIZE).max(1);
+        let all: Vec<TherapySession> = env
+            .storage()
+            .instance()
+            .get(&DataKey::TherapySessions(treatment_plan_id))
+            .unwrap_or(Vec::new(&env));
+        let total = all.len();
+        let start = page.saturating_mul(page_size);
+        let mut items = Vec::new(&env);
+        let mut i = start;
+        while i < start + page_size && i < total {
+            items.push_back(all.get(i).unwrap());
+            i += 1;
+        }
+        TherapyPage { items, has_more: (start + page_size) < total }
+    }
+
+    /// Paginated progress notes for a treatment plan.
+    ///
+    /// `page` is 0-indexed. `page_size` is capped at `MAX_PAGE_SIZE`.
+    pub fn get_progress_notes_paged(
+        env: Env,
+        treatment_plan_id: u64,
+        page: u32,
+        page_size: u32,
+    ) -> NotePage {
+        let page_size = page_size.min(MAX_PAGE_SIZE).max(1);
+        let all: Vec<ProgressNote> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProgressNotes(treatment_plan_id))
+            .unwrap_or(Vec::new(&env));
+        let total = all.len();
+        let start = page.saturating_mul(page_size);
+        let mut items = Vec::new(&env);
+        let mut i = start;
+        while i < start + page_size && i < total {
+            items.push_back(all.get(i).unwrap());
+            i += 1;
+        }
+        NotePage { items, has_more: (start + page_size) < total }
     }
 }
 

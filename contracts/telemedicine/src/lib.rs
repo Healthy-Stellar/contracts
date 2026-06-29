@@ -4,3 +4,5 @@
 pub mod contract;
 pub mod test;
 pub mod types;
+#[cfg(test)]
+pub mod integration_test;

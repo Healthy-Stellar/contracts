@@ -308,11 +308,66 @@ pub fn is_provider_authorized(env: &Env, care_plan_id: u64, provider: &Address) 
         .persistent()
         .get(&DataKey::AuthorizedProviders(care_plan_id))
         .unwrap_or(Vec::new(env));
-    
+
     for p in providers.iter() {
         if p == *provider {
             return true;
         }
     }
     false
+}
+
+// -----------------------------------------------------------------------
+// Patient-level outcome index (#566)
+// -----------------------------------------------------------------------
+
+pub fn append_patient_outcome(env: &Env, patient_id: &Address, outcome_id: u64) {
+    let mut ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::PatientOutcomes(patient_id.clone()))
+        .unwrap_or(Vec::new(env));
+    ids.push_back(outcome_id);
+    env.storage()
+        .persistent()
+        .set(&DataKey::PatientOutcomes(patient_id.clone()), &ids);
+}
+
+pub fn load_patient_outcome_ids(env: &Env, patient_id: &Address) -> Vec<u64> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::PatientOutcomes(patient_id.clone()))
+        .unwrap_or(Vec::new(env))
+}
+
+// -----------------------------------------------------------------------
+// Care-plan contract config (#566)
+// -----------------------------------------------------------------------
+
+pub fn set_care_plan_contract_address(env: &Env, addr: &Address) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::CarePlanContractAddress, addr);
+}
+
+pub fn get_care_plan_contract_address(env: &Env) -> Option<Address> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::CarePlanContractAddress)
+}
+
+// -----------------------------------------------------------------------
+// Outcome ↔ external care-plan link (#566)
+// -----------------------------------------------------------------------
+
+pub fn get_outcome_care_plan_link(env: &Env, outcome_id: u64) -> Option<u64> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::OutcomeCarePlanLink(outcome_id))
+}
+
+pub fn save_outcome_care_plan_link(env: &Env, outcome_id: u64, care_plan_id: u64) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::OutcomeCarePlanLink(outcome_id), &care_plan_id);
 }
