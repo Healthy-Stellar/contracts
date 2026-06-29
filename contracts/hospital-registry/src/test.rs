@@ -2,10 +2,8 @@
 
 use super::*;
 use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, Address, BytesN, Env, String, Vec};
+use shared::test_utils::{dummy_hash};
 
-fn dummy_hash(env: &Env, byte: u8) -> BytesN<32> {
-    BytesN::from_array(env, &[byte; 32])
-}
 
 fn register_hospital_with_anchor(
     env: &Env,

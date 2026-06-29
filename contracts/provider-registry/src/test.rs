@@ -2,12 +2,10 @@
 
 use super::*;
 use soroban_sdk::{
+use shared::test_utils::{dummy_hash};
     testutils::Address as _, Address, BytesN, Env, String,
 };
 
-fn dummy_hash(env: &Env, byte: u8) -> BytesN<32> {
-    BytesN::from_array(env, &[byte; 32])
-}
 
 fn register_provider_with_anchor(
     env: &Env,
