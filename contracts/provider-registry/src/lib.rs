@@ -31,6 +31,7 @@ pub enum Error {
     NoRotationPending  = 9,
     RotationExpired    = 10,
     NotPendingAdmin    = 11,
+    StaleNonce         = 12,
 }
 
 /// Input entry for `batch_register_providers`.
@@ -96,6 +97,8 @@ pub enum DataKey {
     ProviderRatingByPatient(Address, Address),
     PendingAdmin,
     RotationExpiry,
+    /// Per-caller nonce for replay attack protection: (caller) -> u64
+    CallerNonce(Address),
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -344,5 +347,35 @@ impl ProviderRegistry {
             return Err(Error::Unauthorized);
         }
         Ok(())
+    }
+
+    /// Verify and increment caller's nonce for cross-contract call protection.
+    /// Returns an error if the provided nonce is <= the last successful nonce.
+    fn verify_and_increment_nonce(
+        env: &Env,
+        caller: &Address,
+        provided_nonce: u64,
+    ) -> Result<(), Error> {
+        let nonce_key = DataKey::CallerNonce(caller.clone());
+        let last_nonce: u64 = env
+            .storage()
+            .persistent()
+            .get(&nonce_key)
+            .unwrap_or(0);
+
+        // Reject if provided nonce is not strictly greater than last successful nonce
+        if provided_nonce <= last_nonce {
+            return Err(Error::StaleNonce);
+        }
+
+        // Update nonce to prevent replay
+        env.storage().persistent().set(&nonce_key, &provided_nonce);
+        Ok(())
+    }
+
+    /// Get the current nonce for a caller.
+    pub fn get_caller_nonce(env: Env, caller: Address) -> u64 {
+        let nonce_key = DataKey::CallerNonce(caller);
+        env.storage().persistent().get(&nonce_key).unwrap_or(0)
     }
 }

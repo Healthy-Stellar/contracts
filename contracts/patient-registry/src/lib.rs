@@ -159,6 +159,8 @@ pub enum DataKey {
     MerkleRoot(Address),
     /// Optional provider-registry contract address for cross-contract verification.
     ProviderRegistry,
+    /// Per-caller nonce for replay attack protection: (caller) -> u64
+    CallerNonce(Address),
 }
 
 /// --------------------
@@ -293,6 +295,7 @@ pub enum ContractError {
     ProviderNotRegistered = 28,
     /// A Vec parameter or accumulator exceeds its maximum allowed length.
     InputTooLarge = 29,
+    StaleNonce = 30,
 }
 
 pub fn validate_cid(cid: &Bytes) -> Result<(), ContractError> {
@@ -2778,6 +2781,36 @@ impl MedicalRegistry {
         for key in keys.iter() {
             extend_for_retention_class(env, key, &class);
         }
+    }
+
+    /// Verify and increment caller's nonce for cross-contract call protection.
+    /// Returns an error if the provided nonce is <= the last successful nonce.
+    fn verify_and_increment_nonce(
+        env: &Env,
+        caller: &Address,
+        provided_nonce: u64,
+    ) -> Result<(), ContractError> {
+        let nonce_key = DataKey::CallerNonce(caller.clone());
+        let last_nonce: u64 = env
+            .storage()
+            .persistent()
+            .get(&nonce_key)
+            .unwrap_or(0);
+
+        // Reject if provided nonce is not strictly greater than last successful nonce
+        if provided_nonce <= last_nonce {
+            return Err(ContractError::StaleNonce);
+        }
+
+        // Update nonce to prevent replay
+        env.storage().persistent().set(&nonce_key, &provided_nonce);
+        Ok(())
+    }
+
+    /// Get the current nonce for a caller.
+    pub fn get_caller_nonce(env: Env, caller: Address) -> u64 {
+        let nonce_key = DataKey::CallerNonce(caller);
+        env.storage().persistent().get(&nonce_key).unwrap_or(0)
     }
 }
 

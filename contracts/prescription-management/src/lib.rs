@@ -149,6 +149,7 @@ pub enum Error {
     MissingRecallReason = 28,
     /// Patient already has MAX_ACTIVE_PRESCRIPTIONS active prescriptions
     TooManyActivePrescriptions = 29,
+    StaleNonce = 30,
 }
 
 #[contracttype]
@@ -258,6 +259,8 @@ pub enum DataKey {
     /// `count_and_prune_active_prescriptions`), so it stays close to the
     /// patient's actual active count rather than growing unboundedly.
     PatientPrescriptions(Address),
+    /// Per-caller nonce for replay attack protection: (caller) -> u64
+    CallerNonce(Address),
 }
 
 #[contracttype]
@@ -1565,6 +1568,36 @@ impl PrescriptionContract {
                 .has(&DataKey::RecallRecord(recall_id));
         }
         false
+    }
+
+    /// Verify and increment caller's nonce for cross-contract call protection.
+    /// Returns an error if the provided nonce is <= the last successful nonce.
+    fn verify_and_increment_nonce(
+        env: &Env,
+        caller: &Address,
+        provided_nonce: u64,
+    ) -> Result<(), Error> {
+        let nonce_key = DataKey::CallerNonce(caller.clone());
+        let last_nonce: u64 = env
+            .storage()
+            .persistent()
+            .get(&nonce_key)
+            .unwrap_or(0);
+
+        // Reject if provided nonce is not strictly greater than last successful nonce
+        if provided_nonce <= last_nonce {
+            return Err(Error::StaleNonce);
+        }
+
+        // Update nonce to prevent replay
+        env.storage().persistent().set(&nonce_key, &provided_nonce);
+        Ok(())
+    }
+
+    /// Get the current nonce for a caller.
+    pub fn get_caller_nonce(env: Env, caller: Address) -> u64 {
+        let nonce_key = DataKey::CallerNonce(caller);
+        env.storage().persistent().get(&nonce_key).unwrap_or(0)
     }
 }
 
