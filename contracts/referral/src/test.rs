@@ -10,7 +10,7 @@ fn test_referral_lifecycle() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, ReferralContract);
+    let contract_id = env.register(ReferralContract, ());
     let client = ReferralContractClient::new(&env, &contract_id);
 
     let referring_provider = Address::generate(&env);
@@ -72,7 +72,7 @@ fn test_decline_and_update_status() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, ReferralContract);
+    let contract_id = env.register(ReferralContract, ());
     let client = ReferralContractClient::new(&env, &contract_id);
 
     let referring_provider = Address::generate(&env);
@@ -119,7 +119,7 @@ fn test_auth_failures() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, ReferralContract);
+    let contract_id = env.register(ReferralContract, ());
     let client = ReferralContractClient::new(&env, &contract_id);
 
     let referring_provider = Address::generate(&env);

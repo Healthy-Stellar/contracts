@@ -462,9 +462,9 @@ mod cross_contract_correlation_tests {
             let env = Env::default();
             env.mock_all_auths();
 
-            let provider_registry_id = env.register_contract(None, ProviderRegistry);
-            let patient_registry_id = env.register_contract(None, MedicalRegistry);
-            let hr_contract_id = env.register_contract(None, HealthRecords);
+            let provider_registry_id = env.register(ProviderRegistry, ());
+            let patient_registry_id = env.register(MedicalRegistry, ());
+            let hr_contract_id = env.register(HealthRecords, ());
 
             let provider_client = ProviderRegistryClient::new(&env, &provider_registry_id);
             let patient_client = MedicalRegistryClient::new(&env, &patient_registry_id);
@@ -539,9 +539,9 @@ mod cross_contract_correlation_tests {
             let env = Env::default();
             env.mock_all_auths();
 
-            let provider_registry_id = env.register_contract(None, ProviderRegistry);
-            let patient_registry_id = env.register_contract(None, MedicalRegistry);
-            let hr_contract_id = env.register_contract(None, HealthRecords);
+            let provider_registry_id = env.register(ProviderRegistry, ());
+            let patient_registry_id = env.register(MedicalRegistry, ());
+            let hr_contract_id = env.register(HealthRecords, ());
 
             let provider_client = ProviderRegistryClient::new(&env, &provider_registry_id);
             let patient_client = MedicalRegistryClient::new(&env, &patient_registry_id);

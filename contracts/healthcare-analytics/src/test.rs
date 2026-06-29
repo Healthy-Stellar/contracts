@@ -691,8 +691,7 @@ fn test_request_report_full_quality_when_not_throttled() {
             &500_000,
             &50_000,
             &DegradationPolicy::Fail,
-        )
-        .unwrap();
+        );
 
     assert_eq!(accepted.result_quality, ResultQuality::Full);
     assert_eq!(
@@ -708,8 +707,10 @@ fn test_request_report_fail_policy_when_throttled() {
 
     // throttle_threshold = 0 means always throttled
     client
-        .set_resource_limits(&admin, &1, &1, &1, &0)
-        .unwrap();
+        .set_resource_limits(&admin, &1, &1, &1, &0);
+    env.as_contract(&client.address, || {
+        env.storage().instance().set(&shared::resource_management::ResourceKey::TotalCpuUsed, &1u64);
+    });
 
     let result = client.try_request_report(
         &requester,
@@ -729,8 +730,10 @@ fn test_request_report_approximate_policy_when_throttled() {
     let requester = Address::generate(&env);
 
     client
-        .set_resource_limits(&admin, &1, &1, &1, &0)
-        .unwrap();
+        .set_resource_limits(&admin, &1, &1, &1, &0);
+    env.as_contract(&client.address, || {
+        env.storage().instance().set(&shared::resource_management::ResourceKey::TotalCpuUsed, &1u64);
+    });
 
     let accepted = client
         .request_report(
@@ -740,8 +743,7 @@ fn test_request_report_approximate_policy_when_throttled() {
             &1_000_000,
             &100_000,
             &DegradationPolicy::Approximate,
-        )
-        .unwrap();
+        );
 
     assert_eq!(accepted.result_quality, ResultQuality::Truncated);
     assert_eq!(
@@ -756,8 +758,10 @@ fn test_request_report_sample_policy_when_throttled() {
     let requester = Address::generate(&env);
 
     client
-        .set_resource_limits(&admin, &1, &1, &1, &0)
-        .unwrap();
+        .set_resource_limits(&admin, &1, &1, &1, &0);
+    env.as_contract(&client.address, || {
+        env.storage().instance().set(&shared::resource_management::ResourceKey::TotalCpuUsed, &1u64);
+    });
 
     let accepted = client
         .request_report(
@@ -767,14 +771,16 @@ fn test_request_report_sample_policy_when_throttled() {
             &1_000_000,
             &100_000,
             &DegradationPolicy::Sample,
-        )
-        .unwrap();
+        );
 
     assert_eq!(accepted.result_quality, ResultQuality::Sampled);
     assert_eq!(
         client.get_job_result_quality(&accepted.job_id),
         ResultQuality::Sampled
     );
+}
+
+#[test]
 fn test_cpu_quota_accumulates_across_jobs() {
     let (env, client, admin) = setup_with_admin();
     let requester = Address::generate(&env);
@@ -789,7 +795,8 @@ fn test_cpu_quota_accumulates_across_jobs() {
         &JobPriority::Normal,
         &400,
         &50,
-    );
+        &DegradationPolicy::Fail,
+    ).unwrap().unwrap().job_id;
     client.execute_next_report();
     client.complete_report(&job1, &400, &50);
 
@@ -800,7 +807,8 @@ fn test_cpu_quota_accumulates_across_jobs() {
         &JobPriority::Normal,
         &400,
         &50,
-    );
+        &DegradationPolicy::Fail,
+    ).unwrap().unwrap().job_id;
     client.execute_next_report();
     client.complete_report(&job2, &400, &50);
 
@@ -812,7 +820,8 @@ fn test_cpu_quota_accumulates_across_jobs() {
         &JobPriority::Normal,
         &1,
         &1,
-    );
+        &DegradationPolicy::Fail,
+    ).unwrap().unwrap().job_id;
     client.execute_next_report();
     client.complete_report(&job3, &1, &1);
 
@@ -824,7 +833,8 @@ fn test_cpu_quota_accumulates_across_jobs() {
         &JobPriority::Normal,
         &100,
         &1,
-    );
+        &DegradationPolicy::Fail,
+    ).unwrap().unwrap().job_id;
     client.execute_next_report();
     client.complete_report(&job4, &100, &1);
 
@@ -835,6 +845,67 @@ fn test_cpu_quota_accumulates_across_jobs() {
         &JobPriority::Normal,
         &10,
         &10,
+        &DegradationPolicy::Fail,
     );
     assert_eq!(result, Err(Ok(Error::JobThrottled)));
+}
+
+#[test]
+fn test_cancel_report_queued() {
+    let (env, client, _admin) = setup_with_admin();
+    let requester = Address::generate(&env);
+
+    let accepted = client
+        .request_report(
+            &requester,
+            &String::from_str(&env, "quality_metrics"),
+            &shared::resource_management::JobPriority::Normal,
+            &500_000,
+            &50_000,
+            &DegradationPolicy::Fail,
+        );
+
+    let job_id = accepted.job_id;
+
+    // Only the original requester may cancel
+    let non_requester = Address::generate(&env);
+    let err_unauthorized = client.try_cancel_report(&non_requester, &job_id);
+    assert_eq!(err_unauthorized, Err(Ok(Error::Unauthorized)));
+
+    // Queued job can be cancelled by its requester
+    client.cancel_report(&requester, &job_id);
+
+    // Verify it cannot be cancelled again / is no longer in Queued state
+    let err_not_found = client.try_cancel_report(&requester, &job_id);
+    assert_eq!(err_not_found, Err(Ok(Error::JobNotFound)));
+
+    // Cancelled job ID cannot be re-executed
+    let next_job = client.execute_next_report();
+    assert_eq!(next_job, None);
+}
+
+#[test]
+fn test_cancel_report_executing() {
+    let (env, client, _admin) = setup_with_admin();
+    let requester = Address::generate(&env);
+
+    let accepted = client
+        .request_report(
+            &requester,
+            &String::from_str(&env, "quality_metrics"),
+            &shared::resource_management::JobPriority::Normal,
+            &500_000,
+            &50_000,
+            &DegradationPolicy::Fail,
+        );
+
+    let job_id = accepted.job_id;
+
+    // Start executing the job
+    let executed_id = client.execute_next_report().unwrap();
+    assert_eq!(executed_id, job_id);
+
+    // Executing job cancellation returns Error::JobAlreadyExecuting
+    let err_executing = client.try_cancel_report(&requester, &job_id);
+    assert_eq!(err_executing, Err(Ok(Error::JobAlreadyExecuting)));
 }

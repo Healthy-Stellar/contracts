@@ -1,15 +1,12 @@
 #![cfg(test)]
 
 use soroban_sdk::{symbol_short, testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke}, Address, BytesN, Env, IntoVal, String, Symbol, Vec};
+use shared::test_utils::{dummy_hash};
 
 use crate::{
     AllergyManagement, AllergyManagementClient, AllergyStatus, Error, RecordAllergyRequest,
 };
 use provider_registry::{ProviderRegistry, ProviderRegistryClient};
-
-fn dummy_hash(env: &Env, byte: u8) -> BytesN<32> {
-    BytesN::from_array(env, &[byte; 32])
-}
 
 fn register_provider_in_registry(
     env: &Env,

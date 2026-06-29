@@ -166,3 +166,4 @@ stellar contract invoke --id "$UPGRADE_GOVERNANCE_ID" -- execute_upgrade --propo
 - Verify every contract deployment with on-chain tooling.
 - Maintain `deployments/mainnet.json` as the authoritative source of deployed contract IDs.
 - Run Mainnet smoke tests before marking the deployment as available.
+- Before your first Mainnet deployment, complete the production readiness checklist in [MAINNET_READINESS.md](./MAINNET_READINESS.md) and obtain sign-offs from lead developer, security lead, and legal counsel.

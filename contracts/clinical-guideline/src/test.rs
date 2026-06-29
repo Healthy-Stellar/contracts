@@ -8,7 +8,7 @@ use soroban_sdk::{
 #[test]
 fn test_register_and_evaluate_guideline() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, ClinicalGuidelineContract);
+    let contract_id = env.register(ClinicalGuidelineContract, ());
     let client = ClinicalGuidelineContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -53,7 +53,7 @@ fn test_register_and_evaluate_guideline() {
 #[test]
 fn test_drug_dosage_calculation() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, ClinicalGuidelineContract);
+    let contract_id = env.register(ClinicalGuidelineContract, ());
     let client = ClinicalGuidelineContractClient::new(&env, &contract_id);
 
     let weight_dg = 700000; // 70kg = 70000g = 700000dg
@@ -74,7 +74,7 @@ fn test_drug_dosage_calculation() {
 #[test]
 fn test_risk_score_assessment() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, ClinicalGuidelineContract);
+    let contract_id = env.register(ClinicalGuidelineContract, ());
     let client = ClinicalGuidelineContractClient::new(&env, &contract_id);
 
     let mut params = Vec::new(&env);
@@ -95,7 +95,7 @@ fn test_risk_score_assessment() {
 #[test]
 fn test_care_pathway_suggestion() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, ClinicalGuidelineContract);
+    let contract_id = env.register(ClinicalGuidelineContract, ());
     let client = ClinicalGuidelineContractClient::new(&env, &contract_id);
 
     let condition = String::from_str(&env, "Diabetes");
@@ -108,7 +108,7 @@ fn test_care_pathway_suggestion() {
 #[test]
 fn test_preventive_care_logic() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, ClinicalGuidelineContract);
+    let contract_id = env.register(ClinicalGuidelineContract, ());
     let client = ClinicalGuidelineContractClient::new(&env, &contract_id);
 
     // Test for older patient
@@ -126,7 +126,7 @@ fn test_preventive_care_logic() {
 #[test]
 fn test_reminders() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, ClinicalGuidelineContract);
+    let contract_id = env.register(ClinicalGuidelineContract, ());
     let client = ClinicalGuidelineContractClient::new(&env, &contract_id);
 
     let patient = Address::generate(&env);
@@ -151,7 +151,7 @@ fn test_reminders() {
 #[should_panic(expected = "HostError: Error(Auth, InvalidAction)")]
 fn test_unauthorized_registration() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, ClinicalGuidelineContract);
+    let contract_id = env.register(ClinicalGuidelineContract, ());
     let client = ClinicalGuidelineContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);

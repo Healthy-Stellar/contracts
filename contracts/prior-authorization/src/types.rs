@@ -23,6 +23,9 @@ pub enum Error {
     DeadlineExceeded = 17,
     AutoApprovalFailed = 18,
     ReviewNotFound = 19,
+    ServiceNotCovered = 20,
+    NotInitialized = 21,
+    AlreadyInitialized = 22,
 }
 
 /// Lifecycle status of a prior authorization request.
@@ -251,4 +254,6 @@ pub enum DataKey {
     SLAConfig(Symbol),
     /// SLA tracking: stores Vec<u64> of overdue auth_request_ids.
     OverdueAuths,
+    /// Address of the deployed insurer-registry contract.
+    InsurerRegistryId,
 }
