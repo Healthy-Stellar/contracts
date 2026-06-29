@@ -1,4 +1,5 @@
 [package]
+lints = { workspace = true }
 name = "prescription-management"
 version = "0.1.0"
 edition = "2024"

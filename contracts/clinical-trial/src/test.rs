@@ -10,7 +10,7 @@ fn create_test_env() -> (Env, Address, Address, Address, ClinicalTrialContractCl
     let pi = Address::generate(&env);
     let patient = Address::generate(&env);
 
-    let contract_id = env.register_contract(None, crate::ClinicalTrialContract);
+    let contract_id = env.register(crate::ClinicalTrialContract, ());
     let client = ClinicalTrialContractClient::new(&env, &contract_id);
 
     client.initialize(&admin);
@@ -76,7 +76,7 @@ fn test_double_initialize() {
     env.mock_all_auths();
 
     let admin = Address::generate(&env);
-    let contract_id = env.register_contract(None, crate::ClinicalTrialContract);
+    let contract_id = env.register(crate::ClinicalTrialContract, ());
     let client = ClinicalTrialContractClient::new(&env, &contract_id);
 
     client.initialize(&admin);

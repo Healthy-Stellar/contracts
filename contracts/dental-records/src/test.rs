@@ -8,7 +8,7 @@ use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String, Symbol,
 fn create_env() -> (Env, DentalRecordsContractClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, DentalRecordsContract);
+    let contract_id = env.register(DentalRecordsContract, ());
     let client = DentalRecordsContractClient::new(&env, &contract_id);
     (env, client)
 }

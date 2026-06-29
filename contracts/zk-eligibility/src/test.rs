@@ -8,7 +8,7 @@ use soroban_sdk::{testutils::Address as _, Address, Bytes, BytesN, Env, Vec};
 fn setup() -> (Env, Address, ZkEligibilityClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, ZkEligibility);
+    let contract_id = env.register(ZkEligibility, ());
     let client = ZkEligibilityClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
     client.initialize(&admin);
@@ -50,7 +50,7 @@ fn test_double_initialize_returns_error() {
 fn test_call_before_init_returns_error() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, ZkEligibility);
+    let contract_id = env.register(ZkEligibility, ());
     let client = ZkEligibilityClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
     let err = client

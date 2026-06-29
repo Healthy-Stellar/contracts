@@ -2,10 +2,8 @@
 
 use super::*;
 use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, Address, BytesN, Env, String};
+use shared::test_utils::{dummy_hash};
 
-fn dummy_hash(env: &Env, byte: u8) -> BytesN<32> {
-    BytesN::from_array(env, &[byte; 32])
-}
 
 fn register_insurer_with_anchor(
     env: &Env,
@@ -29,7 +27,7 @@ fn register_insurer_with_anchor(
 #[test]
 fn test_register_insurer() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InsurerRegistry);
+    let contract_id = env.register(InsurerRegistry, ());
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
@@ -47,7 +45,7 @@ fn test_register_insurer() {
 #[test]
 fn test_duplicate_registration() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InsurerRegistry);
+    let contract_id = env.register(InsurerRegistry, ());
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
@@ -72,7 +70,7 @@ fn test_duplicate_registration() {
 #[test]
 fn test_update_insurer() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InsurerRegistry);
+    let contract_id = env.register(InsurerRegistry, ());
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
@@ -91,7 +89,7 @@ fn test_update_insurer() {
 #[test]
 fn test_update_nonexistent_insurer() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InsurerRegistry);
+    let contract_id = env.register(InsurerRegistry, ());
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
@@ -105,7 +103,7 @@ fn test_update_nonexistent_insurer() {
 #[test]
 fn test_get_nonexistent_insurer() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InsurerRegistry);
+    let contract_id = env.register(InsurerRegistry, ());
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
@@ -116,7 +114,7 @@ fn test_get_nonexistent_insurer() {
 #[test]
 fn test_update_contact_details() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InsurerRegistry);
+    let contract_id = env.register(InsurerRegistry, ());
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
@@ -134,7 +132,7 @@ fn test_update_contact_details() {
 #[test]
 fn test_update_coverage_policies() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InsurerRegistry);
+    let contract_id = env.register(InsurerRegistry, ());
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
@@ -152,7 +150,7 @@ fn test_update_coverage_policies() {
 #[test]
 fn test_add_claims_reviewer() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InsurerRegistry);
+    let contract_id = env.register(InsurerRegistry, ());
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
@@ -170,7 +168,7 @@ fn test_add_claims_reviewer() {
 #[test]
 fn test_add_multiple_claims_reviewers() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InsurerRegistry);
+    let contract_id = env.register(InsurerRegistry, ());
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
@@ -191,7 +189,7 @@ fn test_add_multiple_claims_reviewers() {
 #[test]
 fn test_add_duplicate_reviewer() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InsurerRegistry);
+    let contract_id = env.register(InsurerRegistry, ());
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
@@ -207,7 +205,7 @@ fn test_add_duplicate_reviewer() {
 #[test]
 fn test_add_reviewer_to_nonexistent_insurer() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InsurerRegistry);
+    let contract_id = env.register(InsurerRegistry, ());
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
@@ -221,7 +219,7 @@ fn test_add_reviewer_to_nonexistent_insurer() {
 #[test]
 fn test_remove_claims_reviewer() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InsurerRegistry);
+    let contract_id = env.register(InsurerRegistry, ());
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
@@ -239,7 +237,7 @@ fn test_remove_claims_reviewer() {
 #[test]
 fn test_remove_nonexistent_reviewer() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InsurerRegistry);
+    let contract_id = env.register(InsurerRegistry, ());
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
@@ -255,7 +253,7 @@ fn test_remove_nonexistent_reviewer() {
 #[test]
 fn test_is_authorized_reviewer() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InsurerRegistry);
+    let contract_id = env.register(InsurerRegistry, ());
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
@@ -273,7 +271,7 @@ fn test_is_authorized_reviewer() {
 #[test]
 fn test_get_claims_reviewers_empty() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InsurerRegistry);
+    let contract_id = env.register(InsurerRegistry, ());
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
@@ -288,7 +286,7 @@ fn test_get_claims_reviewers_empty() {
 #[test]
 fn test_expired_insurer_anchor_disables_membership() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InsurerRegistry);
+    let contract_id = env.register(InsurerRegistry, ());
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
@@ -322,7 +320,7 @@ fn test_expired_insurer_anchor_disables_membership() {
 #[test]
 fn test_full_workflow() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InsurerRegistry);
+    let contract_id = env.register(InsurerRegistry, ());
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
