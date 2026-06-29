@@ -9,10 +9,27 @@ mod test;
 #[cfg(test)]
 mod test_enhanced;
 
-use soroban_sdk::{contract, contractimpl, xdr::ToXdr, Address, Bytes, BytesN, Env, String, Symbol, Vec};
+use soroban_sdk::{contract, contractclient, contractimpl, xdr::ToXdr, Address, Bytes, BytesN, Env, String, Symbol, Vec};
 use storage::*;
 use types::*;
 use shared::temporal;
+
+/// Cross-contract interface for insurer-registry coverage validation (#526).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoveragePlan {
+    pub plan_id: u64,
+    pub plan_name: String,
+    pub service_codes: Vec<String>,
+    pub is_active: bool,
+    pub effective_from: u64,
+    pub effective_until: Option<u64>,
+}
+
+#[contractclient(name = "InsurerRegistryClient")]
+pub trait InsurerRegistryInterface {
+    fn get_coverage_plans(env: Env, insurer_wallet: Address) -> Vec<CoveragePlan>;
+}
 
 /// Shorter deadline (hours) assigned to escalated requests.
 const ESCALATION_DEADLINE_HOURS: u64 = 4;
@@ -58,16 +75,84 @@ fn compute_appeal_chain_hash(
     env.crypto().sha256(&data).into()
 }
 
+fn service_codes_covered(
+    env: &Env,
+    insurer_registry_id: &Address,
+    insurer_wallet: &Address,
+    service_codes: &Vec<String>,
+) -> bool {
+    let registry = InsurerRegistryClient::new(env, insurer_registry_id);
+    let plans = registry.get_coverage_plans(insurer_wallet);
+    let now = env.ledger().timestamp();
+
+    for i in 0..service_codes.len() {
+        let code = match service_codes.get(i) {
+            Some(c) => c,
+            None => return false,
+        };
+        let mut covered = false;
+
+        for j in 0..plans.len() {
+            let plan = match plans.get(j) {
+                Some(p) => p,
+                None => continue,
+            };
+            if !plan.is_active || plan.effective_from > now {
+                continue;
+            }
+            if let Some(until) = plan.effective_until {
+                if now > until {
+                    continue;
+                }
+            }
+            for k in 0..plan.service_codes.len() {
+                if let Some(plan_code) = plan.service_codes.get(k) {
+                    if plan_code == code {
+                        covered = true;
+                        break;
+                    }
+                }
+            }
+            if covered {
+                break;
+            }
+        }
+
+        if !covered {
+            return false;
+        }
+    }
+
+    true
+}
+
 #[contract]
 pub struct PriorAuthorizationContract;
 
 #[contractimpl]
 impl PriorAuthorizationContract {
+    /// One-time setup: store the insurer-registry contract address used for
+    /// coverage-plan validation during authorization submission (#526).
+    pub fn initialize(env: Env, insurer_registry_id: Address) -> Result<(), Error> {
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::InsurerRegistryId)
+        {
+            return Err(Error::AlreadyInitialized);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::InsurerRegistryId, &insurer_registry_id);
+        Ok(())
+    }
+
     /// Submit a new prior authorization request.
     pub fn submit_prior_authorization(
         env: Env,
         provider_id: Address,
         patient_id: Address,
+        insurer_wallet: Address,
         policy_id: u64,
         authorization_type: Symbol,
         requested_service: String,
@@ -77,6 +162,21 @@ impl PriorAuthorizationContract {
         urgency: Symbol,
     ) -> Result<u64, Error> {
         provider_id.require_auth();
+
+        let insurer_registry_id: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::InsurerRegistryId)
+            .ok_or(Error::NotInitialized)?;
+
+        if !service_codes_covered(
+            &env,
+            &insurer_registry_id,
+            &insurer_wallet,
+            &service_codes,
+        ) {
+            return Err(Error::ServiceNotCovered);
+        }
 
         let auth_request_id = next_auth_id(&env);
 

@@ -2,8 +2,9 @@
 #![allow(deprecated)]
 
 use super::*;
+use insurer_registry::{InsurerRegistry, InsurerRegistryClient};
 use shared::privacy::PolicyMetadata;
-use soroban_sdk::{contract, contractimpl, testutils::Address as _, BytesN, Env, String, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, testutils::{Address as _, Ledger}, BytesN, Env, String, Symbol, Vec};
 
 // ── Mock access-control contract for tests (#300) ────────────────────────────
 //
@@ -49,6 +50,28 @@ fn build_services(env: &Env, amount: i128) -> Vec<ServiceLine> {
     services
 }
 
+fn dummy_hash(env: &Env, byte: u8) -> BytesN<32> {
+    BytesN::from_array(env, &[byte; 32])
+}
+
+fn register_active_insurer(env: &Env, insurer: &Address) -> Address {
+    let ir_id = env.register_contract(None, InsurerRegistry);
+    let ir_client = InsurerRegistryClient::new(env, &ir_id);
+    let issuer = Address::generate(env);
+    ir_client.register_insurer(
+        insurer,
+        &String::from_str(env, "Claims Insurer"),
+        &String::from_str(env, "LIC-CLAIMS"),
+        &String::from_str(env, "metadata"),
+        &dummy_hash(env, 1),
+        &issuer,
+        &dummy_hash(env, 2),
+        &4_100_000_000_u64,
+        &dummy_hash(env, 3),
+    );
+    ir_id
+}
+
 fn setup(
     env: &Env,
 ) -> (
@@ -69,7 +92,8 @@ fn setup(
     let provider = Address::generate(env);
     let patient = Address::generate(env);
     let insurer = Address::generate(env);
-    client.initialize(&admin, &ac_id, &fr_id, &86400); // 24 hour threshold
+    let ir_id = register_active_insurer(env, &insurer);
+    client.initialize(&admin, &ac_id, &fr_id, &86400, &ir_id);
     client.register_insurer(&admin, &insurer);
     (client, admin, provider, patient, insurer)
 }
@@ -318,7 +342,8 @@ fn test_double_initialize_fails() {
     // provided — the AlreadyInitialized guard is checked first.
     let dummy_ac = Address::generate(&env);
     let dummy_fr = Address::generate(&env);
-    let result = client.try_initialize(&admin, &dummy_ac, &dummy_fr, &86400);
+    let dummy_ir = Address::generate(&env);
+    let result = client.try_initialize(&admin, &dummy_ac, &dummy_fr, &86400, &dummy_ir);
     assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
 }
 
@@ -661,4 +686,78 @@ fn test_unauthorized_cannot_mark_disputed() {
     let unauthorized = Address::generate(&env);
     let result = client.try_mark_claim_disputed(&claim_id, &unauthorized);
     assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+}
+
+// -----------------------------------------------------------------------
+// insurer-registry integration (#527)
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_integration_active_insurer_claim_submission_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, provider, patient, insurer) = setup(&env);
+
+    let claim_id = client.submit_claim(
+        &provider,
+        &patient,
+        &insurer,
+        &1,
+        &1000,
+        &make_services(&env),
+        &Vec::new(&env),
+        &BytesN::from_array(&env, &[0; 32]),
+        &policy(&env),
+        &15000,
+    );
+    assert_eq!(claim_id, 1);
+}
+
+#[test]
+fn test_integration_expired_insurer_returns_insurer_not_active() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ac_id = env.register(MockAccessControl, ());
+    let fr_id = Address::generate(&env);
+    let contract_id = env.register_contract(None, MedicalClaimsSystem);
+    let client = MedicalClaimsSystemClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+    let insurer = Address::generate(&env);
+
+    let ir_id = env.register_contract(None, InsurerRegistry);
+    let ir_client = InsurerRegistryClient::new(&env, &ir_id);
+    let issuer = Address::generate(&env);
+    env.ledger().with_mut(|li| li.timestamp = 100);
+    ir_client.register_insurer(
+        &insurer,
+        &String::from_str(&env, "Expired Insurer"),
+        &String::from_str(&env, "LIC-EXP"),
+        &String::from_str(&env, "metadata"),
+        &dummy_hash(&env, 1),
+        &issuer,
+        &dummy_hash(&env, 2),
+        &150_u64,
+        &dummy_hash(&env, 3),
+    );
+
+    client.initialize(&admin, &ac_id, &fr_id, &86400, &ir_id);
+    client.register_insurer(&admin, &insurer);
+    env.ledger().with_mut(|li| li.timestamp = 200);
+
+    let result = client.try_submit_claim(
+        &provider,
+        &patient,
+        &insurer,
+        &1,
+        &1000,
+        &make_services(&env),
+        &Vec::new(&env),
+        &BytesN::from_array(&env, &[0; 32]),
+        &policy(&env),
+        &15000,
+    );
+    assert_eq!(result, Err(Ok(Error::InsurerNotActive)));
 }
