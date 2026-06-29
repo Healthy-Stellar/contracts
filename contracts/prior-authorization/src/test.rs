@@ -1,23 +1,67 @@
 #![cfg(test)]
 
 use super::*;
+use insurer_registry::{CoveragePlan, InsurerRegistry, InsurerRegistryClient};
 use soroban_sdk::{testutils::{Address as _, Ledger}, Address, BytesN, Env, String, Symbol, Vec};
 
 // -----------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------
 
-fn setup() -> (Env, Address, Address) {
+fn dummy_hash(env: &Env, byte: u8) -> BytesN<32> {
+    BytesN::from_array(env, &[byte; 32])
+}
+
+fn setup_insurer_registry(env: &Env, insurer: &Address) -> Address {
+    let ir_id = env.register_contract(None, InsurerRegistry);
+    let ir_client = InsurerRegistryClient::new(env, &ir_id);
+    let issuer = Address::generate(env);
+    ir_client.register_insurer(
+        insurer,
+        &String::from_str(env, "Test Insurer"),
+        &String::from_str(env, "LIC-001"),
+        &String::from_str(env, "metadata"),
+        &dummy_hash(env, 1),
+        &issuer,
+        &dummy_hash(env, 2),
+        &4_100_000_000_u64,
+        &dummy_hash(env, 3),
+    );
+
+    let mut service_codes = Vec::new(env);
+    service_codes.push_back(String::from_str(env, "CPT99213"));
+    let mut plans = Vec::new(env);
+    plans.push_back(CoveragePlan {
+        plan_id: 1,
+        plan_name: String::from_str(env, "PPO Gold"),
+        service_codes,
+        is_active: true,
+        effective_from: 0,
+        effective_until: None,
+    });
+    ir_client.set_coverage_plans(insurer, &plans);
+    ir_id
+}
+
+fn setup() -> (Env, Address, Address, Address) {
     let env = Env::default();
     env.mock_all_auths();
     let provider = Address::generate(&env);
     let patient = Address::generate(&env);
-    (env, provider, patient)
+    let insurer = Address::generate(&env);
+    (env, provider, patient, insurer)
 }
 
-fn register_contract(env: &Env) -> PriorAuthorizationContractClient {
+fn setup_client(env: &Env, insurer: &Address) -> PriorAuthorizationContractClient {
+    let ir_id = setup_insurer_registry(env, insurer);
+    register_contract(env, &ir_id)
+}
+
+fn register_contract(env: &Env, insurer_registry_id: &Address) -> PriorAuthorizationContractClient {
     let contract_id = env.register(PriorAuthorizationContract, ());
-    PriorAuthorizationContractClient::new(env, &contract_id)
+    let client = PriorAuthorizationContractClient::new(env, &contract_id);
+    client.initialize(insurer_registry_id);
+    client
 }
 
 fn submit(
@@ -25,6 +69,7 @@ fn submit(
     client: &PriorAuthorizationContractClient,
     provider: &Address,
     patient: &Address,
+    insurer: &Address,
 ) -> u64 {
     let mut service_codes = Vec::new(env);
     service_codes.push_back(String::from_str(env, "CPT99213"));
@@ -37,6 +82,7 @@ fn submit(
     client.submit_prior_authorization(
         provider,
         patient,
+        insurer,
         &1001u64,
         &Symbol::new(env, "medication"),
         &String::from_str(env, "Insulin Glargine"),
@@ -109,27 +155,27 @@ fn deny(
 
 #[test]
 fn test_submit_success() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
     assert_eq!(id, 1);
 }
 
 #[test]
 fn test_submit_increments_ids() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id1 = submit(&env, &client, &provider, &patient);
-    let id2 = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id1 = submit(&env, &client, &provider, &patient, &insurer);
+    let id2 = submit(&env, &client, &provider, &patient, &insurer);
     assert_eq!(id1, 1);
     assert_eq!(id2, 2);
 }
 
 #[test]
 fn test_submit_initial_status_is_submitted() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
 
     let info = client.get_authorization_status(&id, &provider);
     assert!(matches!(info.status, AuthStatus::Submitted));
@@ -143,9 +189,9 @@ fn test_submit_initial_status_is_submitted() {
 
 #[test]
 fn test_attach_document_success() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
 
     let hash = BytesN::from_array(&env, &[2u8; 32]);
     client
@@ -160,9 +206,9 @@ fn test_attach_document_success() {
 
 #[test]
 fn test_attach_document_wrong_provider_fails() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
 
     let other = Address::generate(&env);
     let hash = BytesN::from_array(&env, &[3u8; 32]);
@@ -178,8 +224,8 @@ fn test_attach_document_wrong_provider_fails() {
 
 #[test]
 fn test_attach_document_not_found_fails() {
-    let (env, provider, _) = setup();
-    let client = register_contract(&env);
+    let (env, provider, _, insurer) = setup();
+    let client = setup_client(&env, &insurer);
     let hash = BytesN::from_array(&env, &[4u8; 32]);
 
     let result = client.try_attach_supporting_documentation(
@@ -197,9 +243,9 @@ fn test_attach_document_not_found_fails() {
 
 #[test]
 fn test_review_approve_success() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
     let reviewer = Address::generate(&env);
     approve(&env, &client, id, &reviewer);
 
@@ -213,9 +259,9 @@ fn test_review_approve_success() {
 
 #[test]
 fn test_review_deny_success() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
     let reviewer = Address::generate(&env);
     deny(&env, &client, id, &reviewer);
 
@@ -225,9 +271,9 @@ fn test_review_deny_success() {
 
 #[test]
 fn test_review_more_info_needed() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
     let reviewer = Address::generate(&env);
     let insurer = Address::generate(&env);
     register_test_reviewer(&env, &client, &insurer, &reviewer);
@@ -248,9 +294,9 @@ fn test_review_more_info_needed() {
 
 #[test]
 fn test_review_invalid_decision_fails() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
     let reviewer = Address::generate(&env);
 
     let result = client.try_review_authorization(
@@ -267,9 +313,9 @@ fn test_review_invalid_decision_fails() {
 
 #[test]
 fn test_review_already_approved_fails() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
     let reviewer = Address::generate(&env);
     approve(&env, &client, id, &reviewer);
 
@@ -291,9 +337,9 @@ fn test_review_already_approved_fails() {
 
 #[test]
 fn test_request_p2p_success() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
 
     let mut times = Vec::new(&env);
     times.push_back(String::from_str(&env, "Mon 9am"));
@@ -308,9 +354,9 @@ fn test_request_p2p_success() {
 
 #[test]
 fn test_request_p2p_twice_fails() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
 
     let mut times = Vec::new(&env);
     times.push_back(String::from_str(&env, "Mon 9am"));
@@ -325,9 +371,9 @@ fn test_request_p2p_twice_fails() {
 
 #[test]
 fn test_schedule_p2p_success() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
 
     let mut times = Vec::new(&env);
     times.push_back(String::from_str(&env, "Tue 2pm"));
@@ -349,9 +395,9 @@ fn test_schedule_p2p_success() {
 
 #[test]
 fn test_p2p_wrong_provider_fails() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
 
     let other = Address::generate(&env);
     let mut times = Vec::new(&env);
@@ -367,9 +413,9 @@ fn test_p2p_wrong_provider_fails() {
 
 #[test]
 fn test_appeal_level_1_success() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
     let reviewer = Address::generate(&env);
     deny(&env, &client, id, &reviewer);
 
@@ -384,11 +430,49 @@ fn test_appeal_level_1_success() {
     assert!(matches!(info.status, AuthStatus::Appealed));
 }
 
+// -----------------------------------------------------------------------
+// insurer-registry integration (#526)
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_integration_covered_service_proceeds() {
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
+    assert_eq!(id, 1);
+}
+
+#[test]
+fn test_integration_uncovered_service_returns_service_not_covered() {
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+
+    let mut service_codes = Vec::new(&env);
+    service_codes.push_back(String::from_str(&env, "CPT99999"));
+    let mut diagnosis_codes = Vec::new(&env);
+    diagnosis_codes.push_back(String::from_str(&env, "E11.9"));
+    let hash = BytesN::from_array(&env, &[1u8; 32]);
+
+    let result = client.try_submit_prior_authorization(
+        &provider,
+        &patient,
+        &insurer,
+        &1001u64,
+        &Symbol::new(&env, "medication"),
+        &String::from_str(&env, "Experimental Therapy"),
+        &service_codes,
+        &diagnosis_codes,
+        &hash,
+        &Symbol::new(&env, "routine"),
+    );
+    assert_eq!(result, Err(Ok(Error::ServiceNotCovered)));
+}
+
 #[test]
 fn test_appeal_level_2_and_3() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
     let reviewer = Address::generate(&env);
     deny(&env, &client, id, &reviewer);
 
@@ -406,9 +490,9 @@ fn test_appeal_level_2_and_3() {
 
 #[test]
 fn test_appeal_exceeds_max_level_fails() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
     let reviewer = Address::generate(&env);
     deny(&env, &client, id, &reviewer);
 
@@ -419,9 +503,9 @@ fn test_appeal_exceeds_max_level_fails() {
 
 #[test]
 fn test_appeal_not_denied_fails() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
 
     let hash = BytesN::from_array(&env, &[9u8; 32]);
     let result = client.try_appeal_denial(&id, &provider, &1u32, &hash, &None);
@@ -430,9 +514,9 @@ fn test_appeal_not_denied_fails() {
 
 #[test]
 fn test_appeal_wrong_provider_fails() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
     let reviewer = Address::generate(&env);
     deny(&env, &client, id, &reviewer);
 
@@ -444,9 +528,9 @@ fn test_appeal_wrong_provider_fails() {
 
 #[test]
 fn test_appeal_with_additional_evidence() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
     let reviewer = Address::generate(&env);
     deny(&env, &client, id, &reviewer);
 
@@ -460,9 +544,9 @@ fn test_appeal_with_additional_evidence() {
 
 #[test]
 fn test_review_history_and_appeal_chain_is_tamper_evident() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
     let reviewer = Address::generate(&env);
     let insurer = Address::generate(&env);
     register_test_reviewer(&env, &client, &insurer, &reviewer);
@@ -504,9 +588,9 @@ fn test_review_history_and_appeal_chain_is_tamper_evident() {
 
 #[test]
 fn test_expedite_success() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
 
     client
         .expedite_authorization(
@@ -520,9 +604,9 @@ fn test_expedite_success() {
 
 #[test]
 fn test_expedite_approved_fails() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
     let reviewer = Address::generate(&env);
     approve(&env, &client, id, &reviewer);
 
@@ -537,9 +621,9 @@ fn test_expedite_approved_fails() {
 
 #[test]
 fn test_expedite_wrong_provider_fails() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
 
     let other = Address::generate(&env);
     let result = client.try_expedite_authorization(
@@ -557,9 +641,9 @@ fn test_expedite_wrong_provider_fails() {
 
 #[test]
 fn test_extend_approved_success() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
     let reviewer = Address::generate(&env);
     approve(&env, &client, id, &reviewer);
 
@@ -575,9 +659,9 @@ fn test_extend_approved_success() {
 
 #[test]
 fn test_extend_not_approved_fails() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
 
     let result = client.try_extend_authorization(
         &id,
@@ -590,9 +674,9 @@ fn test_extend_not_approved_fails() {
 
 #[test]
 fn test_extend_wrong_provider_fails() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
     let reviewer = Address::generate(&env);
     approve(&env, &client, id, &reviewer);
 
@@ -612,9 +696,9 @@ fn test_extend_wrong_provider_fails() {
 
 #[test]
 fn test_track_usage_success() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
     let reviewer = Address::generate(&env);
     approve(&env, &client, id, &reviewer);
 
@@ -628,9 +712,9 @@ fn test_track_usage_success() {
 
 #[test]
 fn test_track_usage_accumulates() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
     let reviewer = Address::generate(&env);
     approve(&env, &client, id, &reviewer);
 
@@ -647,9 +731,9 @@ fn test_track_usage_accumulates() {
 
 #[test]
 fn test_track_usage_exceeds_approved_fails() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
     let reviewer = Address::generate(&env);
     approve(&env, &client, id, &reviewer); // approved_units = 10
 
@@ -659,9 +743,9 @@ fn test_track_usage_exceeds_approved_fails() {
 
 #[test]
 fn test_track_usage_not_approved_fails() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
 
     let result = client.try_track_authorization_usage(&id, &provider, &1u32, &1_500_000u64);
     assert!(result.is_err());
@@ -669,11 +753,11 @@ fn test_track_usage_not_approved_fails() {
 
 #[test]
 fn test_track_usage_expired_fails() {
-    let (env, provider, patient) = setup();
+    let (env, provider, patient, insurer) = setup();
     env.ledger().with_mut(|li| li.timestamp = 1_000_000);
 
-    let client = register_contract(&env);
-    let id = submit(&env, &client, &provider, &patient);
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
     let reviewer = Address::generate(&env);
     let insurer = Address::generate(&env);
     register_test_reviewer(&env, &client, &insurer, &reviewer);
@@ -702,8 +786,8 @@ fn test_track_usage_expired_fails() {
 
 #[test]
 fn test_get_status_not_found_fails() {
-    let (env, provider, _) = setup();
-    let client = register_contract(&env);
+    let (env, provider, _, insurer) = setup();
+    let client = setup_client(&env, &insurer);
     let result = client.try_get_authorization_status(&999, &provider);
     assert!(result.is_err());
 }
@@ -714,11 +798,11 @@ fn test_get_status_not_found_fails() {
 
 #[test]
 fn test_full_workflow_approve_and_use() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
 
     // 1. Submit
-    let id = submit(&env, &client, &provider, &patient);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
 
     // 2. Attach document
     let doc_hash = BytesN::from_array(&env, &[20u8; 32]);
@@ -772,10 +856,10 @@ fn test_full_workflow_approve_and_use() {
 
 #[test]
 fn test_full_workflow_deny_appeal_three_levels() {
-    let (env, provider, patient) = setup();
-    let client = register_contract(&env);
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
 
-    let id = submit(&env, &client, &provider, &patient);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
 
     // Request peer-to-peer
     let mut times = Vec::new(&env);
@@ -818,4 +902,42 @@ fn test_full_workflow_deny_appeal_three_levels() {
 
     let info = client.get_authorization_status(&id, &provider);
     assert!(matches!(info.status, AuthStatus::Appealed));
+}
+
+// -----------------------------------------------------------------------
+// insurer-registry integration (#526)
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_integration_covered_service_proceeds() {
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
+    assert_eq!(id, 1);
+}
+
+#[test]
+fn test_integration_uncovered_service_returns_service_not_covered() {
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+
+    let mut service_codes = Vec::new(&env);
+    service_codes.push_back(String::from_str(&env, "CPT99999"));
+    let mut diagnosis_codes = Vec::new(&env);
+    diagnosis_codes.push_back(String::from_str(&env, "E11.9"));
+    let hash = BytesN::from_array(&env, &[1u8; 32]);
+
+    let result = client.try_submit_prior_authorization(
+        &provider,
+        &patient,
+        &insurer,
+        &1001u64,
+        &Symbol::new(&env, "medication"),
+        &String::from_str(&env, "Experimental Therapy"),
+        &service_codes,
+        &diagnosis_codes,
+        &hash,
+        &Symbol::new(&env, "routine"),
+    );
+    assert_eq!(result, Err(Ok(Error::ServiceNotCovered)));
 }

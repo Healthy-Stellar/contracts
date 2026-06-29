@@ -72,6 +72,37 @@ All contracts under `contracts/` are in scope. The following are **out of scope*
 - Issues requiring physical access to a deployer's machine
 - Social-engineering attacks
 
+## Deployment Verification
+
+After deploying to Stellar Testnet or Mainnet, the deployment manifest (`deployments/<network>.json`) records:
+
+- Network name and deployment timestamp
+- Deployed contract IDs
+- WASM bytecode hash (SHA-256) for each contract
+- Git commit SHA at deployment time
+
+This manifest enables users and auditors to independently verify that the on-chain bytecode matches the source code repository.
+
+### Verifying a deployment
+
+Use the verification script to rebuild all contracts from source and compare their WASM hashes against the published manifest:
+
+```bash
+./scripts/verify-deployment.sh --manifest deployments/mainnet.json
+```
+
+The script rebuilds the workspace, computes SHA-256 hashes of the WASM artifacts, and reports pass/fail for each contract. If any hashes mismatch, the verification fails.
+
+### Manifest integrity
+
+The deployment manifest is generated automatically by `scripts/deploy_all.sh` during each deployment and committed to the repository. For Mainnet deployments:
+
+1. The manifest is generated and reviewed as part of the deployment process.
+2. The manifest is committed to version control and tagged with the corresponding release.
+3. Users can independently rebuild from the tagged commit and verify hashes match the manifest.
+
+**Note:** Manifest signing via digital signatures is not currently implemented. For Mainnet, the Git commit hash and release tag provide integrity guarantees via GitHub's commit signing features. Future deployments may add additional signing layers using a dedicated DeploymentRegistry contract or HSM-backed key material.
+
 ## Bug Bounty
 
 There is currently no formal bug bounty programme. Significant findings may be recognised with a public acknowledgement or a discretionary reward at the maintainers' discretion.

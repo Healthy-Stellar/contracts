@@ -53,6 +53,12 @@ pub trait AccessControlInterface {
     );
 }
 
+// ── Cross-contract interface for insurer credential validation (#527) ─────────
+#[contractclient(name = "InsurerRegistryClient")]
+pub trait InsurerRegistryInterface {
+    fn is_insurer_active(env: Env, wallet: Address) -> bool;
+}
+
 #[contract]
 pub struct MedicalClaimsSystem;
 
@@ -70,12 +76,16 @@ impl MedicalClaimsSystem {
     ///
     /// `reconciliation_threshold` is the time in seconds after which claims
     /// are considered unreconciled if not matched with payments.
+    ///
+    /// `insurer_registry_id` is the address of the deployed insurer-registry
+    /// contract used to verify insurer credentials before claim submission (#527).
     pub fn initialize(
         env: Env,
         admin: Address,
         access_control_id: Address,
         financial_records_id: Address,
         reconciliation_threshold: u64,
+        insurer_registry_id: Address,
     ) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
@@ -91,6 +101,9 @@ impl MedicalClaimsSystem {
         env.storage()
             .instance()
             .set(&DataKey::ReconciliationThreshold, &reconciliation_threshold);
+        env.storage()
+            .instance()
+            .set(&DataKey::InsurerRegistryId, &insurer_registry_id);
         Ok(())
     }
 
@@ -139,6 +152,17 @@ impl MedicalClaimsSystem {
     ) -> Result<u64, Error> {
         provider_id.require_auth();
         Self::require_insurer(&env, &insurer_id)?;
+
+        let insurer_registry_id: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::InsurerRegistryId)
+            .ok_or(Error::NotInitialized)?;
+        let registry = InsurerRegistryClient::new(&env, &insurer_registry_id);
+        if !registry.is_insurer_active(&insurer_id) {
+            return Err(Error::InsurerNotActive);
+        }
+
         validate_policy_metadata(&policy).map_err(|_| Error::InvalidPolicyMetadata)?;
 
         // #300: Verify that the patient has granted consent to this provider

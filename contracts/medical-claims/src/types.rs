@@ -31,9 +31,8 @@ pub enum Error {
     PaymentNotFound = 12,
     PaymentAlreadyReconciled = 13,
     InvalidReconciliationAmount = 14,
-    DisputeNotFound = 15,
-    DisputeAlreadyResolved = 16,
-    NotAuthorizedReviewer = 17,
+    /// #527: Insurer credential is expired or revoked in insurer-registry.
+    InsurerNotActive = 15,
 }
 
 #[contracttype]
@@ -161,8 +160,6 @@ pub enum DataKey {
     FinancialRecordsId,
     ReconciliationThreshold, // configurable threshold in seconds for unreconciled claims
     InsurerUnreconciledClaims(Address), // insurer_id -> Vec<u64> of claim_ids
-    DisputeCounter,
-    Dispute(u64),
-    ClaimDisputes(u64),
-    AuthorizedReviewers,
+    /// #527: Address of the deployed insurer-registry contract.
+    InsurerRegistryId,
 }

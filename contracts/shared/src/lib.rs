@@ -25,6 +25,8 @@
 //! for integrity verification.
 
 pub mod actor_verification;
+#[cfg(test)]
+pub mod test_utils;
 pub mod error_hints;
 pub mod events;
 pub mod incident_tracking;

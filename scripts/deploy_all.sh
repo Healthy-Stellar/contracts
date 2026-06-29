@@ -11,6 +11,8 @@ SKIP_BUILD=false
 CLI_BIN="${CLI_BIN:-stellar}"
 TARGET_DIR="${TARGET_DIR:-${REPO_ROOT}/target/wasm32v1-none/release}"
 MANIFEST_DIR="${MANIFEST_DIR:-${REPO_ROOT}/deployments}"
+GIT_SHA="$(cd "$REPO_ROOT" && git rev-parse --short HEAD 2>/dev/null || printf 'unknown')"
+DEPLOYMENT_TIMESTAMP="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
 usage() {
     cat <<EOF
@@ -131,20 +133,56 @@ json_escape() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+compute_wasm_hash() {
+    local wasm_path="$1"
+    if [[ -f "$wasm_path" ]]; then
+        sha256sum "$wasm_path" | awk '{print $1}'
+    else
+        printf ''
+    fi
+}
+
 write_manifest() {
     local manifest="$1"
-    shift
+    local status="$2"
+    shift 2
+    local -a contracts=("$@")
 
     {
         printf '{\n'
-        printf '  "_network": "%s",\n' "$(json_escape "$NETWORK")"
-        printf '  "_status": "%s"' "$(json_escape "$1")"
-        shift
-        while [[ $# -gt 0 ]]; do
-            printf ',\n  "%s": "%s"' "$(json_escape "$1")" "$(json_escape "$2")"
-            shift 2
+        printf '  "network": "%s",\n' "$(json_escape "$NETWORK")"
+        printf '  "deployed_at": "%s",\n' "$(json_escape "$DEPLOYMENT_TIMESTAMP")"
+        printf '  "git_sha": "%s",\n' "$(json_escape "$GIT_SHA")"
+        printf '  "status": "%s",\n' "$(json_escape "$status")"
+        printf '  "contracts": {\n'
+
+        local first=true
+        local i=0
+        while [[ $i -lt ${#contracts[@]} ]]; do
+            local contract="${contracts[$i]}"
+            local contract_id="${contracts[$((i+1))]}"
+            local wasm_path
+            wasm_path="$(wasm_path_for "$contract")"
+            local wasm_hash
+            wasm_hash="$(compute_wasm_hash "$wasm_path")"
+
+            if [[ "$first" == true ]]; then
+                first=false
+            else
+                printf ',\n'
+            fi
+
+            printf '    "%s": {\n' "$(json_escape "$contract")"
+            printf '      "contract_id": "%s",\n' "$(json_escape "$contract_id")"
+            printf '      "wasm_hash": "%s",\n' "$(json_escape "$wasm_hash")"
+            printf '      "git_sha": "%s"\n' "$(json_escape "$GIT_SHA")"
+            printf '    }'
+
+            i=$((i + 2))
         done
-        printf '\n}\n'
+
+        printf '\n  }\n'
+        printf '}\n'
     } > "$manifest"
 }
 
@@ -171,6 +209,7 @@ deploy_contract() {
 cd "$REPO_ROOT"
 mkdir -p "$MANIFEST_DIR"
 MANIFEST="${MANIFEST_DIR}/${NETWORK}.json"
+MANIFEST_SIG="${MANIFEST_DIR}/${NETWORK}.json.sig"
 
 if [[ "$DRY_RUN" == false && "$SKIP_BUILD" == false ]]; then
     log "building workspace WASM artifacts"
@@ -178,13 +217,13 @@ if [[ "$DRY_RUN" == false && "$SKIP_BUILD" == false ]]; then
 fi
 
 log "network=${NETWORK} identity=${IDENTITY} dry_run=${DRY_RUN}"
-write_manifest "$MANIFEST" "INCOMPLETE"
+write_manifest "$MANIFEST" "in_progress"
 
 RESULTS=()
 for contract in "${CONTRACTS[@]}"; do
     contract_id="$(deploy_contract "$contract")"
     RESULTS+=("$contract" "$contract_id")
-    write_manifest "$MANIFEST" "INCOMPLETE" "${RESULTS[@]}"
+    write_manifest "$MANIFEST" "in_progress" "${RESULTS[@]}"
 done
 
 write_manifest "$MANIFEST" "complete" "${RESULTS[@]}"

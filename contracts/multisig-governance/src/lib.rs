@@ -1,5 +1,4 @@
 #![no_std]
-#![allow(deprecated)]
 
 //! # Multisig Governance Contract
 //!

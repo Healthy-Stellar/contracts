@@ -1,4 +1,5 @@
 [package]
+lints = { workspace = true }
 name = "upgrade-governance"
 version = "0.0.0"
 edition = "2021"
