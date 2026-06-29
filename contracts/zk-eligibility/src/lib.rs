@@ -16,7 +16,9 @@
 //! - Verification cost is bounded: public_inputs length is capped at
 //!   MAX_PUBLIC_INPUTS and proof length at MAX_PROOF_BYTES.
 //! - A successful verification is recorded on-chain (nullifier pattern) so
-//!   the same proof cannot be replayed.
+//!   the same proof cannot be replayed within the TTL window.
+//! - Nullifiers expire after `nullifier_ttl_ledgers` ledgers; expired
+//!   nullifiers allow re-verification with the same proof.
 //! - Integration point: other contracts call `verify_eligibility` and receive
 //!   a typed `Ok(())` / `Err(Error)` they can gate their own logic on.
 
@@ -33,10 +35,8 @@ mod test;
 pub const MAX_PUBLIC_INPUTS: u32 = 16;
 /// Maximum proof byte length accepted (Groth16 ~192 bytes; give headroom).
 pub const MAX_PROOF_BYTES: u32 = 512;
-/// Admin rotation confirmation window (24 hours in seconds).
-pub const ADMIN_ROTATION_WINDOW: u64 = 86_400;
-/// Index of the expiry timestamp within `public_inputs` (big-endian u64 in first 8 bytes).
-pub const EXPIRY_INPUT_IDX: u32 = 0;
+/// Default nullifier TTL in ledgers when not explicitly configured (~1 day at 5s/ledger).
+pub const DEFAULT_NULLIFIER_TTL_LEDGERS: u32 = 17_280;
 
 // ── Errors ────────────────────────────────────────────────────────────────────
 
@@ -68,12 +68,12 @@ pub enum DataKey {
     Admin,
     /// Verifier key for a given schema version.
     VerifierKey(u32),
-    /// Nullifier: proof hash → bool (prevents replay).
+    /// Nullifier: proof hash → NullifierRecord (schema version + expiry ledger).
     Nullifier(BytesN<32>),
     /// Cached subject eligibility after a successful proof.
     Eligibility(Address),
-    PendingAdmin,
-    RotationExpiry,
+    /// Configurable TTL (in ledgers) for nullifier entries.
+    NullifierTtlLedgers,
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -88,6 +88,16 @@ pub struct VerifierKeyEntry {
     pub schema_version: u32,
     /// Whether this key is still active (admin can deprecate old versions).
     pub active: bool,
+}
+
+/// Nullifier record stored on successful proof verification.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NullifierRecord {
+    /// Schema version the proof was verified against.
+    pub schema_version: u32,
+    /// Ledger sequence number at which this nullifier expires.
+    pub expires_at_ledger: u32,
 }
 
 /// Proof submission bundle.
@@ -115,6 +125,16 @@ impl ZkEligibility {
         admin.require_auth();
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage().persistent().set(&DataKey::Initialized, &true);
+        Ok(())
+    }
+
+    /// Set the nullifier TTL in ledgers. Admin only.
+    pub fn set_nullifier_ttl(env: Env, admin: Address, ttl_ledgers: u32) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        Self::assert_admin(&env, &admin)?;
+        env.storage()
+            .persistent()
+            .set(&DataKey::NullifierTtlLedgers, &ttl_ledgers);
         Ok(())
     }
 
@@ -173,7 +193,8 @@ impl ZkEligibility {
     /// Verify a ZK proof of eligibility.
     ///
     /// On success the proof nullifier is stored so the proof cannot be
-    /// replayed. Returns `Ok(())` which callers use to gate their own logic.
+    /// replayed within the TTL window. Returns `Ok(())` which callers use
+    /// to gate their own logic.
     ///
     /// `subject` is the address whose eligibility is being proven; it must
     /// sign the call so the proof cannot be submitted on behalf of another
@@ -217,27 +238,17 @@ impl ZkEligibility {
 
         // ── Nullifier check ───────────────────────────────────────────────────
         let proof_hash: BytesN<32> = env.crypto().sha256(&bundle.proof).into();
-        let nullifier_key = DataKey::Nullifier(proof_hash.clone());
-        if env.storage().persistent().has(&nullifier_key) {
+        if Self::nullifier_active(&env, &proof_hash) {
             return Err(Error::ProofAlreadyUsed);
         }
 
         // ── Verification ──────────────────────────────────────────────────────
-        // On Soroban there is no native pairing-based ZK verifier built into
-        // the host. The canonical production approach is to use a Soroban host
-        // function once it is available, or to call an external verifier
-        // contract whose address is stored in the VK entry.
-        //
-        // Here we implement the verification gate that all production code
-        // paths must pass through. The actual cryptographic check is delegated
-        // to `run_verification` which can be swapped for a real verifier
-        // without changing any caller code.
         if !Self::run_verification(&env, &vk_entry.vk, &bundle.proof, &bundle.public_inputs) {
             return Err(Error::VerificationFailed);
         }
 
         // ── Record nullifier ──────────────────────────────────────────────────
-        env.storage().persistent().set(&nullifier_key, &true);
+        Self::store_nullifier(&env, &proof_hash, bundle.schema_version);
         env.storage()
             .persistent()
             .set(&DataKey::Eligibility(subject.clone()), &true);
@@ -257,11 +268,9 @@ impl ZkEligibility {
             .ok_or(Error::SchemaNotFound)
     }
 
-    /// Check whether a proof (identified by its hash) has already been used.
+    /// Check whether a proof (identified by its hash) has an active, unexpired nullifier.
     pub fn is_nullified(env: Env, proof_hash: BytesN<32>) -> bool {
-        env.storage()
-            .persistent()
-            .has(&DataKey::Nullifier(proof_hash))
+        Self::nullifier_active(&env, &proof_hash)
     }
 
     /// Check whether a subject has a cached successful eligibility proof.
@@ -270,6 +279,33 @@ impl ZkEligibility {
             .persistent()
             .get(&DataKey::Eligibility(subject))
             .unwrap_or(false)
+    }
+
+    // ── internal helpers ──────────────────────────────────────────────────────
+
+    fn nullifier_active(env: &Env, proof_hash: &BytesN<32>) -> bool {
+        let record: NullifierRecord = match env
+            .storage()
+            .persistent()
+            .get(&DataKey::Nullifier(proof_hash.clone()))
+        {
+            Some(r) => r,
+            None => return false,
+        };
+        env.ledger().sequence() < record.expires_at_ledger
+    }
+
+    fn store_nullifier(env: &Env, proof_hash: &BytesN<32>, schema_version: u32) {
+        let ttl: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::NullifierTtlLedgers)
+            .unwrap_or(DEFAULT_NULLIFIER_TTL_LEDGERS);
+        let expires_at = env.ledger().sequence().saturating_add(ttl);
+        env.storage().persistent().set(
+            &DataKey::Nullifier(proof_hash.clone()),
+            &NullifierRecord { schema_version, expires_at_ledger: expires_at },
+        );
     }
 
     // ── guards ────────────────────────────────────────────────────────────────
