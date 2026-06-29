@@ -35,6 +35,8 @@ mod test;
 pub const MAX_PUBLIC_INPUTS: u32 = 16;
 /// Maximum proof byte length accepted (Groth16 ~192 bytes; give headroom).
 pub const MAX_PROOF_BYTES: u32 = 512;
+/// Maximum subjects/bundles accepted in a single batch call.
+pub const MAX_BATCH_SIZE: u32 = 10;
 /// Default nullifier TTL in ledgers when not explicitly configured (~1 day at 5s/ledger).
 pub const DEFAULT_NULLIFIER_TTL_LEDGERS: u32 = 17_280;
 
@@ -53,11 +55,7 @@ pub enum Error {
     TooManyPublicInputs  = 7,
     ProofAlreadyUsed     = 8,
     VerificationFailed   = 9,
-    ProofExpired         = 10,
-    RotationPending      = 11,
-    NoRotationPending    = 12,
-    RotationExpired      = 13,
-    NotPendingAdmin      = 14,
+    BatchTooLarge        = 10,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -260,6 +258,35 @@ impl ZkEligibility {
         Ok(())
     }
 
+    /// Verify eligibility for a batch of up to `MAX_BATCH_SIZE` subjects.
+    ///
+    /// Returns a `Vec<bool>` of the same length as the inputs. A failure at
+    /// index N (invalid proof, expired nullifier, unknown schema, etc.) sets
+    /// that entry to `false` and does not affect other indices.
+    /// Batch sizes exceeding `MAX_BATCH_SIZE` return `Error::BatchTooLarge`.
+    pub fn verify_eligibility_batch(
+        env: Env,
+        subjects: Vec<Address>,
+        bundles: Vec<ProofBundle>,
+    ) -> Result<Vec<bool>, Error> {
+        Self::assert_initialized(&env)?;
+
+        let len = subjects.len();
+        if len > MAX_BATCH_SIZE || bundles.len() > MAX_BATCH_SIZE || len != bundles.len() {
+            return Err(Error::BatchTooLarge);
+        }
+
+        let mut results: Vec<bool> = Vec::new(&env);
+        for i in 0..len {
+            let subject = subjects.get(i).unwrap();
+            let bundle = bundles.get(i).unwrap();
+            subject.require_auth();
+            let ok = Self::try_verify_single(&env, &subject, &bundle);
+            results.push_back(ok);
+        }
+        Ok(results)
+    }
+
     /// Read a verifier key entry (public view).
     pub fn get_verifier_key(env: Env, schema_version: u32) -> Result<VerifierKeyEntry, Error> {
         env.storage()
@@ -306,6 +333,47 @@ impl ZkEligibility {
             &DataKey::Nullifier(proof_hash.clone()),
             &NullifierRecord { schema_version, expires_at_ledger: expires_at },
         );
+    }
+
+    /// Inner verification logic for a single (subject, bundle) pair that
+    /// returns `bool` instead of `Result` so batch calls can collect partial
+    /// successes without aborting the entire transaction.
+    fn try_verify_single(env: &Env, subject: &Address, bundle: &ProofBundle) -> bool {
+        if bundle.proof.len() > MAX_PROOF_BYTES || bundle.public_inputs.len() > MAX_PUBLIC_INPUTS {
+            return false;
+        }
+
+        let vk_entry: VerifierKeyEntry = match env
+            .storage()
+            .persistent()
+            .get(&DataKey::VerifierKey(bundle.schema_version))
+        {
+            Some(e) => e,
+            None => return false,
+        };
+        if !vk_entry.active {
+            return false;
+        }
+
+        let proof_hash: BytesN<32> = env.crypto().sha256(&bundle.proof).into();
+        if Self::nullifier_active(env, &proof_hash) {
+            return false;
+        }
+
+        if !Self::run_verification(env, &vk_entry.vk, &bundle.proof, &bundle.public_inputs) {
+            return false;
+        }
+
+        Self::store_nullifier(env, &proof_hash, bundle.schema_version);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Eligibility(subject.clone()), &true);
+
+        env.events().publish(
+            (symbol_short!("zk_ok"), subject.clone(), bundle.schema_version),
+            proof_hash,
+        );
+        true
     }
 
     // ── guards ────────────────────────────────────────────────────────────────
