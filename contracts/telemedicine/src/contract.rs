@@ -1,6 +1,6 @@
 use crate::types::{
     DataKey, EligibilityResult, Error, JurisdictionPolicy, ProviderLicense, PrescriptionRequest,
-    SessionRecord, VirtualVisit, VisitStatus,
+    ProviderSessionWindow, RateLimitConfig, SessionRecord, VirtualVisit, VisitStatus,
 };
 use soroban_sdk::{
     contract, contractclient, contractimpl, panic_with_error, xdr::ToXdr, Address, Bytes, BytesN,
@@ -8,6 +8,8 @@ use soroban_sdk::{
 };
 
 const SESSION_TTL_SECONDS: u64 = 60 * 60;
+const DEFAULT_MAX_SESSIONS_PER_WINDOW: u32 = 20;
+const DEFAULT_WINDOW_DURATION_SECS: u64 = 86_400; // 24 hours
 
 // ── Cross-contract interface for provider-registry verification ───────────────
 
@@ -21,15 +23,72 @@ pub struct TelemedicineContract;
 
 #[contractimpl]
 impl TelemedicineContract {
-    /// Initialize the contract with the provider-registry address.
-    /// Can only be called once.
-    pub fn initialize(env: Env, provider_registry: Address) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::ProviderRegistryAddress) {
-            panic_with_error!(&env, Error::NotAuthorized);
-        }
+    /// Get the current rate limit configuration, or return defaults if not set.
+    fn get_rate_limit_config(env: &Env) -> RateLimitConfig {
         env.storage()
-            .instance()
-            .set(&DataKey::ProviderRegistryAddress, &provider_registry);
+            .persistent()
+            .get::<_, RateLimitConfig>(&DataKey::RateLimitConfig)
+            .unwrap_or(RateLimitConfig {
+                max_sessions_per_window: DEFAULT_MAX_SESSIONS_PER_WINDOW,
+                window_duration_secs: DEFAULT_WINDOW_DURATION_SECS,
+            })
+    }
+
+    /// Check if provider has exceeded their session creation rate limit.
+    /// If not exceeded, increments counter and returns Ok.
+    /// If window has expired, resets the counter.
+    fn check_and_update_rate_limit(
+        env: &Env,
+        provider_id: &Address,
+    ) -> Result<(), Error> {
+        let config = Self::get_rate_limit_config(env);
+        let now = env.ledger().timestamp();
+        let window_key = DataKey::ProviderSessionWindow(provider_id.clone());
+
+        let mut window: ProviderSessionWindow = env
+            .storage()
+            .persistent()
+            .get(&window_key)
+            .unwrap_or(ProviderSessionWindow {
+                session_count: 0,
+                window_start: now,
+            });
+
+        // Check if window has expired and reset if needed
+        if now >= window.window_start + config.window_duration_secs {
+            window.session_count = 0;
+            window.window_start = now;
+        }
+
+        // Check if limit would be exceeded
+        if window.session_count >= config.max_sessions_per_window {
+            return Err(Error::RateLimitExceeded);
+        }
+
+        // Increment counter and save
+        window.session_count += 1;
+        env.storage().persistent().set(&window_key, &window);
+
+        Ok(())
+    }
+
+    /// Set the rate limit configuration. Callable by any admin.
+    pub fn set_rate_limit_config(
+        env: Env,
+        admin: Address,
+        max_sessions_per_window: u32,
+        window_duration_secs: u64,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+
+        let config = RateLimitConfig {
+            max_sessions_per_window,
+            window_duration_secs,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::RateLimitConfig, &config);
         Ok(())
     }
 
@@ -151,6 +210,9 @@ impl TelemedicineContract {
         provider_state: String,
     ) -> Result<BytesN<32>, Error> {
         provider_id.require_auth();
+
+        // Check rate limit: max sessions per provider per window
+        Self::check_and_update_rate_limit(&env, &provider_id)?;
 
         let mut visit: VirtualVisit = env
             .storage()
