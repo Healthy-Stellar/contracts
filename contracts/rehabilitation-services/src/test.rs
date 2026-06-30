@@ -899,3 +899,140 @@ fn test_goal_progress_wrong_plan_returns_empty() {
     let progress = client.get_goal_progress(&(plan_id + 99), &goal_id);
     assert_eq!(progress.len(), 0);
 }
+
+// ── Treatment plan versioning tests (#560) ────────────────────────────────────
+
+#[test]
+fn test_initial_version_created_on_plan_creation() {
+    let (env, patient, therapist) = create_test_env();
+    env.mock_all_auths();
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+
+    let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
+
+    // Verify version history exists with version 1
+    let history = client.get_treatment_plan_history(&plan_id);
+    assert_eq!(history.len(), 1);
+    assert_eq!(history.get(0).unwrap().version, 1);
+}
+
+#[test]
+fn test_update_rehab_treatment_plan_by_authorized_therapist() {
+    let (env, patient, therapist) = create_test_env();
+    env.mock_all_auths();
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+
+    let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
+
+    let goals = Vec::new(&env);
+    let interventions = Vec::new(&env);
+    let ipfs_hash = String::from_str(&env, "QmNewHash123");
+
+    // Update the plan with new fields
+    let new_version = client.update_rehab_treatment_plan(
+        &plan_id,
+        &therapist,
+        &goals,
+        &goals,
+        &interventions,
+        &String::from_str(&env, "bi-weekly"),
+        &12u32,
+        &Symbol::new(&env, "good"),
+        &ipfs_hash,
+    );
+    assert_eq!(new_version, 2);
+
+    // Verify history now has 2 entries
+    let history = client.get_treatment_plan_history(&plan_id);
+    assert_eq!(history.len(), 2);
+    assert_eq!(history.get(0).unwrap().version, 1);
+    assert_eq!(history.get(1).unwrap().version, 2);
+    assert_eq!(history.get(1).unwrap().ipfs_hash, ipfs_hash);
+    assert_eq!(history.get(1).unwrap().updated_by, therapist);
+
+    // Verify plan was actually updated
+    let plan = client.get_treatment_plan(&plan_id);
+    assert_eq!(plan.frequency, String::from_str(&env, "bi-weekly"));
+    assert_eq!(plan.duration_weeks, 12);
+}
+
+#[test]
+fn test_update_rehab_treatment_plan_unauthorized_rejected() {
+    let (env, patient, therapist) = create_test_env();
+    env.mock_all_auths();
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+
+    let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
+
+    let unauthorized = Address::generate(&env);
+    let goals = Vec::new(&env);
+    let interventions = Vec::new(&env);
+
+    let result = client.try_update_rehab_treatment_plan(
+        &plan_id,
+        &unauthorized,
+        &goals,
+        &goals,
+        &interventions,
+        &String::from_str(&env, "daily"),
+        &6u32,
+        &Symbol::new(&env, "fair"),
+        &String::from_str(&env, "QmHash"),
+    );
+    assert!(result.is_err());
+    let inner = result.unwrap_err();
+    match inner {
+        Ok(Error::Unauthorized) => {},
+        Ok(_) => {},
+        Err(_) => {},
+    }
+}
+
+#[test]
+fn test_get_treatment_plan_history_returns_full_history() {
+    let (env, patient, therapist) = create_test_env();
+    env.mock_all_auths();
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+
+    let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
+
+    let goals = Vec::new(&env);
+    let interventions = Vec::new(&env);
+
+    // Make two updates
+    client.update_rehab_treatment_plan(
+        &plan_id,
+        &therapist,
+        &goals,
+        &goals,
+        &interventions,
+        &String::from_str(&env, "weekly"),
+        &8u32,
+        &Symbol::new(&env, "good"),
+        &String::from_str(&env, "QmHash1"),
+    );
+
+    client.update_rehab_treatment_plan(
+        &plan_id,
+        &therapist,
+        &goals,
+        &goals,
+        &interventions,
+        &String::from_str(&env, "bi-weekly"),
+        &10u32,
+        &Symbol::new(&env, "excellent"),
+        &String::from_str(&env, "QmHash2"),
+    );
+
+    // Full history: 3 entries (initial + 2 updates)
+    let history = client.get_treatment_plan_history(&plan_id);
+    assert_eq!(history.len(), 3);
+    assert_eq!(history.get(0).unwrap().version, 1);
+    assert_eq!(history.get(1).unwrap().version, 2);
+    assert_eq!(history.get(2).unwrap().version, 3);
+    assert_eq!(history.get(2).unwrap().ipfs_hash, String::from_str(&env, "QmHash2"));
+}

@@ -163,6 +163,16 @@ pub struct ProgressEntry {
     pub measured_at: u64,
 }
 
+/// An entry in a treatment plan's version history.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlanVersionEntry {
+    pub ipfs_hash: String,
+    pub updated_by: Address,
+    pub updated_at: u64,
+    pub version: u64,
+}
+
 #[contracttype]
 pub enum DataKey {
     EvaluationCounter,
@@ -185,6 +195,10 @@ pub enum DataKey {
     MeasurableGoal(u64),
     /// goal_id -> Vec<ProgressEntry>
     GoalProgressList(u64),
+    /// plan_id -> u64 (current version number)
+    PlanVersion(u64),
+    /// plan_id -> Vec<PlanVersionEntry>
+    PlanVersionHistory(u64),
 }
 
 #[contracttype]
@@ -419,6 +433,22 @@ impl RehabilitationServicesContract {
             .instance()
             .set(&DataKey::TreatmentPlanCounter, &plan_id);
 
+        // Initialize version tracking (#560)
+        env.storage()
+            .instance()
+            .set(&DataKey::PlanVersion(plan_id), &1u64);
+        let history_entry = PlanVersionEntry {
+            ipfs_hash: String::from_str(&env, ""),
+            updated_by: plan.therapist_id.clone(),
+            updated_at: env.ledger().timestamp(),
+            version: 1,
+        };
+        let mut history: Vec<PlanVersionEntry> = Vec::new(&env);
+        history.push_back(history_entry);
+        env.storage()
+            .instance()
+            .set(&DataKey::PlanVersionHistory(plan_id), &history);
+
         Ok(plan_id)
     }
 
@@ -645,6 +675,100 @@ impl RehabilitationServicesContract {
             .set(&DataKey::Discharge(treatment_plan_id), &discharge);
 
         Ok(())
+    }
+
+    // ── Treatment plan versioning (#560) ───────────────────────────────────────
+
+    /// Update an existing treatment plan with new fields.
+    /// Only the original therapist (creator) can update the plan.
+    /// Each update creates a new version entry in the plan's history.
+    pub fn update_rehab_treatment_plan(
+        env: Env,
+        plan_id: u64,
+        therapist_id: Address,
+        stg_goals: Vec<RehabGoal>,
+        ltg_goals: Vec<RehabGoal>,
+        interventions: Vec<TherapyIntervention>,
+        frequency: String,
+        duration_weeks: u32,
+        prognosis: Symbol,
+        ipfs_hash: String,
+    ) -> Result<u64, Error> {
+        therapist_id.require_auth();
+
+        let mut plan: RehabTreatmentPlan = env
+            .storage()
+            .instance()
+            .get(&DataKey::TreatmentPlan(plan_id))
+            .ok_or(Error::NotFound)?;
+
+        if plan.therapist_id != therapist_id {
+            return Err(Error::Unauthorized);
+        }
+
+        plan.stg_goals = stg_goals;
+        plan.ltg_goals = ltg_goals;
+        plan.interventions = interventions;
+        plan.frequency = frequency;
+        plan.duration_weeks = duration_weeks;
+        plan.prognosis = prognosis;
+
+        env.storage()
+            .instance()
+            .set(&DataKey::TreatmentPlan(plan_id), &plan);
+
+        // Bump TTL on write
+        env.storage().instance().extend_ttl(0, 5000);
+
+        // Increment version
+        let current_version: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PlanVersion(plan_id))
+            .unwrap_or(1);
+        let new_version = current_version + 1;
+        env.storage()
+            .instance()
+            .set(&DataKey::PlanVersion(plan_id), &new_version);
+
+        // Append to version history
+        let entry = PlanVersionEntry {
+            ipfs_hash: ipfs_hash.clone(),
+            updated_by: therapist_id.clone(),
+            updated_at: env.ledger().timestamp(),
+            version: new_version,
+        };
+        let mut history: Vec<PlanVersionEntry> = env
+            .storage()
+            .instance()
+            .get(&DataKey::PlanVersionHistory(plan_id))
+            .unwrap_or(Vec::new(&env));
+        history.push_back(entry);
+        env.storage()
+            .instance()
+            .set(&DataKey::PlanVersionHistory(plan_id), &history);
+
+        // Emit plan_updated event
+        env.events().publish(
+            (Symbol::new(&env, "plan_updated"), plan_id),
+            (new_version, therapist_id, ipfs_hash),
+        );
+
+        Ok(new_version)
+    }
+
+    /// Retrieve the full version history for a treatment plan.
+    pub fn get_treatment_plan_history(
+        env: Env,
+        plan_id: u64,
+    ) -> Vec<PlanVersionEntry> {
+        // Bump TTL on read
+        env.storage().instance().extend_ttl(0, 5000);
+
+        env.storage()
+            .instance()
+            .get(&DataKey::PlanVersionHistory(plan_id))
+            .unwrap_or(Vec::new(&env))
     }
 
     // Query functions
