@@ -1,12 +1,32 @@
 #![cfg(test)]
 #![allow(deprecated)]
 
-use crate::contract::{TelemedicineContract, TelemedicineContractClient};
+use crate::contract::{
+    ProviderRegistryClient, TelemedicineContract,
+    TelemedicineContractClient,
+};
 use crate::types::PrescriptionRequest;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger as _},
+    contract, contractimpl, testutils::{Address as _, Ledger as _},
     Address, BytesN, Env, String, Symbol, Vec,
 };
+
+// Mock provider-registry for cross-contract testing
+#[contract]
+pub struct MockProviderRegistry;
+
+#[contractimpl]
+impl MockProviderRegistry {
+    pub fn is_provider(env: Env, provider: Address) -> bool {
+        let key = (Symbol::new(&env, "Revoked"), provider.clone());
+        !env.storage().persistent().has(&key)
+    }
+
+    pub fn set_revoked(env: Env, provider: Address) {
+        let key = (Symbol::new(&env, "Revoked"), provider.clone());
+        env.storage().persistent().set(&key, &true);
+    }
+}
 
 #[test]
 fn test_telemedicine_lifecycle() {
@@ -241,4 +261,89 @@ fn test_session_tokens_are_unique_bound_expiring_and_non_replayable() {
     });
     let expired = client.try_validate_session_token(&visit_two, &provider_id, &token_two);
     assert_eq!(expired, Err(Ok(crate::types::Error::SessionExpired)));
+}
+
+#[test]
+fn test_schedule_visit_with_active_provider_in_registry() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let telemedicine_id = env.register(TelemedicineContract, ());
+    let registry_id = env.register(MockProviderRegistry, ());
+    let telemedicine = TelemedicineContractClient::new(&env, &telemedicine_id);
+    let _registry = MockProviderRegistryClient::new(&env, &registry_id);
+
+    telemedicine.initialize(&registry_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+
+    // Provider is active by default (not revoked)
+    let visit_id = telemedicine.schedule_virtual_visit(
+        &patient_id,
+        &provider_id,
+        &1700000000,
+        &Symbol::new(&env, "Consult"),
+        &30,
+        &Symbol::new(&env, "ZoomHD"),
+        &true,
+        &true,
+    );
+    assert_eq!(visit_id, 1);
+}
+
+#[test]
+fn test_schedule_visit_rejected_when_provider_not_in_registry() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let telemedicine_id = env.register(TelemedicineContract, ());
+    let registry_id = env.register(MockProviderRegistry, ());
+    let telemedicine = TelemedicineContractClient::new(&env, &telemedicine_id);
+    let registry = MockProviderRegistryClient::new(&env, &registry_id);
+
+    telemedicine.initialize(&registry_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+
+    // Revoke the provider
+    registry.set_revoked(&provider_id);
+
+    let result = telemedicine.try_schedule_virtual_visit(
+        &patient_id,
+        &provider_id,
+        &1700000000,
+        &Symbol::new(&env, "Consult"),
+        &30,
+        &Symbol::new(&env, "ZoomHD"),
+        &true,
+        &true,
+    );
+    assert_eq!(result, Err(Ok(crate::types::Error::ProviderNotRegistered)));
+}
+
+#[test]
+fn test_schedule_visit_without_registry_configured() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(TelemedicineContract, ());
+    let client = TelemedicineContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+
+    // Without registry configured, scheduling should still work
+    let visit_id = client.schedule_virtual_visit(
+        &patient_id,
+        &provider_id,
+        &1700000000,
+        &Symbol::new(&env, "Consult"),
+        &30,
+        &Symbol::new(&env, "ZoomHD"),
+        &true,
+        &true,
+    );
+    assert_eq!(visit_id, 1);
 }
