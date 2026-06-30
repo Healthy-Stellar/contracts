@@ -73,6 +73,13 @@ pub struct TrialPhaseAdvanced {
 }
 
 #[contractevent]
+pub struct ProtocolAmendmentRecorded {
+    pub trial_record_id: u64,
+    pub new_hash: BytesN<32>,
+    pub amended_by: Address,
+}
+
+#[contractevent]
 pub struct ParticipantReEnrolled {
     pub enrollment_id: u64,
     pub prior_enrollment_id: u64,
@@ -115,6 +122,10 @@ pub enum Error {
     SiteEnrollmentFull = 27,
     /// A Vec parameter exceeds its maximum allowed length.
     InputTooLarge = 28,
+    /// Trial is permanently closed; no new enrolments permitted.
+    TrialClosed = 29,
+    /// Prior enrolment is still active; cannot re-enrol.
+    PriorEnrollmentActive = 30,
 }
 
 /// Maximum number of inclusion or exclusion criteria rules per trial.
@@ -1092,6 +1103,64 @@ impl ClinicalTrialContract {
         .publish(&env);
 
         Ok(())
+    }
+
+    /// Update the protocol hash for a trial, appending an amendment record to
+    /// the on-chain audit log (#485 — ICH E6(R2) GCP compliance).
+    ///
+    /// # Arguments
+    /// * `principal_investigator` - Must be the trial's PI.
+    /// * `trial_record_id`        - Target trial.
+    /// * `new_hash`               - SHA-256 hash of the amended protocol document.
+    /// * `reason_hash`            - SHA-256 hash of the written amendment rationale.
+    pub fn update_protocol(
+        env: Env,
+        principal_investigator: Address,
+        trial_record_id: u64,
+        new_hash: BytesN<32>,
+        reason_hash: BytesN<32>,
+    ) -> Result<(), Error> {
+        principal_investigator.require_auth();
+
+        let mut trial = storage::get_trial(&env, trial_record_id)?;
+        if trial.principal_investigator != principal_investigator {
+            return Err(Error::Unauthorized);
+        }
+        if trial.status != TrialStatus::Active {
+            return Err(Error::TrialNotActive);
+        }
+
+        let amendment = ProtocolAmendment {
+            trial_record_id,
+            old_hash: trial.protocol_hash.clone(),
+            new_hash: new_hash.clone(),
+            amended_by: principal_investigator.clone(),
+            reason_hash,
+            timestamp: env.ledger().timestamp(),
+        };
+
+        storage::append_amendment(&env, &amendment);
+
+        trial.protocol_hash = new_hash.clone();
+        storage::save_trial(&env, &trial);
+
+        ProtocolAmendmentRecorded {
+            trial_record_id,
+            new_hash,
+            amended_by: principal_investigator,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Return the full amendment history for a trial (#485).
+    /// Returns an empty vec for trials that have never been amended.
+    pub fn get_amendment_history(
+        env: Env,
+        trial_record_id: u64,
+    ) -> Vec<ProtocolAmendment> {
+        storage::get_amendment_log(&env, trial_record_id)
     }
 
     fn evaluate_rule(
