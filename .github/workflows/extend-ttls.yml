@@ -1,0 +1,111 @@
+name: Extend Contract TTLs
+
+on:
+  schedule:
+    # Run every 90 days at 00:00 UTC Monday
+    # Covers the ~1 year TTL window before contracts expire
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+    inputs:
+      network:
+        description: 'Network to extend TTLs (mainnet, testnet)'
+        required: true
+        default: 'mainnet'
+      dry_run:
+        description: 'Run in dry-run mode (no actual extensions)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  extend-ttls:
+    name: Extend Contract TTLs
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Stellar CLI
+        run: |
+          curl -L https://github.com/stellar/go/releases/download/stellar-core-21.5.0/stellar-core-21.5.0-ubuntu-22.04.tar.gz | tar -xz
+          mv stellar-core /usr/local/bin/
+          # Or install using package manager:
+          # sudo apt-get update && sudo apt-get install -y stellar-cli
+
+      - name: Extend TTLs - Mainnet
+        if: github.event_name == 'schedule' || inputs.network == 'mainnet'
+        run: |
+          ./scripts/extend-ttls.sh \
+            --network mainnet \
+            --identity "${{ secrets.MAINNET_DEPLOYER_IDENTITY }}" \
+            --ledgers-to-extend 535680 \
+            --critical-threshold 86400
+        env:
+          STELLAR_IDENTITY: ${{ secrets.MAINNET_DEPLOYER_IDENTITY }}
+          CLI_BIN: stellar
+
+      - name: Extend TTLs - Testnet (Dry Run)
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run == true
+        run: |
+          ./scripts/extend-ttls.sh \
+            --network "${{ inputs.network }}" \
+            --identity "${{ secrets.TESTNET_DEPLOYER_IDENTITY }}" \
+            --ledgers-to-extend 535680 \
+            --dry-run
+        env:
+          STELLAR_IDENTITY: ${{ secrets.TESTNET_DEPLOYER_IDENTITY }}
+          CLI_BIN: stellar
+
+      - name: Extend TTLs - Testnet
+        if: github.event_name == 'workflow_dispatch' && inputs.network == 'testnet' && inputs.dry_run == false
+        run: |
+          ./scripts/extend-ttls.sh \
+            --network testnet \
+            --identity "${{ secrets.TESTNET_DEPLOYER_IDENTITY }}" \
+            --ledgers-to-extend 535680
+        env:
+          STELLAR_IDENTITY: ${{ secrets.TESTNET_DEPLOYER_IDENTITY }}
+          CLI_BIN: stellar
+
+      - name: Create Issue on TTL Alert
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '⚠️ TTL Extension Failed - Manual Intervention Required',
+              body: `The automatic TTL extension job failed on ${new Date().toISOString()}.
+
+              Please review the workflow run and manually extend TTLs if necessary:
+              - Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+              - Network: ${{ inputs.network || 'mainnet' }}
+
+              Failure to extend TTLs will result in contract expiration and data loss.`,
+              labels: ['deployment', 'critical']
+            })
+
+  ttl-monitoring:
+    name: Monitor TTL Status
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check deployment manifest
+        run: |
+          if [[ ! -f deployments/mainnet.json ]]; then
+            echo "⚠️ Mainnet deployment manifest not found"
+            exit 0
+          fi
+          echo "✓ Deployment manifest exists"
+          echo "Contract count: $(grep -c '\"C' deployments/mainnet.json || echo '0')"

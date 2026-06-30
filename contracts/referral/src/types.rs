@@ -8,6 +8,7 @@ pub enum Error {
     ReferralNotFound = 2,
     InvalidStatusTransition = 3,
     InvalidAddress = 4,
+    ProviderNotRegistered = 5,
 }
 
 #[contracttype]
@@ -43,4 +44,5 @@ pub struct Referral {
 pub enum DataKey {
     Referral(u64),
     ReferralCount,
+    ProviderRegistry,
 }
