@@ -1,5 +1,28 @@
 #![no_std]
 
+//! # Healthcare Analytics Contract
+//!
+//! Resource management and job scheduling system for healthcare analytics workloads with
+//! throttling, prioritization, and quota enforcement.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Job submission restricted to authorized analytics providers.
+//! Query access validated against patient consent records. Report generation requires admin approval.
+//! Resource quota per provider enforced to prevent monopolization.
+//!
+//! **Audit Controls:** Job creation events with priority level and resource estimate. Job completion
+//! events logged with execution time. Resource usage tracked per provider for audit. Job state
+//! transitions (pending, executing, completed, failed) recorded in persistent storage.
+//!
+//! **Data Retention Policy:** Completed analytics jobs retained indefinitely for audit trail.
+//! Resource usage statistics archived per provider. Throttling configuration (system limits)
+//! maintained to enforce fair access. Job priority levels managed to prevent starvation.
+//!
+//! **Encryption/Integrity:** Job data stored encrypted via persistent storage. Resource quotas
+//! validated before execution. Job priority enums prevent unauthorized priority escalation.
+//! Resource usage metrics immutable once recorded.
+
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env,
     String, Symbol, Vec,

@@ -1,4 +1,28 @@
 #![no_std]
+
+//! # Scholarship Fund Contract
+//!
+//! Manages healthcare education scholarships with fund pooling, award disbursement, and recipient
+//! eligibility verification for healthcare professional training programs.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Admin-only fund initialization and management. Eligible recipient
+//! verification via authentication. Deposit authorization per depositor. Disbursement authorization
+//! by fund administrator. Recipient identity validation prevents unauthorized access.
+//!
+//! **Audit Controls:** Fund deposit events logged with depositor and amount. Fund withdrawal events
+//! tracked with recipient and award amount. Award events emitted with grant details. Fund balance
+//! changes auditable. Insufficient funds errors logged.
+//!
+//! **Data Retention Policy:** Fund pool balance maintained indefinitely. Deposit records retained
+//! for reporting. Award disbursement records archived. Recipient awards tracked for compliance.
+//! Fund history reconstructible from events.
+//!
+//! **Encryption/Integrity:** Fund amount validation prevents overflow. Address zero checks prevent
+//! invalid recipients. Deposit/withdrawal amounts immutable once recorded. Fund balance enforced
+//! mathematically. Authorization required before disbursement.
+
 use soroban_sdk::{contract,contracterror,contractimpl,contracttype,symbol_short,Address,Env,String};
 #[contracterror]
 #[derive(Copy,Clone,Debug,Eq,PartialEq)]

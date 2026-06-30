@@ -1,6 +1,31 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
 
+//! # Prenatal & Pediatric Contract
+//!
+//! Manages prenatal care, obstetric assessments, pediatric developmental milestones, immunization
+//! tracking, and early childhood health records.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Obstetrician/pediatrician authentication for records. Mother/
+//! guardian consent for prenatal and pediatric data. Authorized family members can access pediatric
+//! records. Provider registry validation for record access. Emergency access override for critical
+//! situations.
+//!
+//! **Audit Controls:** Prenatal appointment events logged with findings and risk assessment.
+//! Pediatric visit events tracked with provider and developmental assessment. Immunization events
+//! linked to pediatric record. Gestational age progression events recorded. Birth event logged.
+//! Milestone achievement tracking with age-appropriate benchmarks.
+//!
+//! **Data Retention Policy:** Prenatal records retained with delivery summary. Pediatric records
+//! retained indefinitely for child health history. Developmental milestones tracked. Immunization
+//! records cross-linked with immunization registry. Family health history maintained.
+//!
+//! **Encryption/Integrity:** Prenatal assessment data encrypted in storage. Child identity linked
+//! to mother cryptographically. Birth date immutable timestamp. Maternal and child addresses
+//! validated. Developmental milestones enumerated with age validation.
+
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
     String, Symbol, Vec,

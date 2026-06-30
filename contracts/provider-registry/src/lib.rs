@@ -1,5 +1,28 @@
 #![no_std]
 
+//! # Provider Registry Contract
+//!
+//! Maintains healthcare provider registry with credentials, specializations, network participation,
+//! and provider validation for access control decisions.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Admin-only provider registration. Provider authentication for
+//! profile updates. Credential verification required before network participation. Address nonzero
+//! validation prevents invalid entries. Specialization enumeration restricts valid provider types.
+//!
+//! **Audit Controls:** Provider registration events logged with credential type. Credential
+//! updates tracked with new specialization. Network participation events recorded. Provider
+//! deactivation events logged. Credential expiration events tracked.
+//!
+//! **Data Retention Policy:** Provider records retained indefinitely as reference data. Credential
+//! information persisted with expiration dates. Specialization information maintained for service
+//! validation. Deactivated providers retain historical data without deletion.
+//!
+//! **Encryption/Integrity:** Provider addresses validated via nonzero checks. Address immutable
+//! once registered. Specialization enum validates allowed provider types. Credential metadata
+//! stored encrypted in persistent state. Registry lookup validates provider identity.
+
 use shared::privacy::validate_nonzero_address;
 use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror, symbol_short, Address, BytesN, Env,

@@ -1,6 +1,31 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
 
+//! # Emergency Medical Information Contract
+//!
+//! Manages emergency contact information, medical allergies, and critical health conditions
+//! accessible during medical emergencies with encrypted storage and priority-based access.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Emergency responders authenticated via role validation.
+//! Patient authorization for emergency info registration. Contact information access restricted
+//! to authorized emergency personnel. Allergy and condition data accessible only during emergencies
+//! or with patient consent.
+//!
+//! **Audit Controls:** Emergency access events emitted with responder identity and timestamp.
+//! Contact priority levels tracked for triage. Critical condition flags logged. All emergency
+//! info retrievals tracked for breach notifications and compliance auditing.
+//!
+//! **Data Retention Policy:** Emergency contacts retained indefinitely for rapid access. Medical
+//! allergies and critical conditions stored persistently. Priority metadata maintained for
+//! emergency response optimization. Patient deregistration removes all emergency medical data.
+//!
+//! **Encryption/Integrity:** Contact information stored as encrypted hashes (BytesN<32>).
+//! Contact labels hashed to prevent disclosure of relationship type. Relationship class symbols
+//! enumerated (family, friend, emergency contact, etc.). Emergency access limited to time-bound
+//! overrides with justification tracking.
+
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, Symbol, Vec,
 };

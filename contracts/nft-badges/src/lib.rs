@@ -1,9 +1,29 @@
 #![no_std]
 
-//! Soulbound NFT badge contract for student achievements.
+//! # NFT Badges Contract
 //!
-//! Badges are non-transferable: once minted to a recipient they are permanently
-//! bound to that address. Transfer attempts always panic with Error::Soulbound.
+//! Soulbound NFT badge contract for student/provider achievements with non-transferable
+//! credential attestation bound to individual addresses.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Badge issuer (credentialing authority) authentication required.
+//! Only issuer can mint badges to recipients. Badges are soulbound (non-transferable) preventing
+//! credential fraud. Badge revocation restricted to issuer. Recipient privacy maintained via
+//! address-only storage.
+//!
+//! **Audit Controls:** Badge mint events logged with recipient address and achievement type.
+//! Revocation events tracked with reason. Badge holder enumeration enabled via contract query.
+//! Achievement type enumeration prevents invalid credential types. All minting operations emitted
+//! as events.
+//!
+//! **Data Retention Policy:** Badges retained indefinitely as permanent credential records.
+//! Revoked badges marked as revoked without deletion. Badge issuer information retained.
+//! Achievement timestamps immutable. Badge history reconstructible from events.
+//!
+//! **Encryption/Integrity:** Badge recipient address immutable (soulbound property).
+//! Achievement type enumeration prevents invalid badges. Issuer identity validated at mint time.
+//! Badge storage enforces non-transferability via smart contract logic.
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short,

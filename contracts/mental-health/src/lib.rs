@@ -1,6 +1,31 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
 
+//! # Mental Health Contract
+//!
+//! Manages mental health treatment plans, therapy session tracking, psychiatric evaluations, and
+//! psychopharmacology management with confidentiality protections.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Mental health provider authentication required. Patient consent
+//! for treatment record access (stricter than general HIPAA). Session notes access limited to
+//! treating provider and patient. Psychopharmacology records restricted to prescribing psychiatrist.
+//! Disclosure restrictions enforced with explicit consent.
+//!
+//! **Audit Controls:** Treatment plan creation events with provider and patient. Session events
+//! logged with date, provider, and session type (therapy, psychiatric eval, medication review).
+//! Assessment results tracked with timestamp. Medication change events recorded. Hospitalization
+//! events captured. All events include provider identity for audit trail.
+//!
+//! **Data Retention Policy:** Treatment plans retained indefinitely. Session records archived
+//! with date and provider. Assessments maintained for clinical reference. Medication history
+//! retained per psychiatric standard of care. Deregistration removes all treatment records.
+//!
+//! **Encryption/Integrity:** All mental health data stored encrypted at rest. Session notes
+//! encrypted in storage. Assessment instruments protected. Provider identity validated.
+//! Medication records immutable once recorded. Disclosure tracking logs all access.
+
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, xdr::ToXdr, vec, Address,
     BytesN, Env, String, Symbol, Vec,

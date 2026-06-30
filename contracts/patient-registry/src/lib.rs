@@ -1,5 +1,30 @@
 #![no_std]
 
+//! # Patient Registry Contract
+//!
+//! Maintains central patient registry with demographic data, encrypted contact information,
+//! incident tracking, and pagination support for patient directory management.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Patient authorization for registration. Provider access to
+//! patient directory restricted to network participants. Patient consent for provider queries.
+//! Encrypted contact information prevents unauthorized disclosure. Registry lookup authorization
+//! enforced per query.
+//!
+//! **Audit Controls:** Patient registration events logged with identity. Patient profile update
+//! events tracked. Deregistration events recorded. Incident reports linked to patient records.
+//! Correlation IDs enable multi-contract incident tracking. Access audit trail via pagination
+//! query logs.
+//!
+//! **Data Retention Policy:** Patient demographic data retained indefinitely. Contact information
+//! encrypted and persisted. Deregistration marks patient inactive without full deletion. Incident
+//! records retained for audit trail. Historical data preserved for continuity of care.
+//!
+//! **Encryption/Integrity:** EncryptedEnvelopeRef for contact information with content hashing.
+//! PolicyMetadata enforces encryption requirements. Nonzero address validation. Hash validation
+//! ensures contact data integrity. Pagination queries validated.
+
 use shared::pagination::PageResult;
 
 use shared::incident_tracking::{

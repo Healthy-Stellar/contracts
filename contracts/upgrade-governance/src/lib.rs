@@ -1,5 +1,28 @@
 #![no_std]
 
+//! # Upgrade Governance Contract
+//!
+//! Manages smart contract upgrades with voting approval, staged deployment, emergency halting,
+//! and upgrade history tracking for safe network evolution.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Governance token holders vote on upgrades. Upgrade execution
+//! restricted to admin. Emergency halt authority for critical security issues. Voting window
+//! enforces minimum deliberation time (7 days). Quorum requirements prevent unilateral control.
+//!
+//! **Audit Controls:** Upgrade proposal events logged with description and target version.
+//! Voting events tracked with voter identity and choice. Upgrade execution events recorded with
+//! new code hash. Emergency halt events logged with justification. Upgrade history immutable.
+//!
+//! **Data Retention Policy:** Upgrade proposals retained indefinitely for network history.
+//! Approved upgrades archived with vote counts. Voting records maintained for transparency.
+//! Emergency halt events preserved. Previous code versions maintained for verification.
+//!
+//! **Encryption/Integrity:** Code hash verification via SHA256. Upgrade content immutable once
+//! proposed. Voting window enforced mathematically (7 days = 604,800 seconds). Emergency halt
+//! prevents unauthorized execution. Upgrade status enumeration prevents invalid states.
+
 use soroban_sdk::{
     contract, contractevent, contracterror, contractimpl, contracttype, symbol_short, Address,
     Bytes, BytesN, Env, Vec,

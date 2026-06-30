@@ -1,6 +1,31 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
 
+//! # Nutrition Care Management Contract
+//!
+//! Manages nutrition assessments, diet plans, nutritionist consultations, and dietary compliance
+//! tracking for chronic disease and wellness management.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Nutritionist/RD authentication for diet plan creation. Patient
+//! consent for nutrition record access. Authorized providers can view dietary recommendations.
+//! Patient authorization required for dietary consultation scheduling. Access control grants tracked
+//! per patient-provider pair.
+//!
+//! **Audit Controls:** Nutrition assessment events logged with patient, nutritionist, and findings.
+//! Diet plan creation events tracked with plan type and goals. Consultation appointment events
+//! recorded. Dietary compliance check-in events logged. Plan modification events tracked with
+//! provider identity.
+//!
+//! **Data Retention Policy:** Nutrition assessments retained indefinitely. Diet plans archived
+//! with start/end dates. Consultation history maintained for continuity. Compliance tracking
+//! retained for outcome measurement. Deregistration removes patient nutrition records.
+//!
+//! **Encryption/Integrity:** Dietary recommendations stored encrypted. Patient-nutritionist
+//! linkage encrypted via persistent storage. Assessment date tracking prevents backdating.
+//! Nutritionist identity validated at plan creation. Compliance metrics immutable once recorded.
+
 mod storage;
 mod types;
 

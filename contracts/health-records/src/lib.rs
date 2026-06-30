@@ -1,5 +1,32 @@
 #![no_std]
 
+//! # Health Records Contract
+//!
+//! Central medical record repository with encrypted storage, consent-based access control,
+//! versioning, and integrity verification for longitudinal patient health data.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Patient and provider authentication required. Patient grants
+//! scoped consent (read, write, share) per provider. Consent can expire or never expire (0 = no
+//! expiry). Patient revokes provider consent atomically. Emergency access override with 1-hour TTL.
+//! Batch record creation enforces per-patient consent validation.
+//!
+//! **Audit Controls:** Record creation events logged with patient, provider, category, and
+//! timestamp. Consent grant/revoke events tracked. Record update events with version number.
+//! Integrity verification events for tamper detection. Incident reporting with correlation IDs.
+//! Deregistration events with cascade cleanup.
+//!
+//! **Data Retention Policy:** Records retained indefinitely with version history (prior versions
+//! in RecordVersion storage). Record category index enables efficient queries. Consent scope
+//! expiration enforced at check time. Deregistration removes all patient records and consent.
+//! Policy metadata enforces per-record retention rules.
+//!
+//! **Encryption/Integrity:** EncryptedEnvelopeRef with content hashing validates encrypted data.
+//! PolicyMetadata enforces encryption requirements per record type. SHA256 integrity hash computed
+//! and verified on retrieval. Record versioning maintains amendment trail. Consent validation
+//! prevents unauthorized access.
+
 use shared::incident_tracking::{
     capture_incident, get_incidents_by_correlation_id as shared_get_by_corr, IncidentSeverity,
 };

@@ -1,6 +1,30 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
 
+//! # Dental Records Contract
+//!
+//! Manages dental appointment scheduling, procedure records, patient medical history tracking,
+//! and dental treatment outcomes with temporal validation.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Dentist authentication required for procedure and appointment
+//! creation. Patient authorization for record access. Appointment status changes restricted to
+//! authorized providers. Medical history access control enforced.
+//!
+//! **Audit Controls:** Events emitted for procedure scheduling, appointments, and treatment outcomes.
+//! Appointment status changes tracked (scheduled, completed, cancelled). Temporal event history with
+//! EVENT_VERSION for schema tracking. Incident capture with severity levels for clinical events.
+//!
+//! **Data Retention Policy:** Completed appointments retained indefinitely for clinical reference.
+//! Dental procedure records archived with outcome documentation. Patient medical history maintained
+//! for longitudinal care planning. Canceled appointments retained for audit trail.
+//!
+//! **Encryption/Integrity:** Procedure descriptions stored encrypted. Temporal validation ensures
+//! appointment dates follow clinical logic (future scheduling, past completion dates valid).
+//! Appointment records include provider and patient identity validation. SHA256 hashing for
+//! record integrity verification.
+
 use soroban_sdk::{
     contract, contractevent, contractimpl, Address, BytesN, Env, String, Symbol, Vec,
 };

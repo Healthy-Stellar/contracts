@@ -1,5 +1,31 @@
 #![no_std]
 
+//! # Access Control Contract
+//!
+//! Comprehensive role-based access control (RBAC) system with unified consent engine,
+//! emergency access overrides, and audit trail support for HIPAA-compliant healthcare data access.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Role-Based Access Control (RBAC) with nine roles (Admin, Doctor, Nurse,
+//! Patient, Insurer, Auditor, Provider, PayerReviewer, EmergencyResponder). Expiring role assignments,
+//! entity registration validation, and composite uniqueness indexes prevent unauthorized access.
+//!
+//! **Audit Controls:** Monotonic operation IDs (op_id) track every access grant, revocation, consent,
+//! and emergency access event. Events published: grant, revoke, consent, revoke_consent, did_aud,
+//! emergency_access, deactivate, role_grant, role_revoke. Audit systems can replay events for
+//! forensic analysis and compliance reporting.
+//!
+//! **Data Retention Policy:** Explicit consent records (ConsentRecord) with configurable expiration;
+//! temporary storage for emergency access grants (1-hour TTL); persistent storage for role assignments
+//! and access permissions. Deregister_patient removes all patient-specific state including Entity,
+//! AccessList, DID, and all Consent records.
+//!
+//! **Encryption/Integrity:** DID (W3C Decentralized Identifier) registration per address provides
+//! cryptographic identity anchoring. Commit-reveal anti-front-running mechanism via SHA256 hashing.
+//! Rate limiting (10 ops/block) prevents consent operation abuse. All cryptographic operations use
+//! Soroban's verified crypto module.
+
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, xdr::ToXdr, Address, Bytes,
     BytesN, Env, String, Vec,
