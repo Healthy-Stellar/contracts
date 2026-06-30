@@ -35,6 +35,8 @@ mod test;
 use soroban_sdk::{
     contract, contractclient, contractimpl, symbol_short, Address, BytesN, Env, String, Symbol, Vec,
 };
+
+const OUTCOME_MAX_PAGE_SIZE: u32 = 50;
 use storage::*;
 use types::*;
 
@@ -736,6 +738,14 @@ impl NutritionCareContract {
         save_clinical_outcome(&env, &outcome);
         append_plan_outcome(&env, care_plan_id, outcome_id);
 
+        // Track per-patient for paginated history (#566)
+        let assessment_id = load_care_plan(&env, care_plan_id)
+            .ok_or(Error::CarePlanNotFound)?
+            .assessment_id;
+        if let Some(assessment) = load_assessment(&env, assessment_id) {
+            append_patient_outcome(&env, &assessment.patient_id, outcome_id);
+        }
+
         // Emit event
         env.events().publish(
             (Symbol::new(&env, "nutrition_outcome_recorded"),),
@@ -902,5 +912,79 @@ impl NutritionCareContract {
     /// Check if a provider is authorized to record outcomes for a care plan (#393).
     pub fn is_provider_authorized(env: Env, care_plan_id: u64, provider_id: Address) -> bool {
         is_provider_authorized(&env, care_plan_id, &provider_id)
+    }
+
+    // ------------------------------------------------------------------
+    // #566 — paginated outcome history
+    // ------------------------------------------------------------------
+
+    /// Paginated outcome history for a patient.
+    ///
+    /// `page` is 0-indexed. `page_size` is capped at `OUTCOME_MAX_PAGE_SIZE`.
+    pub fn get_outcome_history(
+        env: Env,
+        patient: Address,
+        page: u32,
+        page_size: u32,
+    ) -> OutcomePageResult {
+        let page_size = page_size.min(OUTCOME_MAX_PAGE_SIZE).max(1);
+        let all_ids = load_patient_outcome_ids(&env, &patient);
+        let total = all_ids.len();
+        let start = page.saturating_mul(page_size);
+        let mut outcome_ids = Vec::new(&env);
+        let mut i = start;
+        while i < start + page_size && i < total {
+            outcome_ids.push_back(all_ids.get(i).unwrap());
+            i += 1;
+        }
+        let has_more = (start + page_size) < total;
+        OutcomePageResult { outcome_ids, has_more }
+    }
+
+    // ------------------------------------------------------------------
+    // #566 — admin-settable care-plan contract address
+    // ------------------------------------------------------------------
+
+    /// Set the address of the external care-plan contract (admin only).
+    pub fn set_care_plan_contract(env: Env, admin: Address, care_plan_addr: Address) {
+        admin.require_auth();
+        set_care_plan_contract_address(&env, &care_plan_addr);
+    }
+
+    // ------------------------------------------------------------------
+    // #566 — link outcome to external care-plan (idempotent)
+    // ------------------------------------------------------------------
+
+    /// Link a recorded clinical outcome to an entry in the external care-plan contract.
+    ///
+    /// Idempotent: linking the same outcome to the same care plan twice is a no-op.
+    /// Returns `Error::CarePlanContractNotConfigured` when no address has been set.
+    pub fn link_to_care_plan(
+        env: Env,
+        outcome_id: u64,
+        care_plan_id: u64,
+    ) -> Result<(), Error> {
+        // Confirm outcome exists.
+        load_clinical_outcome(&env, outcome_id).ok_or(Error::OutcomeNotFound)?;
+
+        // Require care-plan contract address to be configured.
+        get_care_plan_contract_address(&env)
+            .ok_or(Error::CarePlanContractNotConfigured)?;
+
+        // Idempotency: skip if already linked to the same care plan.
+        if let Some(existing) = get_outcome_care_plan_link(&env, outcome_id) {
+            if existing == care_plan_id {
+                return Ok(());
+            }
+        }
+
+        save_outcome_care_plan_link(&env, outcome_id, care_plan_id);
+
+        env.events().publish(
+            (Symbol::new(&env, "outcome_linked_to_care_plan"),),
+            (outcome_id, care_plan_id),
+        );
+
+        Ok(())
     }
 }

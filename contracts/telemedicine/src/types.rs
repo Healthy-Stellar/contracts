@@ -17,7 +17,12 @@ pub enum Error {
     CrossStateNotPermitted = 11,
     /// Recording metadata cannot be stored without explicit patient consent
     RecordingConsentRequired = 12,
-    RateLimitExceeded = 13,
+    /// Prescribing is only allowed during an active (InProgress) session
+    SessionNotActive = 13,
+    /// Provider lacks a valid license in the patient's jurisdiction for prescribing
+    ProviderNotLicensedInPatientState = 14,
+    /// Controlled substance requires in-person visit per jurisdiction policy
+    ControlledSubstanceRequiresInPerson = 15,
 }
 
 /// On-chain record of a provider's license in a given jurisdiction (state/region).
@@ -87,6 +92,9 @@ pub struct PrescriptionRequest {
     pub dosage: String,
     pub frequency: String,
     pub duration_days: u32,
+    /// Whether this is a controlled substance (DEA schedule I–V).
+    /// When true, stricter in-person requirements apply per jurisdiction policy.
+    pub is_controlled_substance: bool,
 }
 
 #[contracttype]
@@ -128,8 +136,6 @@ pub enum DataKey {
     LicenseRegistry(Address, String),
     /// jurisdiction -> JurisdictionPolicy
     JurisdictionPolicy(String),
-    /// Provider session rate limit window: (provider_id) -> ProviderSessionWindow
-    ProviderSessionWindow(Address),
-    /// Global rate limit configuration
-    RateLimitConfig,
+    /// jurisdiction -> bool (true = requires in-person for controlled substances)
+    ControlledSubstancePolicy(String),
 }

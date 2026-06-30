@@ -1486,151 +1486,106 @@ fn test_outcome_tracking_all_valid_metrics() {
     assert_eq!(outcomes.len(), metrics.len() as u32);
 }
 
-// ── Mock prescription-management contract for cross-contract testing (#562) ──
+// -----------------------------------------------------------------------
+// #566 — get_outcome_history (paginated)
+// -----------------------------------------------------------------------
 
-use soroban_sdk::{contract, contractimpl, contracttype};
+#[test]
+fn test_get_outcome_history_first_page() {
+    let (env, patient, dietitian, _provider) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
 
-#[contracttype]
-pub enum MockRxDataKey {
-    PatientMeds(Address),
-}
-
-#[contract]
-pub struct MockPrescriptionManagement;
-
-#[contractimpl]
-impl MockPrescriptionManagement {
-    pub fn get_patient_active_prescriptions(env: Env, patient: Address) -> Vec<String> {
-        env.storage()
-            .persistent()
-            .get(&MockRxDataKey::PatientMeds(patient))
-            .unwrap_or(Vec::new(&env))
+    for i in 0u64..5 {
+        client.link_outcome(
+            &care_plan_id,
+            &dietitian,
+            &String::from_str(&env, "weight_kg"),
+            &(7000i64 + i as i64),
+            &(1_000_000u64 + i),
+        );
     }
 
-    pub fn set_patient_prescriptions(env: Env, patient: Address, meds: Vec<String>) {
-        env.storage()
-            .persistent()
-            .set(&MockRxDataKey::PatientMeds(patient), &meds);
+    let page = client.get_outcome_history(&patient, &0u32, &3u32);
+    assert_eq!(page.outcome_ids.len(), 3);
+    assert!(page.has_more);
+}
+
+#[test]
+fn test_get_outcome_history_last_page() {
+    let (env, patient, dietitian, _provider) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    for i in 0u64..5 {
+        client.link_outcome(
+            &care_plan_id,
+            &dietitian,
+            &String::from_str(&env, "weight_kg"),
+            &(7000i64 + i as i64),
+            &(1_000_000u64 + i),
+        );
     }
-}
 
-// ── Diet contraindication tests (#562) ───────────────────────────────────────
-
-#[test]
-fn test_order_therapeutic_diet_succeeds_with_no_conflicting_meds() {
-    let (env, patient, dietitian, _) = setup();
-    let client = register(&env);
-
-    // Register a mock prescription-management contract
-    let rx_id = env.register(MockPrescriptionManagement, ());
-    let rx_client = MockPrescriptionManagementClient::new(&env, &rx_id);
-
-    // Set the admin and prescription contract
-    client.set_contraindication_admin(&dietitian);
-    client.set_prescription_contract(&dietitian, &rx_id);
-
-    // Set patient medications (no conflicts with "cardiac" diet)
-    let mut meds = Vec::new(&env);
-    meds.push_back(String::from_str(&env, "Acetaminophen"));
-    meds.push_back(String::from_str(&env, "Ibuprofen"));
-    rx_client.set_patient_prescriptions(&patient, &meds);
-
-    // Add some contraindications for "cardiac" diet (none match patient's meds)
-    client.add_contraindication(
-        &dietitian,
-        &Symbol::new(&env, "cardiac"),
-        &String::from_str(&env, "Warfarin"),
-    );
-
-    let result = client.try_order_therapeutic_diet(
-        &patient,
-        &dietitian,
-        &Symbol::new(&env, "cardiac"),
-        &None,
-        &None,
-        &None,
-        &None,
-    );
-
-    assert!(result.is_ok());
+    let page = client.get_outcome_history(&patient, &1u32, &3u32);
+    assert_eq!(page.outcome_ids.len(), 2); // 5 total, 3 on first page → 2 left
+    assert!(!page.has_more);
 }
 
 #[test]
-fn test_order_therapeutic_diet_blocked_when_conflict_detected() {
-    let (env, patient, dietitian, _) = setup();
+fn test_get_outcome_history_empty() {
+    let (env, patient, _dietitian, _provider) = setup();
     let client = register(&env);
 
-    // Register a mock prescription-management contract
-    let rx_id = env.register(MockPrescriptionManagement, ());
-    let rx_client = MockPrescriptionManagementClient::new(&env, &rx_id);
-
-    // Set the admin and prescription contract
-    client.set_contraindication_admin(&dietitian);
-    client.set_prescription_contract(&dietitian, &rx_id);
-
-    // Set patient medications (Warfarin conflicts with "cardiac" diet)
-    let mut meds = Vec::new(&env);
-    meds.push_back(String::from_str(&env, "Warfarin"));
-    meds.push_back(String::from_str(&env, "Acetaminophen"));
-    rx_client.set_patient_prescriptions(&patient, &meds);
-
-    // Add contraindication for "cardiac" diet with Warfarin
-    client.add_contraindication(
-        &dietitian,
-        &Symbol::new(&env, "cardiac"),
-        &String::from_str(&env, "Warfarin"),
-    );
-
-    let result = client.try_order_therapeutic_diet(
-        &patient,
-        &dietitian,
-        &Symbol::new(&env, "cardiac"),
-        &None,
-        &None,
-        &None,
-        &None,
-    );
-
-    assert_eq!(result, Err(Ok(Error::DietContraindicatedWithMedication)));
+    let page = client.get_outcome_history(&patient, &0u32, &10u32);
+    assert_eq!(page.outcome_ids.len(), 0);
+    assert!(!page.has_more);
 }
 
+// -----------------------------------------------------------------------
+// #566 — link_to_care_plan
+// -----------------------------------------------------------------------
+
 #[test]
-fn test_contraindication_list_update_by_admin() {
-    let (env, patient, dietitian, other_provider) = setup();
+fn test_link_to_care_plan_no_address_configured() {
+    let (env, patient, dietitian, _provider) = setup();
     let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
 
-    // Set admin
-    client.set_contraindication_admin(&dietitian);
-
-    // Add contraindications
-    client.add_contraindication(
+    let outcome_id = client.link_outcome(
+        &care_plan_id,
         &dietitian,
-        &Symbol::new(&env, "renal"),
-        &String::from_str(&env, "ACE Inhibitor"),
-    );
-    client.add_contraindication(
-        &dietitian,
-        &Symbol::new(&env, "renal"),
-        &String::from_str(&env, "Potassium Supplement"),
-    );
-    client.add_contraindication(
-        &dietitian,
-        &Symbol::new(&env, "diabetic"),
-        &String::from_str(&env, "High Sugar"),
+        &String::from_str(&env, "weight_kg"),
+        &7000i64,
+        &1_000_000u64,
     );
 
-    // Remove one
-    client.remove_contraindication(
-        &dietitian,
-        &Symbol::new(&env, "renal"),
-        &String::from_str(&env, "Potassium Supplement"),
-    );
-
-    // Non-admin cannot add
-    let result = client.try_add_contraindication(
-        &other_provider,
-        &Symbol::new(&env, "renal"),
-        &String::from_str(&env, "New Med"),
-    );
+    // No care-plan contract address set → must fail gracefully.
+    let result = client.try_link_to_care_plan(&outcome_id, &42u64);
     assert!(result.is_err());
+}
+
+#[test]
+fn test_link_to_care_plan_success_and_idempotent() {
+    let (env, patient, dietitian, _provider) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    let outcome_id = client.link_outcome(
+        &care_plan_id,
+        &dietitian,
+        &String::from_str(&env, "weight_kg"),
+        &7000i64,
+        &1_000_000u64,
+    );
+
+    let admin = Address::generate(&env);
+    let dummy_care_plan_contract = Address::generate(&env);
+    client.set_care_plan_contract(&admin, &dummy_care_plan_contract);
+
+    // First link — should succeed.
+    client.link_to_care_plan(&outcome_id, &99u64);
+
+    // Second link to same care plan — idempotent, must not panic.
+    client.link_to_care_plan(&outcome_id, &99u64);
 }

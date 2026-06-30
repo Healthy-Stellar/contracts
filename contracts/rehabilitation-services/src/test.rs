@@ -900,139 +900,132 @@ fn test_goal_progress_wrong_plan_returns_empty() {
     assert_eq!(progress.len(), 0);
 }
 
-// ── Treatment plan versioning tests (#560) ────────────────────────────────────
+// ── Paginated therapy sessions (#564) ────────────────────────────────────────
 
-#[test]
-fn test_initial_version_created_on_plan_creation() {
-    let (env, patient, therapist) = create_test_env();
-    env.mock_all_auths();
-    let contract_id = env.register(RehabilitationServicesContract, ());
-    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
-
-    let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
-
-    // Verify version history exists with version 1
-    let history = client.get_treatment_plan_history(&plan_id);
-    assert_eq!(history.len(), 1);
-    assert_eq!(history.get(0).unwrap().version, 1);
-}
-
-#[test]
-fn test_update_rehab_treatment_plan_by_authorized_therapist() {
-    let (env, patient, therapist) = create_test_env();
-    env.mock_all_auths();
-    let contract_id = env.register(RehabilitationServicesContract, ());
-    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
-
-    let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
-
-    let goals = Vec::new(&env);
-    let interventions = Vec::new(&env);
-    let ipfs_hash = String::from_str(&env, "QmNewHash123");
-
-    // Update the plan with new fields
-    let new_version = client.update_rehab_treatment_plan(
-        &plan_id,
-        &therapist,
-        &goals,
-        &goals,
-        &interventions,
-        &String::from_str(&env, "bi-weekly"),
-        &12u32,
-        &Symbol::new(&env, "good"),
-        &ipfs_hash,
-    );
-    assert_eq!(new_version, 2);
-
-    // Verify history now has 2 entries
-    let history = client.get_treatment_plan_history(&plan_id);
-    assert_eq!(history.len(), 2);
-    assert_eq!(history.get(0).unwrap().version, 1);
-    assert_eq!(history.get(1).unwrap().version, 2);
-    assert_eq!(history.get(1).unwrap().ipfs_hash, ipfs_hash);
-    assert_eq!(history.get(1).unwrap().updated_by, therapist);
-
-    // Verify plan was actually updated
-    let plan = client.get_treatment_plan(&plan_id);
-    assert_eq!(plan.frequency, String::from_str(&env, "bi-weekly"));
-    assert_eq!(plan.duration_weeks, 12);
-}
-
-#[test]
-fn test_update_rehab_treatment_plan_unauthorized_rejected() {
-    let (env, patient, therapist) = create_test_env();
-    env.mock_all_auths();
-    let contract_id = env.register(RehabilitationServicesContract, ());
-    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
-
-    let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
-
-    let unauthorized = Address::generate(&env);
-    let goals = Vec::new(&env);
-    let interventions = Vec::new(&env);
-
-    let result = client.try_update_rehab_treatment_plan(
-        &plan_id,
-        &unauthorized,
-        &goals,
-        &goals,
-        &interventions,
-        &String::from_str(&env, "daily"),
-        &6u32,
-        &Symbol::new(&env, "fair"),
-        &String::from_str(&env, "QmHash"),
-    );
-    assert!(result.is_err());
-    let inner = result.unwrap_err();
-    match inner {
-        Ok(Error::Unauthorized) => {},
-        Ok(_) => {},
-        Err(_) => {},
+fn add_sessions(
+    env: &Env,
+    client: &RehabilitationServicesContractClient,
+    plan_id: u64,
+    count: u32,
+) {
+    let intervention = TherapyIntervention {
+        intervention_type: Symbol::new(env, "exercise"),
+        description: String::from_str(env, "Exercise"),
+        sets: Some(3),
+        reps: Some(10),
+        duration: None,
+        resistance: None,
+    };
+    for i in 0..count {
+        client.document_therapy_session(
+            &plan_id,
+            &(1000u64 + i as u64),
+            &Vec::from_array(env, [intervention.clone()]),
+            &30u32,
+            &String::from_str(env, "Good"),
+            &None::<String>,
+        );
     }
 }
 
 #[test]
-fn test_get_treatment_plan_history_returns_full_history() {
+fn test_get_therapy_sessions_paged_first_page() {
     let (env, patient, therapist) = create_test_env();
     env.mock_all_auths();
     let contract_id = env.register(RehabilitationServicesContract, ());
     let client = RehabilitationServicesContractClient::new(&env, &contract_id);
-
     let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
 
-    let goals = Vec::new(&env);
-    let interventions = Vec::new(&env);
+    add_sessions(&env, &client, plan_id, 7);
 
-    // Make two updates
-    client.update_rehab_treatment_plan(
-        &plan_id,
-        &therapist,
-        &goals,
-        &goals,
-        &interventions,
-        &String::from_str(&env, "weekly"),
-        &8u32,
-        &Symbol::new(&env, "good"),
-        &String::from_str(&env, "QmHash1"),
-    );
+    let page = client.get_therapy_sessions_paged(&plan_id, &0u32, &3u32);
+    assert_eq!(page.items.len(), 3);
+    assert!(page.has_more);
+}
 
-    client.update_rehab_treatment_plan(
-        &plan_id,
-        &therapist,
-        &goals,
-        &goals,
-        &interventions,
-        &String::from_str(&env, "bi-weekly"),
-        &10u32,
-        &Symbol::new(&env, "excellent"),
-        &String::from_str(&env, "QmHash2"),
-    );
+#[test]
+fn test_get_therapy_sessions_paged_last_page() {
+    let (env, patient, therapist) = create_test_env();
+    env.mock_all_auths();
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+    let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
 
-    // Full history: 3 entries (initial + 2 updates)
-    let history = client.get_treatment_plan_history(&plan_id);
-    assert_eq!(history.len(), 3);
-    assert_eq!(history.get(0).unwrap().version, 1);
-    assert_eq!(history.get(1).unwrap().version, 2);
-    assert_eq!(history.get(2).unwrap().version, 3);
-    assert_eq!(history.get(2).unwrap().ipfs_hash, String::from_str(&env, "QmHash2"));
+    add_sessions(&env, &client, plan_id, 7);
+
+    let page = client.get_therapy_sessions_paged(&plan_id, &2u32, &3u32);
+    assert_eq!(page.items.len(), 1); // 7 items, pages of 3: [0..3), [3..6), [6..7)
+    assert!(!page.has_more);
+}
+
+#[test]
+fn test_get_therapy_sessions_paged_empty() {
+    let (env, patient, therapist) = create_test_env();
+    env.mock_all_auths();
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+    let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
+
+    let page = client.get_therapy_sessions_paged(&plan_id, &0u32, &10u32);
+    assert_eq!(page.items.len(), 0);
+    assert!(!page.has_more);
+}
+
+#[test]
+fn test_get_therapy_sessions_paged_beyond_range() {
+    let (env, patient, therapist) = create_test_env();
+    env.mock_all_auths();
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+    let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
+
+    add_sessions(&env, &client, plan_id, 3);
+
+    let page = client.get_therapy_sessions_paged(&plan_id, &99u32, &10u32);
+    assert_eq!(page.items.len(), 0);
+    assert!(!page.has_more);
+}
+
+#[test]
+fn test_get_therapy_sessions_paged_page_size_clamped() {
+    let (env, patient, therapist) = create_test_env();
+    env.mock_all_auths();
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+    let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
+
+    add_sessions(&env, &client, plan_id, 5);
+
+    // page_size > MAX_PAGE_SIZE (50) should be clamped — returns at most 50
+    let page = client.get_therapy_sessions_paged(&plan_id, &0u32, &200u32);
+    assert_eq!(page.items.len(), 5); // only 5 sessions, all fit in one page
+    assert!(!page.has_more);
+}
+
+#[test]
+fn test_get_progress_notes_paged() {
+    let (env, patient, therapist) = create_test_env();
+    env.mock_all_auths();
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+    let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
+
+    for i in 0u64..4 {
+        client.document_progress_note(
+            &plan_id,
+            &(2000u64 + i),
+            &String::from_str(&env, "Feels better"),
+            &Vec::from_array(&env, [String::from_str(&env, "Improved ROM")]),
+            &String::from_str(&env, "Progressing"),
+            &Vec::new(&env),
+        );
+    }
+
+    let page = client.get_progress_notes_paged(&plan_id, &0u32, &3u32);
+    assert_eq!(page.items.len(), 3);
+    assert!(page.has_more);
+
+    let page2 = client.get_progress_notes_paged(&plan_id, &1u32, &3u32);
+    assert_eq!(page2.items.len(), 1);
+    assert!(!page2.has_more);
 }

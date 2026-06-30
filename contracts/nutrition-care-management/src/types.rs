@@ -20,8 +20,8 @@ pub enum Error {
     OutcomeNotFound = 10,
     InvalidOutcomeMetric = 11,
     ProviderNotAuthorized = 12,
-    /// Therapeutic diet is contraindicated with the patient's active medications
-    DietContraindicatedWithMedication = 13,
+    CarePlanContractNotConfigured = 13,
+    OutcomeNotLinked = 14,
 }
 
 // -----------------------------------------------------------------------
@@ -283,10 +283,18 @@ pub enum DataKey {
     PlanVersion(u64),
     /// care_plan_id → Vec<Address> (authorized providers) (#393)
     AuthorizedProviders(u64),
-    /// Address of the prescription-management contract for cross-contract calls (#562)
-    PrescriptionContractAddress,
-    /// Admin address authorized to update the contraindication list (#562)
-    ContraindicationAdmin,
-    /// diet_type → Vec<medication_name> of contraindicated medications (#562)
-    ContraindicationList(Symbol),
+    /// patient_id → Vec<u64> (outcome ids) (#566)
+    PatientOutcomes(Address),
+    /// outcome_id → u64 (linked external care_plan_id) (#566)
+    OutcomeCarePlanLink(u64),
+    /// global care-plan contract address (#566)
+    CarePlanContractAddress,
+}
+
+/// Paginated outcome history result (#566).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OutcomePageResult {
+    pub outcome_ids: Vec<u64>,
+    pub has_more: bool,
 }

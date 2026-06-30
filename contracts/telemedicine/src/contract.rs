@@ -557,7 +557,40 @@ impl TelemedicineContract {
             panic_with_error!(&env, Error::NotAuthorized);
         }
 
-        // Mocking Rx ID generation
+        // Prescribing is only allowed during an active session (#563).
+        if visit.status != VisitStatus::InProgress {
+            panic_with_error!(&env, Error::SessionNotActive);
+        }
+
+        // Confirm provider holds a valid license in the patient's jurisdiction (#563).
+        let patient_state = &visit.patient_location;
+        if patient_state.len() > 0 {
+            let now = env.ledger().timestamp();
+            let lic_key =
+                DataKey::LicenseRegistry(provider_id.clone(), patient_state.clone());
+            let has_license = env
+                .storage()
+                .persistent()
+                .get::<_, ProviderLicense>(&lic_key)
+                .map(|l| l.active && (l.valid_until == 0 || l.valid_until > now))
+                .unwrap_or(false);
+            if !has_license {
+                panic_with_error!(&env, Error::ProviderNotLicensedInPatientState);
+            }
+
+            // Stricter enforcement for controlled substances (#563).
+            if prescription_details.is_controlled_substance {
+                let requires_inperson: bool = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::ControlledSubstancePolicy(patient_state.clone()))
+                    .unwrap_or(false);
+                if requires_inperson {
+                    panic_with_error!(&env, Error::ControlledSubstanceRequiresInPerson);
+                }
+            }
+        }
+
         let rx_id = env.ledger().timestamp() % 100000;
 
         env.events().publish(
@@ -566,6 +599,23 @@ impl TelemedicineContract {
         );
 
         Ok(rx_id)
+    }
+
+    /// Set controlled-substance prescribing policy for a jurisdiction (#563).
+    ///
+    /// When `requires_inperson` is true, providers cannot prescribe controlled
+    /// substances (DEA schedule I–V) during a telemedicine session in that jurisdiction.
+    pub fn set_controlled_substance_policy(
+        env: Env,
+        admin: Address,
+        jurisdiction: String,
+        requires_inperson: bool,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        env.storage()
+            .persistent()
+            .set(&DataKey::ControlledSubstancePolicy(jurisdiction), &requires_inperson);
+        Ok(())
     }
 }
 

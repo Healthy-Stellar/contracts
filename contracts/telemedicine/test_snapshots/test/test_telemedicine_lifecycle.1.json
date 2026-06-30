@@ -209,6 +209,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "is_controlled_substance"
+                      },
+                      "val": {
+                        "bool": false
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "medication_name"
                       },
                       "val": {
