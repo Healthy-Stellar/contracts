@@ -1,5 +1,4 @@
 #![no_std]
-#![allow(deprecated)]
 #![allow(clippy::too_many_arguments)]
 
 mod storage;
@@ -9,10 +8,17 @@ mod types;
 mod test;
 
 use soroban_sdk::{
-    contract, contractimpl, symbol_short, Address, BytesN, Env, String, Symbol, Vec,
+    contract, contractclient, contractimpl, symbol_short, Address, BytesN, Env, String, Symbol, Vec,
 };
 use storage::*;
 use types::*;
+
+// ── Cross-contract interface for prescription-management (#562) ───────────────
+
+#[contractclient(name = "PrescriptionManagementClient")]
+pub trait PrescriptionManagementInterface {
+    fn get_patient_active_prescriptions(env: Env, patient: Address) -> Vec<String>;
+}
 
 #[contract]
 pub struct NutritionCareContract;
@@ -207,10 +213,12 @@ impl NutritionCareContract {
     }
 
     // ------------------------------------------------------------------
-    // 4. order_therapeutic_diet
+    // 4a. order_therapeutic_diet
     // ------------------------------------------------------------------
 
     /// Place a therapeutic diet order for a patient.
+    /// Performs a cross-contract call to prescription-management to check
+    /// for drug-nutrient contraindications before confirming the order.
     pub fn order_therapeutic_diet(
         env: Env,
         patient_id: Address,
@@ -222,6 +230,35 @@ impl NutritionCareContract {
         special_instructions: Option<String>,
     ) -> Result<u64, Error> {
         ordering_provider.require_auth();
+
+        // Cross-check active prescriptions for contraindications
+        if let Some(prescription_addr) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::PrescriptionContractAddress)
+        {
+            let rx_client = PrescriptionManagementClient::new(&env, &prescription_addr);
+            let active_meds = rx_client.get_patient_active_prescriptions(&patient_id);
+
+            // Check each active medication against the contraindication list for this diet type
+            if let Some(contraindicated) = env
+                .storage()
+                .persistent()
+                .get::<_, Vec<String>>(&DataKey::ContraindicationList(diet_type.clone()))
+            {
+                for med in active_meds.iter() {
+                    for contra in contraindicated.iter() {
+                        if med == contra {
+                            env.events().publish(
+                                (Symbol::new(&env, "diet_contraindication_alert"),),
+                                (diet_type, med, patient_id.clone()),
+                            );
+                            return Err(Error::DietContraindicatedWithMedication);
+                        }
+                    }
+                }
+            }
+        }
 
         let order_id = next_diet_order_id(&env);
 
@@ -247,6 +284,120 @@ impl NutritionCareContract {
         );
 
         Ok(order_id)
+    }
+
+    // ------------------------------------------------------------------
+    // 4b. Admin configuration for prescription-management integration
+    // ------------------------------------------------------------------
+
+    /// Set the prescription-management contract address.
+    /// Only the current contraindication admin can update this.
+    pub fn set_prescription_contract(
+        env: Env,
+        admin: Address,
+        prescription_contract: Address,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ContraindicationAdmin)
+            .ok_or(Error::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::PrescriptionContractAddress, &prescription_contract);
+        Ok(())
+    }
+
+    /// Set the admin address for managing contraindication lists.
+    pub fn set_contraindication_admin(
+        env: Env,
+        admin: Address,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::ContraindicationAdmin, &admin);
+        Ok(())
+    }
+
+    /// Add a medication to the contraindication list for a diet type.
+    /// Only the contraindication admin can update the list.
+    pub fn add_contraindication(
+        env: Env,
+        admin: Address,
+        diet_type: Symbol,
+        medication: String,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ContraindicationAdmin)
+            .ok_or(Error::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+
+        let key = DataKey::ContraindicationList(diet_type.clone());
+        let mut list: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        // Avoid duplicates
+        let mut exists = false;
+        for item in list.iter() {
+            if item == medication {
+                exists = true;
+                break;
+            }
+        }
+        if !exists {
+            list.push_back(medication);
+            env.storage().persistent().set(&key, &list);
+        }
+
+        Ok(())
+    }
+
+    /// Remove a medication from the contraindication list for a diet type.
+    pub fn remove_contraindication(
+        env: Env,
+        admin: Address,
+        diet_type: Symbol,
+        medication: String,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ContraindicationAdmin)
+            .ok_or(Error::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+
+        let key = DataKey::ContraindicationList(diet_type.clone());
+        let mut list: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut new_list: Vec<String> = Vec::new(&env);
+        for item in list.iter() {
+            if item != medication {
+                new_list.push_back(item);
+            }
+        }
+        env.storage().persistent().set(&key, &new_list);
+
+        Ok(())
     }
 
     // ------------------------------------------------------------------

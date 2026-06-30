@@ -1,5 +1,4 @@
 #![no_std]
-#![allow(deprecated)]
 
 //! Cross-contract wrapper for cached ZK eligibility checks.
 

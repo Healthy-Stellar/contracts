@@ -1,5 +1,4 @@
 #![no_std]
-#![allow(deprecated)]
 
 use shared::privacy::validate_nonzero_address;
 use soroban_sdk::{

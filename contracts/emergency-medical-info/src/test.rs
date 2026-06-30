@@ -31,7 +31,7 @@ fn create_test_emergency_contacts(env: &Env) -> Vec<EmergencyContact> {
 #[test]
 fn test_set_emergency_profile() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, EmergencyMedicalInfo);
+    let contract_id = env.register(EmergencyMedicalInfo, ());
     let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
 
     let patient = Address::generate(&env);
@@ -75,7 +75,7 @@ fn test_set_emergency_profile() {
 #[test]
 fn test_emergency_access_request() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, EmergencyMedicalInfo);
+    let contract_id = env.register(EmergencyMedicalInfo, ());
     let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
 
     let patient = Address::generate(&env);
@@ -126,7 +126,7 @@ fn test_emergency_access_request() {
 #[test]
 fn test_add_critical_alert() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, EmergencyMedicalInfo);
+    let contract_id = env.register(EmergencyMedicalInfo, ());
     let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
 
     let patient = Address::generate(&env);
@@ -148,7 +148,7 @@ fn test_add_critical_alert() {
 #[test]
 fn test_multiple_critical_alerts() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, EmergencyMedicalInfo);
+    let contract_id = env.register(EmergencyMedicalInfo, ());
     let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
 
     let patient = Address::generate(&env);
@@ -179,7 +179,7 @@ fn test_multiple_critical_alerts() {
 #[test]
 fn test_notify_emergency_contacts() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, EmergencyMedicalInfo);
+    let contract_id = env.register(EmergencyMedicalInfo, ());
     let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
 
     let patient = Address::generate(&env);
@@ -217,7 +217,7 @@ fn test_notify_emergency_contacts() {
 #[test]
 fn test_record_dnr_order() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, EmergencyMedicalInfo);
+    let contract_id = env.register(EmergencyMedicalInfo, ());
     let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
 
     let patient = Address::generate(&env);
@@ -261,7 +261,7 @@ fn test_record_dnr_order() {
 #[test]
 fn test_configured_emergency_contact_can_read_profile() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, EmergencyMedicalInfo);
+    let contract_id = env.register(EmergencyMedicalInfo, ());
     let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
 
     let patient = Address::generate(&env);
@@ -289,7 +289,7 @@ fn test_configured_emergency_contact_can_read_profile() {
 #[test]
 fn test_guardian_threshold_rekeys_emergency_profile() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, EmergencyMedicalInfo);
+    let contract_id = env.register(EmergencyMedicalInfo, ());
     let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
 
     let patient = Address::generate(&env);
@@ -327,7 +327,7 @@ fn test_guardian_threshold_rekeys_emergency_profile() {
 #[test]
 fn test_dnr_with_advance_directives() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, EmergencyMedicalInfo);
+    let contract_id = env.register(EmergencyMedicalInfo, ());
     let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
 
     let patient = Address::generate(&env);
@@ -359,7 +359,7 @@ fn test_dnr_with_advance_directives() {
 #[test]
 fn test_emergency_access_without_profile() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, EmergencyMedicalInfo);
+    let contract_id = env.register(EmergencyMedicalInfo, ());
     let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
 
     let patient = Address::generate(&env);
@@ -380,7 +380,7 @@ fn test_emergency_access_without_profile() {
 #[test]
 fn test_emergency_access_audit_trail() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, EmergencyMedicalInfo);
+    let contract_id = env.register(EmergencyMedicalInfo, ());
     let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
 
     let patient = Address::generate(&env);
@@ -433,7 +433,7 @@ fn test_emergency_access_audit_trail() {
 #[test]
 fn test_has_emergency_profile() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, EmergencyMedicalInfo);
+    let contract_id = env.register(EmergencyMedicalInfo, ());
     let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
 
     let patient = Address::generate(&env);
@@ -467,7 +467,7 @@ fn test_has_emergency_profile() {
 #[test]
 fn test_comprehensive_emergency_scenario() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, EmergencyMedicalInfo);
+    let contract_id = env.register(EmergencyMedicalInfo, ());
     let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
 
     let patient = Address::generate(&env);

@@ -3,13 +3,20 @@ use crate::types::{
     ProviderSessionWindow, RateLimitConfig, SessionRecord, VirtualVisit, VisitStatus,
 };
 use soroban_sdk::{
-    contract, contractimpl, panic_with_error, xdr::ToXdr, Address, Bytes, BytesN, Env, String,
-    Symbol, Vec,
+    contract, contractclient, contractimpl, panic_with_error, xdr::ToXdr, Address, Bytes, BytesN,
+    Env, String, Symbol, Vec,
 };
 
 const SESSION_TTL_SECONDS: u64 = 60 * 60;
 const DEFAULT_MAX_SESSIONS_PER_WINDOW: u32 = 20;
 const DEFAULT_WINDOW_DURATION_SECS: u64 = 86_400; // 24 hours
+
+// ── Cross-contract interface for provider-registry verification ───────────────
+
+#[contractclient(name = "ProviderRegistryClient")]
+pub trait ProviderRegistryInterface {
+    fn is_provider(env: Env, provider: Address) -> bool;
+}
 
 #[contract]
 pub struct TelemedicineContract;
@@ -97,6 +104,18 @@ impl TelemedicineContract {
         recording_consent: bool,
     ) -> Result<u64, Error> {
         patient_id.require_auth();
+
+        // Verify provider is actively registered in the provider-registry.
+        if let Some(registry_addr) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::ProviderRegistryAddress)
+        {
+            let registry = ProviderRegistryClient::new(&env, &registry_addr);
+            if !registry.is_provider(&provider_id) {
+                return Err(Error::ProviderNotRegistered);
+            }
+        }
 
         let visit_id: u64 = env
             .storage()

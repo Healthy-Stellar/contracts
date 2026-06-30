@@ -2,10 +2,8 @@
 
 use super::*;
 use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, Address, BytesN, Env, String, Vec};
+use shared::test_utils::{dummy_hash};
 
-fn dummy_hash(env: &Env, byte: u8) -> BytesN<32> {
-    BytesN::from_array(env, &[byte; 32])
-}
 
 fn register_hospital_with_anchor(
     env: &Env,
@@ -29,7 +27,7 @@ fn register_hospital_with_anchor(
 #[test]
 fn test_register_hospital() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, HospitalRegistry);
+    let contract_id = env.register(HospitalRegistry, ());
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let hospital_wallet = Address::generate(&env);
@@ -53,7 +51,7 @@ fn test_register_hospital() {
 #[test]
 fn test_update_hospital() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, HospitalRegistry);
+    let contract_id = env.register(HospitalRegistry, ());
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let hospital_wallet = Address::generate(&env);
@@ -77,7 +75,7 @@ fn test_update_hospital() {
 #[test]
 fn test_duplicate_registration() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, HospitalRegistry);
+    let contract_id = env.register(HospitalRegistry, ());
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let hospital_wallet = Address::generate(&env);
@@ -104,7 +102,7 @@ fn test_duplicate_registration() {
 #[test]
 fn test_get_nonexistent_hospital() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, HospitalRegistry);
+    let contract_id = env.register(HospitalRegistry, ());
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let hospital_wallet = Address::generate(&env);
@@ -116,7 +114,7 @@ fn test_get_nonexistent_hospital() {
 #[test]
 fn test_update_nonexistent_hospital() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, HospitalRegistry);
+    let contract_id = env.register(HospitalRegistry, ());
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let hospital_wallet = Address::generate(&env);
@@ -132,7 +130,7 @@ fn test_update_nonexistent_hospital() {
 #[test]
 fn test_expired_hospital_credential_disables_membership() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, HospitalRegistry);
+    let contract_id = env.register(HospitalRegistry, ());
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let hospital_wallet = Address::generate(&env);
@@ -166,7 +164,7 @@ fn test_expired_hospital_credential_disables_membership() {
 #[test]
 fn test_hospital_config_flow() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, HospitalRegistry);
+    let contract_id = env.register(HospitalRegistry, ());
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let hospital_wallet = Address::generate(&env);
@@ -279,7 +277,7 @@ fn test_hospital_config_flow() {
 #[test]
 fn test_update_departments_exceeds_limit() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, HospitalRegistry);
+    let contract_id = env.register(HospitalRegistry, ());
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let hospital_wallet = Address::generate(&env);
@@ -320,7 +318,7 @@ fn test_update_departments_exceeds_limit() {
 #[test]
 fn test_update_locations_exceeds_limit() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, HospitalRegistry);
+    let contract_id = env.register(HospitalRegistry, ());
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let hospital_wallet = Address::generate(&env);
@@ -360,7 +358,7 @@ fn test_update_locations_exceeds_limit() {
 #[test]
 fn test_update_equipment_exceeds_limit() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, HospitalRegistry);
+    let contract_id = env.register(HospitalRegistry, ());
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let hospital_wallet = Address::generate(&env);
@@ -401,7 +399,7 @@ fn test_update_equipment_exceeds_limit() {
 #[test]
 fn test_set_hospital_config_exceeds_limits() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, HospitalRegistry);
+    let contract_id = env.register(HospitalRegistry, ());
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let hospital_wallet = Address::generate(&env);

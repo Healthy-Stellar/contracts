@@ -18,7 +18,7 @@ fn create_test_env() -> (Env, Address, Address, BytesN<32>, BytesN<32>) {
 #[test]
 fn test_initiate_discharge_planning() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register_contract(None, HospitalDischargeContract);
+    let contract_id = env.register(HospitalDischargeContract, ());
     let client = HospitalDischargeContractClient::new(&env, &contract_id);
 
     let admission_date = 1000u64;
@@ -45,7 +45,7 @@ fn test_initiate_discharge_planning() {
 #[test]
 fn test_initiate_discharge_planning_invalid_dates() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register_contract(None, HospitalDischargeContract);
+    let contract_id = env.register(HospitalDischargeContract, ());
     let client = HospitalDischargeContractClient::new(&env, &contract_id);
 
     let admission_date = 2000u64;
@@ -64,7 +64,7 @@ fn test_initiate_discharge_planning_invalid_dates() {
 #[test]
 fn test_assess_discharge_readiness() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register_contract(None, HospitalDischargeContract);
+    let contract_id = env.register(HospitalDischargeContract, ());
     let client = HospitalDischargeContractClient::new(&env, &contract_id);
 
     // First create a discharge plan
@@ -87,7 +87,7 @@ fn test_assess_discharge_readiness() {
 #[test]
 fn test_assess_discharge_readiness_needs_preparation() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register_contract(None, HospitalDischargeContract);
+    let contract_id = env.register(HospitalDischargeContract, ());
     let client = HospitalDischargeContractClient::new(&env, &contract_id);
 
     let plan_id =
@@ -104,7 +104,7 @@ fn test_assess_discharge_readiness_needs_preparation() {
 #[test]
 fn test_assess_discharge_readiness_not_ready() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register_contract(None, HospitalDischargeContract);
+    let contract_id = env.register(HospitalDischargeContract, ());
     let client = HospitalDischargeContractClient::new(&env, &contract_id);
 
     let plan_id =
@@ -121,7 +121,7 @@ fn test_assess_discharge_readiness_not_ready() {
 #[test]
 fn test_create_discharge_orders() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register_contract(None, HospitalDischargeContract);
+    let contract_id = env.register(HospitalDischargeContract, ());
     let client = HospitalDischargeContractClient::new(&env, &contract_id);
 
     let plan_id =
@@ -145,7 +145,7 @@ fn test_create_discharge_orders() {
 #[test]
 fn test_arrange_home_health() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register_contract(None, HospitalDischargeContract);
+    let contract_id = env.register(HospitalDischargeContract, ());
     let client = HospitalDischargeContractClient::new(&env, &contract_id);
 
     let plan_id =
@@ -169,7 +169,7 @@ fn test_arrange_home_health() {
 #[test]
 fn test_order_dme_for_discharge() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register_contract(None, HospitalDischargeContract);
+    let contract_id = env.register(HospitalDischargeContract, ());
     let client = HospitalDischargeContractClient::new(&env, &contract_id);
 
     let plan_id =
@@ -194,7 +194,7 @@ fn test_order_dme_for_discharge() {
 #[test]
 fn test_schedule_followup_appointments() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register_contract(None, HospitalDischargeContract);
+    let contract_id = env.register(HospitalDischargeContract, ());
     let client = HospitalDischargeContractClient::new(&env, &contract_id);
 
     let plan_id =
@@ -216,7 +216,7 @@ fn test_schedule_followup_appointments() {
 #[test]
 fn test_provide_discharge_education() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register_contract(None, HospitalDischargeContract);
+    let contract_id = env.register(HospitalDischargeContract, ());
     let client = HospitalDischargeContractClient::new(&env, &contract_id);
 
     let plan_id =
@@ -236,7 +236,7 @@ fn test_provide_discharge_education() {
 #[test]
 fn test_coordinate_with_snf() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register_contract(None, HospitalDischargeContract);
+    let contract_id = env.register(HospitalDischargeContract, ());
     let client = HospitalDischargeContractClient::new(&env, &contract_id);
 
     let plan_id =
@@ -258,7 +258,7 @@ fn test_coordinate_with_snf() {
 #[test]
 fn test_complete_discharge() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register_contract(None, HospitalDischargeContract);
+    let contract_id = env.register(HospitalDischargeContract, ());
     let client = HospitalDischargeContractClient::new(&env, &contract_id);
 
     let plan_id =
@@ -278,7 +278,7 @@ fn test_complete_discharge() {
 #[test]
 fn test_track_readmission_risk_high() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register_contract(None, HospitalDischargeContract);
+    let contract_id = env.register(HospitalDischargeContract, ());
     let client = HospitalDischargeContractClient::new(&env, &contract_id);
 
     let plan_id =
@@ -296,7 +296,7 @@ fn test_track_readmission_risk_high() {
 #[test]
 fn test_track_readmission_risk_medium() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register_contract(None, HospitalDischargeContract);
+    let contract_id = env.register(HospitalDischargeContract, ());
     let client = HospitalDischargeContractClient::new(&env, &contract_id);
 
     let plan_id =
@@ -313,7 +313,7 @@ fn test_track_readmission_risk_medium() {
 #[test]
 fn test_track_readmission_risk_low() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register_contract(None, HospitalDischargeContract);
+    let contract_id = env.register(HospitalDischargeContract, ());
     let client = HospitalDischargeContractClient::new(&env, &contract_id);
 
     let plan_id =
@@ -330,7 +330,7 @@ fn test_track_readmission_risk_low() {
 #[test]
 fn test_assess_readiness_nonexistent_plan() {
     let (env, admin, _patient, _patient_id, _hospital_id) = create_test_env();
-    let contract_id = env.register_contract(None, HospitalDischargeContract);
+    let contract_id = env.register(HospitalDischargeContract, ());
     let client = HospitalDischargeContractClient::new(&env, &contract_id);
 
     let notes = String::from_str(&env, "Test");
@@ -342,7 +342,7 @@ fn test_assess_readiness_nonexistent_plan() {
 #[test]
 fn test_multiple_discharge_plans() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register_contract(None, HospitalDischargeContract);
+    let contract_id = env.register(HospitalDischargeContract, ());
     let client = HospitalDischargeContractClient::new(&env, &contract_id);
 
     // Create first plan
@@ -368,7 +368,7 @@ fn test_multiple_discharge_plans() {
 #[test]
 fn test_full_discharge_workflow() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register_contract(None, HospitalDischargeContract);
+    let contract_id = env.register(HospitalDischargeContract, ());
     let client = HospitalDischargeContractClient::new(&env, &contract_id);
 
     // 1. Initiate discharge planning
