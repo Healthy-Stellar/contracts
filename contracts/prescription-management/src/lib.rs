@@ -1566,6 +1566,25 @@ impl PrescriptionContract {
         }
         false
     }
+
+    /// Retrieve the medication names of all active prescriptions for a patient.
+    /// Used by cross-contract callers (e.g. nutrition-care-management) to check
+    /// for drug-nutrient contraindications.
+    pub fn get_patient_active_prescriptions(env: Env, patient: Address) -> Vec<String> {
+        let now = env.ledger().timestamp();
+        let key = DataKey::PatientPrescriptions(patient);
+        let ids: Vec<u64> = env.storage().persistent().get(&key).unwrap_or(Vec::new(&env));
+
+        let mut active_meds: Vec<String> = Vec::new(&env);
+        for id in ids.iter() {
+            if let Some(prescription) = env.storage().persistent().get::<_, Prescription>(&id) {
+                if is_prescription_active(&prescription, now) {
+                    active_meds.push_back(prescription.medication_name);
+                }
+            }
+        }
+        active_meds
+    }
 }
 
 /// Inner implementation shared by `issue_prescription` and `issue_from_template`.
