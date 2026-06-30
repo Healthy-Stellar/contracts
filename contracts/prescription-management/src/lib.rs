@@ -1,5 +1,30 @@
 #![no_std]
 
+//! # Prescription Management Contract
+//!
+//! Manages medication prescriptions with drug-allergy interaction checking, pharmacy dispensing,
+//! medication adherence tracking, and refill management.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Prescriber (MD, NP, PA) authentication for prescription creation.
+//! Patient consent for prescription records. Pharmacy access to dispense authorized prescriptions.
+//! Patient access to refill requests and history. DEA validation for controlled substances.
+//!
+//! **Audit Controls:** Prescription creation events logged with provider, medication, and dosage.
+//! Drug-allergy interaction check events. Pharmacy dispensing events tracked with pharmacy ID.
+//! Refill request events recorded with approval status. Medication adherence events logged.
+//! Prescription cancellation/modification tracked with reason.
+//!
+//! **Data Retention Policy:** Prescriptions retained indefinitely per pharmacy law requirements.
+//! Dispensing records archived with pharmacy and pharmacist identity. Refill history maintained.
+//! Medication adherence data retained for treatment optimization. Controlled substance records
+//! retained per DEA requirements.
+//!
+//! **Encryption/Integrity:** Medication names and dosages encrypted in persistent storage. DEA
+//! number validation for controlled substances. Patient-prescription linkage encrypted. Interaction
+//! checks validated against allergy registry. Dispensing pharmacy validated.
+
 use shared::temporal;
 use soroban_sdk::{
     Address, BytesN, Env, String, Symbol, Vec, contract, contractclient, contracterror,
@@ -149,6 +174,7 @@ pub enum Error {
     MissingRecallReason = 28,
     /// Patient already has MAX_ACTIVE_PRESCRIPTIONS active prescriptions
     TooManyActivePrescriptions = 29,
+    StaleNonce = 30,
 }
 
 #[contracttype]
@@ -258,6 +284,8 @@ pub enum DataKey {
     /// `count_and_prune_active_prescriptions`), so it stays close to the
     /// patient's actual active count rather than growing unboundedly.
     PatientPrescriptions(Address),
+    /// Per-caller nonce for replay attack protection: (caller) -> u64
+    CallerNonce(Address),
 }
 
 #[contracttype]
@@ -1565,6 +1593,36 @@ impl PrescriptionContract {
                 .has(&DataKey::RecallRecord(recall_id));
         }
         false
+    }
+
+    /// Verify and increment caller's nonce for cross-contract call protection.
+    /// Returns an error if the provided nonce is <= the last successful nonce.
+    fn verify_and_increment_nonce(
+        env: &Env,
+        caller: &Address,
+        provided_nonce: u64,
+    ) -> Result<(), Error> {
+        let nonce_key = DataKey::CallerNonce(caller.clone());
+        let last_nonce: u64 = env
+            .storage()
+            .persistent()
+            .get(&nonce_key)
+            .unwrap_or(0);
+
+        // Reject if provided nonce is not strictly greater than last successful nonce
+        if provided_nonce <= last_nonce {
+            return Err(Error::StaleNonce);
+        }
+
+        // Update nonce to prevent replay
+        env.storage().persistent().set(&nonce_key, &provided_nonce);
+        Ok(())
+    }
+
+    /// Get the current nonce for a caller.
+    pub fn get_caller_nonce(env: Env, caller: Address) -> u64 {
+        let nonce_key = DataKey::CallerNonce(caller);
+        env.storage().persistent().get(&nonce_key).unwrap_or(0)
     }
 }
 

@@ -1,6 +1,31 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
 
+//! # Healthcare Credentialing Contract
+//!
+//! Manages healthcare provider credentials with verification, expiration tracking, and
+//! credential verification requirements.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Credential verification restricted to authorized credentialing
+//! bodies. Provider profile access controlled via authorization. Minimum credential requirements
+//! (5 required) enforced before practice authorization. Revocation/suspension authority restricted
+//! to credentialing admins.
+//!
+//! **Audit Controls:** Credential registration events logged with provider ID and credential type.
+//! Credential verification completion events tracked. Expiration warning events emitted. Revocation
+//! events logged with reason. Credential status transitions auditable via persistent events.
+//!
+//! **Data Retention Policy:** Active credentials retained with expiration timestamp. Expired
+//! credentials archived without deletion. Revoked/suspended credentials retain revocation reason
+//! and date. Verification history maintained for audit. Credential timeline reconstructible from
+//! event stream.
+//!
+//! **Encryption/Integrity:** Credential data stored encrypted in persistent storage. Credential
+//! type enumeration prevents invalid credential categories. Expiration timestamp comparison
+//! prevents use of expired credentials. Provider address validation via registry.
+
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, String, Symbol, Vec,
 };

@@ -56,6 +56,30 @@ pub enum ReconciliationStatus {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DisputeStatus {
+    Open,
+    Resolved,
+    Escalated,
+    Closed,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeRecord {
+    pub dispute_id: u64,
+    pub claim_id: u64,
+    pub opened_by: Address,
+    pub status: DisputeStatus,
+    pub reason_hash: BytesN<32>,
+    pub opened_at: u64,
+    pub resolved_by: Option<Address>,
+    pub resolution_hash: Option<BytesN<32>>,
+    pub resolved_at: Option<u64>,
+    pub escalation_level: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServiceLine {
     pub procedure_code: String,
     pub modifier: Option<String>,

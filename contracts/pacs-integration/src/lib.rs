@@ -1,6 +1,30 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
 
+//! # PACS Integration Contract
+//!
+//! Picture Archiving and Communication System (PACS) integration for medical imaging management,
+//! study routing, archive retrieval, and image reference tracking.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** DICOM gateway/PACS system authentication for image uploads.
+//! Radiologist access for study routing. Ordering provider access for image retrieval.
+//! Patient consent for imaging data storage. Archive access restricted to authorized facilities.
+//!
+//! **Audit Controls:** Image upload events logged with modality, patient, and study date.
+//! Study routing events tracked with destination facility. Archive retrieval events logged.
+//! Image reference events tracked for access audit. Deletion events recorded. DICOM metadata
+//! audit trail maintained.
+//!
+//! **Data Retention Policy:** Medical images retained indefinitely per regulatory requirements.
+//! DICOM metadata archived with image references. Study routing history maintained. Archive
+//! retrieval logs retained for audit. Deletion requests preserved with justification.
+//!
+//! **Encryption/Integrity:** DICOM image data encrypted in persistent storage. Image hash
+//! validation ensures integrity. Patient-image linkage encrypted. Study date immutable.
+//! PACS endpoint validation prevents unauthorized image routing.
+
 mod storage;
 mod types;
 

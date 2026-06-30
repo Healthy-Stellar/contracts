@@ -1,5 +1,32 @@
 #![no_std]
 
+//! # Health Records Contract
+//!
+//! Central medical record repository with encrypted storage, consent-based access control,
+//! versioning, and integrity verification for longitudinal patient health data.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Patient and provider authentication required. Patient grants
+//! scoped consent (read, write, share) per provider. Consent can expire or never expire (0 = no
+//! expiry). Patient revokes provider consent atomically. Emergency access override with 1-hour TTL.
+//! Batch record creation enforces per-patient consent validation.
+//!
+//! **Audit Controls:** Record creation events logged with patient, provider, category, and
+//! timestamp. Consent grant/revoke events tracked. Record update events with version number.
+//! Integrity verification events for tamper detection. Incident reporting with correlation IDs.
+//! Deregistration events with cascade cleanup.
+//!
+//! **Data Retention Policy:** Records retained indefinitely with version history (prior versions
+//! in RecordVersion storage). Record category index enables efficient queries. Consent scope
+//! expiration enforced at check time. Deregistration removes all patient records and consent.
+//! Policy metadata enforces per-record retention rules.
+//!
+//! **Encryption/Integrity:** EncryptedEnvelopeRef with content hashing validates encrypted data.
+//! PolicyMetadata enforces encryption requirements per record type. SHA256 integrity hash computed
+//! and verified on retrieval. Record versioning maintains amendment trail. Consent validation
+//! prevents unauthorized access.
+
 use shared::incident_tracking::{
     capture_incident, get_incidents_by_correlation_id as shared_get_by_corr, IncidentSeverity,
 };
@@ -79,6 +106,8 @@ pub enum DataKey {
     CategoryIndex(RecordCategory), // category -> Vec<u64> of record ids in that category, for prefix-style queries
     ProviderRegistry,
     RecordVersion(u64, u32),
+    /// Per-caller nonce for replay attack protection: (caller) -> u64
+    CallerNonce(Address),
 }
 
 #[contracterror]
@@ -94,6 +123,7 @@ pub enum Error {
     BatchTooLarge = 7,
     ProviderNotRegistered = 8,
     VersionNotFound = 9,
+    StaleNonce = 10,
 }
 
 #[soroban_sdk::contractclient(name = "ProviderRegistryClient")]
@@ -570,6 +600,36 @@ impl HealthRecords {
         correlation_id: BytesN<32>,
     ) -> Vec<u64> {
         shared_get_by_corr(&env, correlation_id)
+    }
+
+    /// Verify and increment caller's nonce for cross-contract call protection.
+    /// Returns an error if the provided nonce is <= the last successful nonce.
+    fn verify_and_increment_nonce(
+        env: &Env,
+        caller: &Address,
+        provided_nonce: u64,
+    ) -> Result<(), Error> {
+        let nonce_key = DataKey::CallerNonce(caller.clone());
+        let last_nonce: u64 = env
+            .storage()
+            .persistent()
+            .get(&nonce_key)
+            .unwrap_or(0);
+
+        // Reject if provided nonce is not strictly greater than last successful nonce
+        if provided_nonce <= last_nonce {
+            return Err(Error::StaleNonce);
+        }
+
+        // Update nonce to prevent replay
+        env.storage().persistent().set(&nonce_key, &provided_nonce);
+        Ok(())
+    }
+
+    /// Get the current nonce for a caller.
+    pub fn get_caller_nonce(env: Env, caller: Address) -> u64 {
+        let nonce_key = DataKey::CallerNonce(caller);
+        env.storage().persistent().get(&nonce_key).unwrap_or(0)
     }
 }
 

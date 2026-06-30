@@ -1,6 +1,30 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
 
+//! # Prior Authorization Contract
+//!
+//! Manages insurance prior authorization requests for medical procedures and medications with
+//! approval workflows, medical necessity review, and appeal tracking.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Provider submission of prior auth requests. Insurance medical
+//! reviewer authentication for approval decisions. Patient access to request status. Appeal
+//! requestor validation. Emergency override authorization for critical procedures.
+//!
+//! **Audit Controls:** Authorization request creation events with procedure/medication details.
+//! Medical necessity review events logged with reviewer identity and decision. Approval/denial
+//! events recorded with rationale. Appeal submission and resolution events tracked. Expiration
+//! events logged when authorization lapses.
+//!
+//! **Data Retention Policy:** Authorization requests retained indefinitely for insurance records.
+//! Medical necessity documentation archived. Approval/denial decisions maintained. Appeal records
+//! retained with resolution. Lapsed authorizations retained for compliance.
+//!
+//! **Encryption/Integrity:** Procedure codes stored encrypted. Clinical justification encrypted
+//! in persistent storage. Insurance company identity validated. Reviewer identity signed.
+//! Authorization status enumeration prevents invalid states.
+
 mod storage;
 mod types;
 

@@ -1,10 +1,9 @@
 #![no_std]
 
-//! ZK Eligibility Contract
+//! # ZK Eligibility Contract
 //!
-//! Manages verifier key versioning and on-chain proof verification for
-//! eligibility-sensitive operations (e.g. telemedicine cross-state licensing,
-//! insurance claim gating).
+//! Manages verifier key versioning and zero-knowledge proof verification for eligibility-sensitive
+//! healthcare operations (telemedicine cross-state licensing, insurance claim gating, etc).
 //!
 //! ## Design
 //! - Admin registers versioned verifier keys (VK). Each VK is bound to a

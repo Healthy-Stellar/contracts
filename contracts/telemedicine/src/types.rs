@@ -109,6 +109,24 @@ pub struct SessionRecord {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderSessionWindow {
+    /// Number of sessions created in current window
+    pub session_count: u32,
+    /// Timestamp when the current window started
+    pub window_start: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RateLimitConfig {
+    /// Maximum sessions per provider per window (in seconds)
+    pub max_sessions_per_window: u32,
+    /// Window duration in seconds (default: 86400 = 24 hours)
+    pub window_duration_secs: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
     VirtualVisit(u64),
     VisitCount,

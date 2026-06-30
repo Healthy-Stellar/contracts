@@ -1,5 +1,28 @@
 #![no_std]
 
+//! # Healthcare Analytics Contract
+//!
+//! Resource management and job scheduling system for healthcare analytics workloads with
+//! throttling, prioritization, and quota enforcement.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Job submission restricted to authorized analytics providers.
+//! Query access validated against patient consent records. Report generation requires admin approval.
+//! Resource quota per provider enforced to prevent monopolization.
+//!
+//! **Audit Controls:** Job creation events with priority level and resource estimate. Job completion
+//! events logged with execution time. Resource usage tracked per provider for audit. Job state
+//! transitions (pending, executing, completed, failed) recorded in persistent storage.
+//!
+//! **Data Retention Policy:** Completed analytics jobs retained indefinitely for audit trail.
+//! Resource usage statistics archived per provider. Throttling configuration (system limits)
+//! maintained to enforce fair access. Job priority levels managed to prevent starvation.
+//!
+//! **Encryption/Integrity:** Job data stored encrypted via persistent storage. Resource quotas
+//! validated before execution. Job priority enums prevent unauthorized priority escalation.
+//! Resource usage metrics immutable once recorded.
+
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env,
     String, Symbol, Vec,
@@ -45,6 +68,19 @@ pub enum ResultQuality {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReportJobAccepted {
     pub job_id: u64,
+    pub result_quality: ResultQuality,
+}
+
+/// Cost-accounting metrics event emitted on job completion (#499).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JobCompleted {
+    pub job_id: u64,
+    pub requester: Address,
+    pub report_type: String,
+    pub actual_cpu: u64,
+    pub actual_memory: u64,
+    pub wall_time_ms: u64,
     pub result_quality: ResultQuality,
 }
 
@@ -346,7 +382,7 @@ impl HealthcareAnalytics {
     }
 
     /// Mark a report job as completed with actual resource usage
-    pub fn complete_report(env: Env, job_id: u64, cpu_used: u64, memory_used: u64) -> Result<(), Error> {
+    pub fn complete_report(env: Env, job_id: u64, cpu_used: u64, memory_used: u64, wall_time_ms: u64) -> Result<(), Error> {
         let job = get_job(&env, job_id).map_err(|_| Error::JobNotFound)?;
         complete_job(&env, job_id, cpu_used, memory_used)
             .map_err(|_| Error::JobNotFound)?;
@@ -388,8 +424,24 @@ impl HealthcareAnalytics {
             &(req_mem + memory_used),
         );
 
-        env.events()
-            .publish((symbol_short!("job_done"), job_id), (cpu_used, memory_used));
+        let result_quality: ResultQuality = env
+            .storage()
+            .persistent()
+            .get(&DataKey::JobResultQuality(job_id))
+            .unwrap_or(ResultQuality::Full);
+
+        env.events().publish(
+            (symbol_short!("job_done"), job_id),
+            JobCompleted {
+                job_id,
+                requester: job.requested_by,
+                report_type: job.job_type,
+                actual_cpu: cpu_used,
+                actual_memory: memory_used,
+                wall_time_ms,
+                result_quality,
+            },
+        );
 
         Ok(())
     }

@@ -1,5 +1,29 @@
 #![no_std]
 
+//! # Allergy Management Contract
+//!
+//! Records, tracks, and manages patient allergies with severity levels, resolution tracking,
+//! drug-allergy interaction checking, and provider access control.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Provider registration verification via external provider registry.
+//! Patient access grants to authorized providers only. Access permission checks on allergy retrieval.
+//! Patient auth required for access grant/revoke operations.
+//!
+//! **Audit Controls:** Events emitted for all allergy operations (AllergyRecorded, AllergyUpdated,
+//! AllergyResolved, AccessGranted, AccessRevoked, IncidentCaptured). Severity history maintained
+//! for each allergy with timestamp and update reason. Incident capture with structured evidence
+//! attachment (error_log, state_snapshot, stack_trace, context).
+//!
+//! **Data Retention Policy:** Active allergies marked with AllergyStatus::Active; resolved allergies
+//! retain resolution date and reason. Deregister_patient marks all patient allergies as Deleted,
+//! removes PatientAllergies index, and clears access control grants.
+//!
+//! **Encryption/Integrity:** Allergen and reaction data stored in persistent storage with versioning.
+//! Incident tracking with SHA256 hashing for evidence integrity. Provider registry validation
+//! ensures only authorized providers access allergy records.
+
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, symbol_short, vec, Address, Bytes, Env,
     IntoVal, String, Symbol, Vec,

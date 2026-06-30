@@ -1,6 +1,30 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
 
+//! # Medical Device Tracking Contract
+//!
+//! Manages medical device inventory, implant tracking, warranty records, performance monitoring,
+//! and recall management for implantable and durable medical equipment.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Hospital/provider authorization required for device tracking.
+//! Patient consent for implant records. Maintenance technician authentication for service records.
+//! Recall notification requires authorization. Device access restricted to responsible facility.
+//!
+//! **Audit Controls:** Device registration events logged with type, serial number, and location.
+//! Implant procedure events tracked with patient ID and implant date. Maintenance service events
+//! recorded with technician identity. Warranty event tracking. Recall notifications emitted.
+//!
+//! **Data Retention Policy:** Device records retained indefinitely for traceability. Implant
+//! records retained with patient for lifetime identification. Warranty information archived.
+//! Maintenance history maintained for service compliance. Recall information persisted for
+//! liability protection.
+//!
+//! **Encryption/Integrity:** Device serial numbers stored encrypted. Patient-implant linkage
+//! encrypted via persistent storage. Warranty dates immutable. Device type enumeration prevents
+//! invalid device categories. Maintenance provider identity validated.
+
 mod test;
 mod types;
 

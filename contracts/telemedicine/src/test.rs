@@ -1,12 +1,32 @@
 #![cfg(test)]
 #![allow(deprecated)]
 
-use crate::contract::{TelemedicineContract, TelemedicineContractClient};
+use crate::contract::{
+    ProviderRegistryClient, TelemedicineContract,
+    TelemedicineContractClient,
+};
 use crate::types::PrescriptionRequest;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger as _},
+    contract, contractimpl, testutils::{Address as _, Ledger as _},
     Address, BytesN, Env, String, Symbol, Vec,
 };
+
+// Mock provider-registry for cross-contract testing
+#[contract]
+pub struct MockProviderRegistry;
+
+#[contractimpl]
+impl MockProviderRegistry {
+    pub fn is_provider(env: Env, provider: Address) -> bool {
+        let key = (Symbol::new(&env, "Revoked"), provider.clone());
+        !env.storage().persistent().has(&key)
+    }
+
+    pub fn set_revoked(env: Env, provider: Address) {
+        let key = (Symbol::new(&env, "Revoked"), provider.clone());
+        env.storage().persistent().set(&key, &true);
+    }
+}
 
 #[test]
 fn test_telemedicine_lifecycle() {

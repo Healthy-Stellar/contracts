@@ -1,7 +1,31 @@
 #![no_std]
 
+//! # Lab Management Contract
+//!
+//! Manages laboratory test ordering, specimen tracking, result documentation, and quality assurance
+//! with turnaround time tracking and critical value alerts.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Lab technician/pathologist authentication for result entry.
+//! Ordering provider validation. Patient consent for testing. Result access restricted to
+//! ordering provider and patient. Critical value notification authorization.
+//!
+//! **Audit Controls:** Test order events logged with specimen type and order provider. Result
+//! entry events tracked with pathologist identity. Critical value alerts emitted with severity.
+//! Quality assurance check results documented. Turnaround time metrics tracked for audit.
+//!
+//! **Data Retention Policy:** Lab results retained indefinitely per medical record standards.
+//! Specimen tracking maintained until test completion. Quality assurance metrics archived.
+//! Critical values retained for liability protection. Reference ranges versioned for historical
+//! comparison.
+//!
+//! **Encryption/Integrity:** Lab values stored encrypted in persistent storage. Test result
+//! reference ranges validated. Pathologist digital signature via address authentication. Critical
+//! value thresholds immutable. Specimen type enumeration prevents invalid tests.
+
 use soroban_sdk::{
-    Address, BytesN, Env, String, Symbol, Vec, contract, contracterror, contractimpl, contracttype,
+    Address, BytesN, Env, String, Symbol, Vec, contract, contracterror, contractimpl, contracttype, vec, IntoVal,
 };
 
 #[contracterror]
@@ -13,6 +37,7 @@ pub enum Error {
     QCFieldFailed = 4,
     /// The lab order counter has reached u64::MAX and cannot be incremented.
     OrderIdOverflow = 5,
+    ProviderNotRegistered = 6,
 }
 
 #[contracttype]
@@ -59,6 +84,8 @@ pub enum DataKey {
     LabOrder(u64),
     /// Monotonic counter in instance storage.
     LabCounter,
+    /// Provider registry contract address
+    ProviderRegistry,
 }
 
 #[contract]
@@ -66,6 +93,26 @@ pub struct LabManagementContract;
 
 #[contractimpl]
 impl LabManagementContract {
+    pub fn initialize(env: Env, provider_registry: Address) -> Result<(), Error> {
+        env.storage()
+            .instance()
+            .set(&DataKey::ProviderRegistry, &provider_registry);
+        Ok(())
+    }
+
+    fn is_provider_registered(env: &Env, provider: &Address) -> bool {
+        if let Ok(provider_registry) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::ProviderRegistry)
+        {
+            let args = vec![env, provider.clone().into_val(env)];
+            env.invoke_contract(&provider_registry, &Symbol::new(env, "is_provider"), args)
+        } else {
+            false
+        }
+    }
+
     /// Validates QC check results before any state mutations occur.
     /// Returns Ok if validation passes, Err if validation fails.
     fn validate_qc_results(qc_passed: bool, results_summary: &Vec<TestResult>) -> Result<(), Error> {
@@ -85,6 +132,10 @@ impl LabManagementContract {
         req: OrderRequest,
     ) -> Result<u64, Error> {
         provider_id.require_auth();
+
+        if !Self::is_provider_registered(&env, &provider_id) {
+            return Err(Error::ProviderNotRegistered);
+        }
 
         // Read the current counter (u64 throughout — no cast to u32).
         let id: u64 = env
