@@ -1485,3 +1485,152 @@ fn test_outcome_tracking_all_valid_metrics() {
     let outcomes = client.get_plan_outcomes(&care_plan_id);
     assert_eq!(outcomes.len(), metrics.len() as u32);
 }
+
+// ── Mock prescription-management contract for cross-contract testing (#562) ──
+
+use soroban_sdk::{contract, contractimpl, contracttype};
+
+#[contracttype]
+pub enum MockRxDataKey {
+    PatientMeds(Address),
+}
+
+#[contract]
+pub struct MockPrescriptionManagement;
+
+#[contractimpl]
+impl MockPrescriptionManagement {
+    pub fn get_patient_active_prescriptions(env: Env, patient: Address) -> Vec<String> {
+        env.storage()
+            .persistent()
+            .get(&MockRxDataKey::PatientMeds(patient))
+            .unwrap_or(Vec::new(&env))
+    }
+
+    pub fn set_patient_prescriptions(env: Env, patient: Address, meds: Vec<String>) {
+        env.storage()
+            .persistent()
+            .set(&MockRxDataKey::PatientMeds(patient), &meds);
+    }
+}
+
+// ── Diet contraindication tests (#562) ───────────────────────────────────────
+
+#[test]
+fn test_order_therapeutic_diet_succeeds_with_no_conflicting_meds() {
+    let (env, patient, dietitian, _) = setup();
+    let client = register(&env);
+
+    // Register a mock prescription-management contract
+    let rx_id = env.register(MockPrescriptionManagement, ());
+    let rx_client = MockPrescriptionManagementClient::new(&env, &rx_id);
+
+    // Set the admin and prescription contract
+    client.set_contraindication_admin(&dietitian);
+    client.set_prescription_contract(&dietitian, &rx_id);
+
+    // Set patient medications (no conflicts with "cardiac" diet)
+    let mut meds = Vec::new(&env);
+    meds.push_back(String::from_str(&env, "Acetaminophen"));
+    meds.push_back(String::from_str(&env, "Ibuprofen"));
+    rx_client.set_patient_prescriptions(&patient, &meds);
+
+    // Add some contraindications for "cardiac" diet (none match patient's meds)
+    client.add_contraindication(
+        &dietitian,
+        &Symbol::new(&env, "cardiac"),
+        &String::from_str(&env, "Warfarin"),
+    );
+
+    let result = client.try_order_therapeutic_diet(
+        &patient,
+        &dietitian,
+        &Symbol::new(&env, "cardiac"),
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_order_therapeutic_diet_blocked_when_conflict_detected() {
+    let (env, patient, dietitian, _) = setup();
+    let client = register(&env);
+
+    // Register a mock prescription-management contract
+    let rx_id = env.register(MockPrescriptionManagement, ());
+    let rx_client = MockPrescriptionManagementClient::new(&env, &rx_id);
+
+    // Set the admin and prescription contract
+    client.set_contraindication_admin(&dietitian);
+    client.set_prescription_contract(&dietitian, &rx_id);
+
+    // Set patient medications (Warfarin conflicts with "cardiac" diet)
+    let mut meds = Vec::new(&env);
+    meds.push_back(String::from_str(&env, "Warfarin"));
+    meds.push_back(String::from_str(&env, "Acetaminophen"));
+    rx_client.set_patient_prescriptions(&patient, &meds);
+
+    // Add contraindication for "cardiac" diet with Warfarin
+    client.add_contraindication(
+        &dietitian,
+        &Symbol::new(&env, "cardiac"),
+        &String::from_str(&env, "Warfarin"),
+    );
+
+    let result = client.try_order_therapeutic_diet(
+        &patient,
+        &dietitian,
+        &Symbol::new(&env, "cardiac"),
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    assert_eq!(result, Err(Ok(Error::DietContraindicatedWithMedication)));
+}
+
+#[test]
+fn test_contraindication_list_update_by_admin() {
+    let (env, patient, dietitian, other_provider) = setup();
+    let client = register(&env);
+
+    // Set admin
+    client.set_contraindication_admin(&dietitian);
+
+    // Add contraindications
+    client.add_contraindication(
+        &dietitian,
+        &Symbol::new(&env, "renal"),
+        &String::from_str(&env, "ACE Inhibitor"),
+    );
+    client.add_contraindication(
+        &dietitian,
+        &Symbol::new(&env, "renal"),
+        &String::from_str(&env, "Potassium Supplement"),
+    );
+    client.add_contraindication(
+        &dietitian,
+        &Symbol::new(&env, "diabetic"),
+        &String::from_str(&env, "High Sugar"),
+    );
+
+    // Remove one
+    client.remove_contraindication(
+        &dietitian,
+        &Symbol::new(&env, "renal"),
+        &String::from_str(&env, "Potassium Supplement"),
+    );
+
+    // Non-admin cannot add
+    let result = client.try_add_contraindication(
+        &other_provider,
+        &Symbol::new(&env, "renal"),
+        &String::from_str(&env, "New Med"),
+    );
+    assert!(result.is_err());
+}

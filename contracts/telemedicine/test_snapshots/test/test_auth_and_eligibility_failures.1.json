@@ -36,6 +36,9 @@
                 },
                 {
                   "bool": true
+                },
+                {
+                  "bool": false
                 }
               ]
             }
@@ -132,6 +135,14 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "recording_consent"
+                      },
+                      "val": {
+                        "bool": false
                       }
                     },
                     {

@@ -3,17 +3,36 @@ use crate::types::{
     SessionRecord, VirtualVisit, VisitStatus,
 };
 use soroban_sdk::{
-    contract, contractimpl, panic_with_error, xdr::ToXdr, Address, Bytes, BytesN, Env, String,
-    Symbol, Vec,
+    contract, contractclient, contractimpl, panic_with_error, xdr::ToXdr, Address, Bytes, BytesN,
+    Env, String, Symbol, Vec,
 };
 
 const SESSION_TTL_SECONDS: u64 = 60 * 60;
+
+// ── Cross-contract interface for provider-registry verification ───────────────
+
+#[contractclient(name = "ProviderRegistryClient")]
+pub trait ProviderRegistryInterface {
+    fn is_provider(env: Env, provider: Address) -> bool;
+}
 
 #[contract]
 pub struct TelemedicineContract;
 
 #[contractimpl]
 impl TelemedicineContract {
+    /// Initialize the contract with the provider-registry address.
+    /// Can only be called once.
+    pub fn initialize(env: Env, provider_registry: Address) -> Result<(), Error> {
+        if env.storage().instance().has(&DataKey::ProviderRegistryAddress) {
+            panic_with_error!(&env, Error::NotAuthorized);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::ProviderRegistryAddress, &provider_registry);
+        Ok(())
+    }
+
     pub fn schedule_virtual_visit(
         env: Env,
         patient_id: Address,
@@ -26,6 +45,18 @@ impl TelemedicineContract {
         recording_consent: bool,
     ) -> Result<u64, Error> {
         patient_id.require_auth();
+
+        // Verify provider is actively registered in the provider-registry.
+        if let Some(registry_addr) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::ProviderRegistryAddress)
+        {
+            let registry = ProviderRegistryClient::new(&env, &registry_addr);
+            if !registry.is_provider(&provider_id) {
+                return Err(Error::ProviderNotRegistered);
+            }
+        }
 
         let visit_id: u64 = env
             .storage()

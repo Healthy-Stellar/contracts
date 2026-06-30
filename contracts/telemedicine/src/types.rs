@@ -17,6 +17,8 @@ pub enum Error {
     CrossStateNotPermitted = 11,
     /// Recording metadata cannot be stored without explicit patient consent
     RecordingConsentRequired = 12,
+    /// Provider is not registered or active in the provider-registry
+    ProviderNotRegistered = 13,
 }
 
 /// On-chain record of a provider's license in a given jurisdiction (state/region).
@@ -109,4 +111,6 @@ pub enum DataKey {
     LicenseRegistry(Address, String),
     /// jurisdiction -> JurisdictionPolicy
     JurisdictionPolicy(String),
+    /// Address of the provider-registry contract for cross-contract verification
+    ProviderRegistryAddress,
 }
