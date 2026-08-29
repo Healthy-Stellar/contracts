@@ -379,3 +379,250 @@ fn test_read_denied_immediately_after_revocation() {
     let result = client.try_get_financial_records(&auditor, &owner, &0, &10);
     assert_eq!(result, Err(Ok(ContractError::AccessDenied)));
 }
+
+#[test]
+fn test_delegated_read_emits_audit_event() {
+    use soroban_sdk::testutils::Events;
+    use soroban_sdk::{IntoVal, Val, Vec as SdkVec};
+
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register(FinancialRecordContract, ());
+    let client = FinancialRecordContractClient::new(&e, &contract_id);
+
+    let owner = Address::generate(&e);
+    let auditor = Address::generate(&e);
+
+    client.add_financial_record(
+        &owner,
+        &RecordType::Invoice,
+        &encrypted_ref(&e, 7),
+        &policy(&e),
+    );
+    client.grant_access(&owner, &auditor);
+    client.get_financial_records(&auditor, &owner, &0, &10);
+
+    let events = e.events().all();
+    let expected_topics: SdkVec<Val> =
+        (Symbol::new(&e, "rec_read"), auditor.clone(), owner.clone()).into_val(&e);
+    assert!(
+        events
+            .iter()
+            .any(|(_id, topics, _data)| topics == expected_topics),
+        "delegated read event not emitted"
+    );
+}
+
+#[test]
+fn test_deregister_patient_clears_stale_access_grants() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register(FinancialRecordContract, ());
+    let client = FinancialRecordContractClient::new(&e, &contract_id);
+
+    let owner = Address::generate(&e);
+    let auditor = Address::generate(&e);
+
+    client.add_financial_record(
+        &owner,
+        &RecordType::Invoice,
+        &encrypted_ref(&e, 8),
+        &policy(&e),
+    );
+    client.grant_access(&owner, &auditor);
+    assert_eq!(client.get_financial_records(&auditor, &owner, &0, &10).len(), 1);
+
+    client.deregister_patient(&owner);
+
+    client.add_financial_record(
+        &owner,
+        &RecordType::TaxDocument,
+        &encrypted_ref(&e, 9),
+        &policy(&e),
+    );
+
+    let result = client.try_get_financial_records(&auditor, &owner, &0, &10);
+    assert_eq!(result, Err(Ok(ContractError::AccessDenied)));
+}
+
+#[test]
+fn test_grant_access_is_idempotent() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register(FinancialRecordContract, ());
+    let client = FinancialRecordContractClient::new(&e, &contract_id);
+
+    let owner = Address::generate(&e);
+    let auditor = Address::generate(&e);
+
+    client.add_financial_record(
+        &owner,
+        &RecordType::Invoice,
+        &encrypted_ref(&e, 4),
+        &policy(&e),
+    );
+
+    client.grant_access(&owner, &auditor);
+    client.grant_access(&owner, &auditor);
+
+    assert_eq!(client.get_financial_records(&auditor, &owner, &0, &10).len(), 1);
+
+    client.revoke_access(&owner, &auditor);
+    let result = client.try_get_financial_records(&auditor, &owner, &0, &10);
+    assert_eq!(result, Err(Ok(ContractError::AccessDenied)));
+}
+
+#[test]
+fn test_multiple_authorized_readers_are_cleared_on_deregistration() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register(FinancialRecordContract, ());
+    let client = FinancialRecordContractClient::new(&e, &contract_id);
+
+    let owner = Address::generate(&e);
+    let auditor1 = Address::generate(&e);
+    let auditor2 = Address::generate(&e);
+
+    client.add_financial_record(
+        &owner,
+        &RecordType::Invoice,
+        &encrypted_ref(&e, 15),
+        &policy(&e),
+    );
+    client.grant_access(&owner, &auditor1);
+    client.grant_access(&owner, &auditor2);
+
+    assert_eq!(client.get_financial_records(&auditor1, &owner, &0, &10).len(), 1);
+    assert_eq!(client.get_financial_records(&auditor2, &owner, &0, &10).len(), 1);
+
+    client.deregister_patient(&owner);
+    client.add_financial_record(
+        &owner,
+        &RecordType::Invoice,
+        &encrypted_ref(&e, 16),
+        &policy(&e),
+    );
+
+    let result1 = client.try_get_financial_records(&auditor1, &owner, &0, &10);
+    let result2 = client.try_get_financial_records(&auditor2, &owner, &0, &10);
+    assert_eq!(result1, Err(Ok(ContractError::AccessDenied)));
+    assert_eq!(result2, Err(Ok(ContractError::AccessDenied)));
+}
+
+#[test]
+fn test_revoke_access_removes_only_targeted_reader() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register(FinancialRecordContract, ());
+    let client = FinancialRecordContractClient::new(&e, &contract_id);
+
+    let owner = Address::generate(&e);
+    let auditor1 = Address::generate(&e);
+    let auditor2 = Address::generate(&e);
+
+    client.add_financial_record(
+        &owner,
+        &RecordType::Invoice,
+        &encrypted_ref(&e, 17),
+        &policy(&e),
+    );
+    client.grant_access(&owner, &auditor1);
+    client.grant_access(&owner, &auditor2);
+
+    client.revoke_access(&owner, &auditor1);
+
+    assert_eq!(client.get_financial_records(&auditor2, &owner, &0, &10).len(), 1);
+    let result = client.try_get_financial_records(&auditor1, &owner, &0, &10);
+    assert_eq!(result, Err(Ok(ContractError::AccessDenied)));
+}
+
+#[test]
+fn test_delegated_read_is_denied_after_access_is_revoked_even_if_record_exists() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register(FinancialRecordContract, ());
+    let client = FinancialRecordContractClient::new(&e, &contract_id);
+
+    let owner = Address::generate(&e);
+    let auditor = Address::generate(&e);
+
+    client.add_financial_record(
+        &owner,
+        &RecordType::BankStatement,
+        &encrypted_ref(&e, 18),
+        &policy(&e),
+    );
+    client.grant_access(&owner, &auditor);
+    client.revoke_access(&owner, &auditor);
+
+    let result = client.try_get_financial_records(&auditor, &owner, &0, &10);
+    assert_eq!(result, Err(Ok(ContractError::AccessDenied)));
+}
+
+#[test]
+fn test_authorized_type_read_emits_access_audit_event() {
+    use soroban_sdk::testutils::Events;
+    use soroban_sdk::{IntoVal, Val, Vec as SdkVec};
+
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register(FinancialRecordContract, ());
+    let client = FinancialRecordContractClient::new(&e, &contract_id);
+
+    let owner = Address::generate(&e);
+    let auditor = Address::generate(&e);
+
+    client.add_financial_record(
+        &owner,
+        &RecordType::TaxDocument,
+        &encrypted_ref(&e, 11),
+        &policy(&e),
+    );
+    client.grant_access(&owner, &auditor);
+
+    client.get_records_by_type(&auditor, &owner, &RecordType::TaxDocument, &0, &10);
+
+    let events = e.events().all();
+    let expected_topics: SdkVec<Val> =
+        (Symbol::new(&e, "rec_read"), auditor.clone(), owner.clone()).into_val(&e);
+    assert!(
+        events
+            .iter()
+            .any(|(_id, topics, _data)| topics == expected_topics),
+        "type-read audit event not emitted"
+    );
+}
+
+#[test]
+fn test_authorized_date_range_read_emits_access_audit_event() {
+    use soroban_sdk::testutils::Events;
+    use soroban_sdk::{IntoVal, Val, Vec as SdkVec};
+
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register(FinancialRecordContract, ());
+    let client = FinancialRecordContractClient::new(&e, &contract_id);
+
+    let owner = Address::generate(&e);
+    let auditor = Address::generate(&e);
+
+    client.add_financial_record(
+        &owner,
+        &RecordType::Invoice,
+        &encrypted_ref(&e, 12),
+        &policy(&e),
+    );
+    client.grant_access(&owner, &auditor);
+
+    client.get_records_by_date_range(&auditor, &owner, &0, &u64::MAX, &0, &10);
+
+    let events = e.events().all();
+    let expected_topics: SdkVec<Val> =
+        (Symbol::new(&e, "rec_read"), auditor.clone(), owner.clone()).into_val(&e);
+    assert!(
+        events
+            .iter()
+            .any(|(_id, topics, _data)| topics == expected_topics),
+        "date-range audit event not emitted"
+    );
+}

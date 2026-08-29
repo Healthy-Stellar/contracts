@@ -64,6 +64,7 @@ pub enum DataKey {
     Record(Address, u32),         // (owner, idx) -> FinancialRecord
     RecordCount(Address),         // owner -> u32
     Access(Address, Address),     // (owner, authorized) -> bool
+    AccessList(Address),          // owner -> Vec<Address> of currently granted accessors
     TypeIndex(Address, u32, u32), // (owner, record_type as u32, seq) -> record idx
     TypeCount(Address, u32),      // (owner, record_type as u32) -> u32
     DateIndex(Address, u32),      // (owner, seq) -> record idx  (insertion order)
@@ -108,6 +109,11 @@ impl FinancialRecordContract {
         e.storage()
             .persistent()
             .set(&DataKey::RecordCount(owner.clone()), &(count + 1));
+
+        e.events().publish(
+            (symbol_short!("rec_add"), owner.clone(), count, record.record_type as u32),
+            (timestamp, record.encrypted_ref.content_hash.clone()),
+        );
 
         // Type index
         let rt = record_type as u32;
@@ -273,6 +279,32 @@ impl FinancialRecordContract {
 
     pub fn grant_access(e: Env, owner: Address, authorized: Address) {
         owner.require_auth();
+
+        let mut granted: Vec<Address> = e
+            .storage()
+            .persistent()
+            .get(&DataKey::AccessList(owner.clone()))
+            .unwrap_or(Vec::new(&e));
+
+        let mut i = 0u32;
+        while i < granted.len() {
+            if let Some(existing) = granted.get(i) {
+                if existing == authorized {
+                    e.storage()
+                        .persistent()
+                        .set(&DataKey::Access(owner.clone(), authorized.clone()), &true);
+                    e.events()
+                        .publish((symbol_short!("grant"), owner, authorized), ());
+                    return;
+                }
+            }
+            i += 1;
+        }
+
+        granted.push_back(authorized.clone());
+        e.storage()
+            .persistent()
+            .set(&DataKey::AccessList(owner.clone()), &granted);
         e.storage()
             .persistent()
             .set(&DataKey::Access(owner.clone(), authorized.clone()), &true);
@@ -282,6 +314,32 @@ impl FinancialRecordContract {
 
     pub fn revoke_access(e: Env, owner: Address, authorized: Address) {
         owner.require_auth();
+
+        let mut granted: Vec<Address> = e
+            .storage()
+            .persistent()
+            .get(&DataKey::AccessList(owner.clone()))
+            .unwrap_or(Vec::new(&e));
+
+        let mut filtered: Vec<Address> = Vec::new(&e);
+        let mut i = 0u32;
+        while i < granted.len() {
+            if let Some(existing) = granted.get(i) {
+                if existing != authorized {
+                    filtered.push_back(existing);
+                }
+            }
+            i += 1;
+        }
+
+        if filtered.is_empty() {
+            e.storage().persistent().remove(&DataKey::AccessList(owner.clone()));
+        } else {
+            e.storage()
+                .persistent()
+                .set(&DataKey::AccessList(owner.clone()), &filtered);
+        }
+
         e.storage()
             .persistent()
             .remove(&DataKey::Access(owner.clone(), authorized.clone()));
@@ -291,6 +349,24 @@ impl FinancialRecordContract {
 
     pub fn deregister_patient(e: Env, owner: Address) -> Result<(), ContractError> {
         owner.require_auth();
+
+        // Remove every Access(owner, authorized) ACL entry before clearing patient data.
+        if let Some(granted) = e
+            .storage()
+            .persistent()
+            .get::<_, Vec<Address>>(&DataKey::AccessList(owner.clone()))
+        {
+            let mut i = 0u32;
+            while i < granted.len() {
+                if let Some(authorized) = granted.get(i) {
+                    e.storage()
+                        .persistent()
+                        .remove(&DataKey::Access(owner.clone(), authorized.clone()));
+                }
+                i += 1;
+            }
+            e.storage().persistent().remove(&DataKey::AccessList(owner.clone()));
+        }
 
         // Get the count of records to remove
         let count: u32 = e
@@ -368,6 +444,10 @@ impl FinancialRecordContract {
         if !authorized {
             return Err(ContractError::AccessDenied);
         }
+        e.events().publish(
+            (symbol_short!("rec_read"), caller.clone(), owner.clone()),
+            (symbol_short!("granted"), e.ledger().timestamp()),
+        );
         Ok(())
     }
 }
