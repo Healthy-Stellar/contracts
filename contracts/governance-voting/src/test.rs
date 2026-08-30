@@ -195,9 +195,12 @@ fn vote_after_deadline_returns_proposal_expired() {
     // Advance past deadline
     env.ledger().set_timestamp(env.ledger().timestamp() + 86_401);
 
-    client.vote(&voter, &id, &VoteChoice::Yes);
+    let result = client.try_vote(&voter, &id, &VoteChoice::Yes);
+    assert_eq!(result, Err(Ok(Error::ProposalExpired)));
+
     let proposal = client.get_proposal(&id);
     assert_eq!(proposal.status, ProposalStatus::Expired);
+    assert!(!client.has_voted(&id, &voter));
 }
 
 #[test]
@@ -214,9 +217,12 @@ fn active_proposals_decremented_on_expiry_during_vote() {
     let proposal_id = 1u64;
     env.ledger().set_timestamp(env.ledger().timestamp() + 86_401);
 
-    client.vote(&voter, &proposal_id, &VoteChoice::Yes);
+    let result = client.try_vote(&voter, &proposal_id, &VoteChoice::Yes);
+    assert_eq!(result, Err(Ok(Error::ProposalExpired)));
+
     let proposal = client.get_proposal(&proposal_id);
     assert_eq!(proposal.status, ProposalStatus::Expired);
+    assert!(!client.has_voted(&proposal_id, &voter));
 
     let new_id = create(&env, &client, &admin);
     assert_eq!(new_id, 101);

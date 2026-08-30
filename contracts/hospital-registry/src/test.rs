@@ -17,6 +17,11 @@ fn register_hospital_with_anchor(
     client: &HospitalRegistryClient<'_>,
     hospital_wallet: &Address,
 ) {
+    let admin = Address::generate(env);
+    if client.get_admin().is_none() {
+        client.initialize_admin(&admin);
+    }
+
     let issuer = Address::generate(env);
     client.register_hospital(
         hospital_wallet,
@@ -32,14 +37,41 @@ fn register_hospital_with_anchor(
 }
 
 #[test]
+fn test_register_hospital_requires_admin() {
+    let env = Env::default();
+    let contract_id = env.register(HospitalRegistry, ());
+    let client = HospitalRegistryClient::new(&env, &contract_id);
+
+    let hospital_wallet = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    env.mock_all_auths();
+
+    let result = client.try_register_hospital(
+        &hospital_wallet,
+        &String::from_str(&env, "General Hospital"),
+        &String::from_str(&env, "123 Main St, New York, NY"),
+        &String::from_str(&env, "Services: ER, Surgery, Cardiology"),
+        &issuer,
+        &dummy_hash(&env, 1),
+        &dummy_hash(&env, 2),
+        &4_100_000_000_u64,
+        &dummy_hash(&env, 3),
+    );
+
+    assert_eq!(result, Err(Ok(ContractError::NotAuthorized)));
+}
+
+#[test]
 fn test_register_hospital() {
     let env = Env::default();
     let contract_id = env.register(HospitalRegistry, ());
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let hospital_wallet = Address::generate(&env);
+    let admin = Address::generate(&env);
     env.mock_all_auths();
 
+    client.initialize_admin(&admin);
     register_hospital_with_anchor(&env, &client, &hospital_wallet);
 
     let hospital = client.get_hospital(&hospital_wallet);

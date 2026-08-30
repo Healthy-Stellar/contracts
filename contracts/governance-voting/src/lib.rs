@@ -274,7 +274,7 @@ impl GovernanceVotingContract {
             proposal.status = ProposalStatus::Expired;
             env.storage().persistent().set(&DataKey::Proposal(proposal_id), &proposal);
             Self::decrement_active_proposals(&env);
-            return Ok(());
+            return Err(Error::ProposalExpired);
         }
 
         match choice {

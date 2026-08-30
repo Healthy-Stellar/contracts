@@ -186,6 +186,16 @@ pub struct HospitalRegistry;
 
 #[contractimpl]
 impl HospitalRegistry {
+    fn require_admin_auth(env: &Env) -> Result<Address, ContractError> {
+        let admin = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&DataKey::Admin)
+            .ok_or(ContractError::NotAuthorized)?;
+        admin.require_auth();
+        Ok(admin)
+    }
+
     fn load_hospital(env: &Env, wallet: &Address) -> Result<HospitalData, ContractError> {
         env.storage()
             .persistent()
@@ -344,6 +354,10 @@ impl HospitalRegistry {
     ) -> Result<(), ContractError> {
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
         validate_nonzero_address(&issuer).map_err(|_| ContractError::InvalidAddress)?;
+
+        // Admin-only registration: the currently configured admin must authorize
+        // every hospital credential assignment before the wallet becomes active.
+        let _admin = Self::require_admin_auth(&env)?;
         wallet.require_auth();
         issuer.require_auth();
 
@@ -408,7 +422,6 @@ impl HospitalRegistry {
     ) -> Result<(), ContractError> {
         validate_nonzero_address(&admin).map_err(|_| ContractError::InvalidAddress)?;
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
-        admin.require_auth();
 
         let stored_admin: Address = env
             .storage()
@@ -418,6 +431,8 @@ impl HospitalRegistry {
         if admin != stored_admin {
             return Err(ContractError::NotAuthorized);
         }
+
+        admin.require_auth();
 
         let mut hospital = Self::load_hospital(&env, &wallet)?;
         hospital.credential.revoked_at = Some(env.ledger().timestamp());
