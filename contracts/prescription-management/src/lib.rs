@@ -1658,20 +1658,23 @@ fn do_issue_prescription(
 
     // ── DEA validation for scheduled controlled substances ────────────────────
     if req.is_controlled {
-        if let Some(_schedule) = req.schedule {
-            match &req.dea_number {
-                Some(dea) => {
-                    if dea.len() != 9u32 {
-                        return Err(Error::ControlledSubstanceViolation);
+        match req.schedule {
+            Some(_schedule) => {
+                match &req.dea_number {
+                    Some(dea) => {
+                        if dea.len() != 9u32 {
+                            return Err(Error::ControlledSubstanceViolation);
+                        }
+                        let mut buf = [0u8; 9];
+                        dea.copy_into_slice(&mut buf);
+                        if !validate_dea_number(&buf) {
+                            return Err(Error::ControlledSubstanceViolation);
+                        }
                     }
-                    let mut buf = [0u8; 9];
-                    dea.copy_into_slice(&mut buf);
-                    if !validate_dea_number(&buf) {
-                        return Err(Error::ControlledSubstanceViolation);
-                    }
+                    None => return Err(Error::ControlledSubstanceViolation),
                 }
-                None => return Err(Error::ControlledSubstanceViolation),
             }
+            None => return Err(Error::ControlledSubstanceViolation),
         }
     }
 

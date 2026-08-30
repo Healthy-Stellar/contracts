@@ -341,9 +341,13 @@ impl MultisigGovernance {
 
         proposal.approvals.push_back(signer.clone());
 
-        Self::try_finalize(&env, &mut proposal)?;
+        let finalize_result = Self::try_finalize(&env, &mut proposal);
 
+        // Persist the approval regardless of the finalize outcome so a
+        // `QuorumNotMet` error doesn't erase the caller's already-cast vote.
         env.storage().persistent().set(&key, &proposal);
+
+        finalize_result?;
 
         env.events()
             .publish((symbol_short!("approved"), action_id), signer);

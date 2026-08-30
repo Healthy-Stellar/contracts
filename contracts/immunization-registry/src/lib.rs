@@ -28,7 +28,7 @@
 mod test;
 mod types;
 
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, IntoVal, String, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, symbol_short, Address, BytesN, Env, String, Symbol, Vec};
 use types::{AdverseEvent, DataKey, Error, VaccineRecord, VaccineSeries};
 
 #[contract]
@@ -119,6 +119,15 @@ impl ImmunizationRegistry {
             &lot_records,
         );
 
+        env.events().publish(
+            (
+                symbol_short!("immunize"),
+                record.patient_id.clone(),
+                record.provider_id.clone(),
+            ),
+            (new_id, record.vaccine_name.clone(), record.cvx_code.clone()),
+        );
+
         Ok(new_id)
     }
 
@@ -187,9 +196,9 @@ impl ImmunizationRegistry {
         }
 
         let event = AdverseEvent {
-            reporter,
+            reporter: reporter.clone(),
             event_description,
-            severity,
+            severity: severity.clone(),
             onset_date,
         };
 
@@ -202,6 +211,11 @@ impl ImmunizationRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::AdverseEvents(immunization_id), &events);
+
+        env.events().publish(
+            (symbol_short!("adv_event"), immunization_id, reporter),
+            (severity, onset_date),
+        );
 
         Ok(())
     }
@@ -247,8 +261,8 @@ impl ImmunizationRegistry {
         patient_id.require_auth();
 
         let series = VaccineSeries {
-            series_name,
-            cvx_code,
+            series_name: series_name.clone(),
+            cvx_code: cvx_code.clone(),
             doses_required,
             schedule_hash,
         };
@@ -259,9 +273,15 @@ impl ImmunizationRegistry {
             .get(&DataKey::PatientVaccineSeries(patient_id.clone()))
             .unwrap_or(Vec::new(&env));
         series_list.push_back(series);
-        env.storage()
-            .persistent()
-            .set(&DataKey::PatientVaccineSeries(patient_id), &series_list);
+        env.storage().persistent().set(
+            &DataKey::PatientVaccineSeries(patient_id.clone()),
+            &series_list,
+        );
+
+        env.events().publish(
+            (symbol_short!("vac_ser"), patient_id, cvx_code),
+            (series_name, doses_required),
+        );
 
         Ok(())
     }

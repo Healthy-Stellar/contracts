@@ -926,3 +926,39 @@ fn test_transfer_prescription_rejects_whitespace_only_reason() {
         &pharmacy,
     );
 }
+
+// ── #762: is_controlled=true with schedule=None must be rejected ───────────
+
+#[test]
+fn test_controlled_substance_without_schedule_is_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PrescriptionContract, ());
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+    let pharmacy = Address::generate(&env);
+
+    let request = IssueRequest {
+        medication_name: String::from_str(&env, "Oxycodone"),
+        ndc_code: String::from_str(&env, "0000-0000-01"),
+        dosage: String::from_str(&env, "5mg"),
+        quantity: 30,
+        days_supply: 10,
+        refills_allowed: 0,
+        instructions_hash: BytesN::from_array(&env, &[0u8; 32]),
+        is_controlled: true,
+        schedule: None,
+        valid_until: 1000,
+        substitution_allowed: true,
+        pharmacy_id: Some(pharmacy.clone()),
+        bypass_allergy_check: false,
+        dea_number: None,
+        bypass_reason_hash: None,
+    };
+
+    let result = client.try_issue_prescription(&provider, &patient, &request);
+    assert_eq!(result, Err(Ok(Error::ControlledSubstanceViolation)));
+}

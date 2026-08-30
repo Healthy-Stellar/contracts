@@ -2,16 +2,10 @@
 #![allow(deprecated)]
 
 use super::*;
-use provider_registry::{ProviderRegistry, ProviderRegistryClient};
-use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, BytesN, Env, String, Symbol};
+use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, IntoVal, String, Symbol};
 
-fn setup() -> (
-    Env,
-    ImmunizationRegistryClient<'static>,
-    ProviderRegistryClient<'static>,
-    Address, // admin (provider-registry admin)
-    Address, // regulator
-) {
+#[test]
+fn test_record_immunization() {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().with_mut(|l| l.timestamp = 1_700_000_000);
@@ -340,4 +334,139 @@ fn test_get_patients_by_lot() {
     let outsider = Address::generate(&env);
     let res = client.try_get_patients_by_lot(&recalled_lot, &outsider);
     assert!(res.is_err());
+}
+
+// ── #758: audit events for immunization-registry ───────────────────────────
+
+#[test]
+fn test_record_immunization_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ImmunizationRegistry, ());
+    let client = ImmunizationRegistryClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+    let vaccine_name = String::from_str(&env, "Hepatitis B");
+    let cvx_code = String::from_str(&env, "CVX_43");
+
+    let id = client.record_immunization(&VaccineRecord {
+        patient_id: patient_id.clone(),
+        provider_id: provider_id.clone(),
+        vaccine_name: vaccine_name.clone(),
+        cvx_code: cvx_code.clone(),
+        lot_number: String::from_str(&env, "LOT_12345"),
+        manufacturer: String::from_str(&env, "SANOFI"),
+        administration_date: 1690000000,
+        expiration_date: 1790000000,
+        dose_number: 1,
+        route: Symbol::new(&env, "IM"),
+        site: Symbol::new(&env, "DELTOID"),
+    });
+
+    let events = env.events().all();
+    let topic = Symbol::new(&env, "immunize");
+    let expected_topics: soroban_sdk::Vec<soroban_sdk::Val> =
+        (topic, patient_id.clone(), provider_id.clone()).into_val(&env);
+
+    let mut found = false;
+    for (_contract_id, topics, data) in events.iter() {
+        if topics == expected_topics {
+            let actual_data: (u64, String, String) = data.into_val(&env);
+            assert_eq!(actual_data, (id, vaccine_name.clone(), cvx_code.clone()));
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "immunize event not found in emitted events");
+}
+
+#[test]
+fn test_record_adverse_event_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ImmunizationRegistry, ());
+    let client = ImmunizationRegistryClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+
+    let id = client.record_immunization(&VaccineRecord {
+        patient_id: patient_id.clone(),
+        provider_id: provider_id.clone(),
+        vaccine_name: String::from_str(&env, "Hepatitis B"),
+        cvx_code: String::from_str(&env, "CVX_43"),
+        lot_number: String::from_str(&env, "LOT_12345"),
+        manufacturer: String::from_str(&env, "SANOFI"),
+        administration_date: 1690000000,
+        expiration_date: 1790000000,
+        dose_number: 1,
+        route: Symbol::new(&env, "IM"),
+        site: Symbol::new(&env, "DELTOID"),
+    });
+
+    let reporter = Address::generate(&env);
+    let severity = Symbol::new(&env, "MILD");
+    client.record_adverse_event(
+        &id,
+        &reporter,
+        &String::from_str(&env, "Slight fever and arm soreness"),
+        &severity,
+        &1690086400,
+    );
+
+    let events = env.events().all();
+    let topic = Symbol::new(&env, "adv_event");
+    let expected_topics: soroban_sdk::Vec<soroban_sdk::Val> =
+        (topic, id, reporter.clone()).into_val(&env);
+
+    let mut found = false;
+    for (_contract_id, topics, data) in events.iter() {
+        if topics == expected_topics {
+            let actual_data: (Symbol, u64) = data.into_val(&env);
+            assert_eq!(actual_data, (severity.clone(), 1690086400u64));
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "adv_event event not found in emitted events");
+}
+
+#[test]
+fn test_register_vaccine_series_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ImmunizationRegistry, ());
+    let client = ImmunizationRegistryClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let series_name = String::from_str(&env, "Hepatitis B");
+    let cvx_code = String::from_str(&env, "CVX_43");
+
+    client.register_vaccine_series(
+        &patient_id,
+        &series_name,
+        &cvx_code,
+        &3,
+        &BytesN::from_array(&env, &[0; 32]),
+    );
+
+    let events = env.events().all();
+    let topic = Symbol::new(&env, "vac_ser");
+    let expected_topics: soroban_sdk::Vec<soroban_sdk::Val> =
+        (topic, patient_id.clone(), cvx_code.clone()).into_val(&env);
+
+    let mut found = false;
+    for (_contract_id, topics, data) in events.iter() {
+        if topics == expected_topics {
+            let actual_data: (String, u32) = data.into_val(&env);
+            assert_eq!(actual_data, (series_name.clone(), 3u32));
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "vac_ser event not found in emitted events");
 }

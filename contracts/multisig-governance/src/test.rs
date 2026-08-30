@@ -208,6 +208,11 @@ fn test_threshold_met_but_quorum_not_met_returns_error() {
         .unwrap_err()
         .unwrap();
     assert_eq!(err, Error::QuorumNotMet);
+
+    // The QuorumNotMet error must not erase s1's already-cast approval.
+    let proposal = client.get_proposal(&symbol_short!("export"));
+    assert!(proposal.approvals.contains(&s1));
+    assert_eq!(proposal.approvals.len(), 2);
 }
 
 // ── abstention ────────────────────────────────────────────────────────────────
