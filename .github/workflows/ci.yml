@@ -40,6 +40,35 @@ jobs:
       - name: cargo check healthcare-analytics
         run: cargo check -p healthcare-analytics
 
+  check-lab-management:
+    name: Check lab-management
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-git-
+
+      - name: cargo check lab-management (lib + tests)
+        run: cargo check -p lab-management --tests
+
   format:
     name: Format Check
     runs-on: ubuntu-latest
@@ -234,13 +263,14 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [format, check, clippy, test, build-wasm]
+    needs: [format, check, check-lab-management, clippy, test, build-wasm]
     if: always()
     steps:
       - name: Check all jobs
         run: |
           if [[ "${{ needs.format.result }}" != "success" ]] || \
              [[ "${{ needs.check.result }}" != "success" ]] || \
+             [[ "${{ needs.check-lab-management.result }}" != "success" ]] || \
              [[ "${{ needs.clippy.result }}" != "success" ]] || \
              [[ "${{ needs.test.result }}" != "success" ]] || \
              [[ "${{ needs.build-wasm.result }}" != "success" ]]; then
