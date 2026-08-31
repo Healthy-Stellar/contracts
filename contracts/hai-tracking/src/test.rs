@@ -261,12 +261,14 @@ fn test_isolation_and_active_lookup() {
     let (env, client) = setup();
     let patient = Address::generate(&env);
 
+    let indicated_by = Address::generate(&env);
     let id = client.track_isolation_precaution(
         &patient,
         &Symbol::new(&env, "contact"),
         &1_799_990_000,
         &String::from_str(&env, "MRSA colonization"),
         &String::from_str(&env, "3 negative cultures"),
+        &indicated_by,
     );
     assert_eq!(id, 1);
 
@@ -283,12 +285,14 @@ fn test_isolation_invalid_type_fails() {
     let (env, client) = setup();
     let patient = Address::generate(&env);
 
+    let indicated_by = Address::generate(&env);
     let res = client.try_track_isolation_precaution(
         &patient,
         &Symbol::new(&env, "other"),
         &1_799_990_000,
         &String::from_str(&env, "Unknown"),
         &String::from_str(&env, "None"),
+        &indicated_by,
     );
 
     assert!(res.is_err());
@@ -529,6 +533,7 @@ fn test_discontinue_isolation_precaution_success() {
     let (env, client) = setup();
     let patient = Address::generate(&env);
     let discontinued_by = Address::generate(&env);
+    let indicated_by = Address::generate(&env);
 
     let precaution_id = client.track_isolation_precaution(
         &patient,
@@ -536,6 +541,7 @@ fn test_discontinue_isolation_precaution_success() {
         &1_799_990_000,
         &String::from_str(&env, "MRSA colonization"),
         &String::from_str(&env, "3 negative cultures"),
+        &indicated_by,
     );
 
     let active_before = client.get_active_isolations(&patient);
@@ -571,12 +577,14 @@ fn test_discontinue_isolation_precaution_already_discontinued() {
     let patient = Address::generate(&env);
     let discontinued_by = Address::generate(&env);
 
+    let indicated_by = Address::generate(&env);
     let precaution_id = client.track_isolation_precaution(
         &patient,
         &Symbol::new(&env, "contact"),
         &1_799_990_000,
         &String::from_str(&env, "MRSA colonization"),
         &String::from_str(&env, "3 negative cultures"),
+        &indicated_by,
     );
 
     client.discontinue_isolation_precaution(
