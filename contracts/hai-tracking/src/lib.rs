@@ -130,6 +130,7 @@ pub struct OutbreakCluster {
 pub struct IsolationPrecaution {
     pub precaution_id: u64,
     pub patient_id: Address,
+    pub indicated_by: Address,
     pub precaution_type: Symbol,
     pub start_date: u64,
     pub indication: String,
@@ -405,6 +406,10 @@ impl HAITrackingContract {
         Ok(())
     }
 
+    /// Creates an isolation precaution record.
+    ///
+    /// Only the ordering clinician or facility acting on the patient’s behalf may create the
+    /// precaution, as represented by the `indicated_by` address and enforced via auth.
     pub fn track_isolation_precaution(
         env: Env,
         patient_id: Address,
@@ -412,7 +417,10 @@ impl HAITrackingContract {
         start_date: u64,
         indication: String,
         discontinuation_criteria: String,
+        indicated_by: Address,
     ) -> Result<u64, Error> {
+        indicated_by.require_auth();
+
         if !Self::is_valid_precaution(&env, &precaution_type) {
             return Err(Error::InvalidPrecautionType);
         }
@@ -421,6 +429,7 @@ impl HAITrackingContract {
         let record = IsolationPrecaution {
             precaution_id,
             patient_id,
+            indicated_by,
             precaution_type,
             start_date,
             indication,
