@@ -66,6 +66,37 @@ fn setup_env_with_registered_provider()
     (env, client, provider, patient)
 }
 
+/// Set up a provider registry and register a single provider for use
+/// with a pre-existing env + lab-management client.  Returns the
+/// registered provider address.
+fn setup_registered_provider(
+    env: &Env,
+    client: &LabManagementContractClient<'static>,
+) -> Address {
+    let provider_registry_id = env.register_contract(None, ProviderRegistry);
+    let pr_client = ProviderRegistryClient::new(env, &provider_registry_id);
+    let admin = Address::generate(env);
+    pr_client.initialize(&admin);
+
+    client.initialize(&provider_registry_id);
+
+    let provider = Address::generate(env);
+    pr_client.register_provider(
+        &admin,
+        &provider,
+        &String::from_str(env, "Dr. Lab"),
+        &String::from_str(env, "Pathology"),
+        &String::from_str(env, "LAB123"),
+        &BytesN::from_array(env, &[1u8; 32]),
+        &admin,
+        &BytesN::from_array(env, &[2u8; 32]),
+        &(env.ledger().timestamp() + 86400),
+        &BytesN::from_array(env, &[3u8; 32]),
+    );
+
+    provider
+}
+
 // ── existing tests (unchanged behaviour) ─────────────────────────────────────
 
 #[test]
@@ -450,4 +481,36 @@ fn test_assign_lab_without_auth_returns_error() {
     // authorize, which is no longer satisfied.
     env.mock_auths(&[]);
     client.assign_lab(&order_id, &lab, &3600);
+}
+
+// ── regression: unregistered-provider guard ───────────────────────────────────
+
+/// Regression test: `order_lab_test` must reject a provider that has never
+/// been registered in the provider registry, returning `ProviderNotRegistered`
+/// (error code 5).
+#[test]
+fn test_order_lab_test_rejects_unregistered_provider() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Deploy a provider registry but do NOT register the provider in it.
+    let provider_registry_id = env.register_contract(None, ProviderRegistry);
+    let pr_client = ProviderRegistryClient::new(&env, &provider_registry_id);
+    let admin = Address::generate(&env);
+    pr_client.initialize(&admin);
+
+    // Deploy the lab-management contract and wire it to the registry.
+    let contract_id = env.register(LabManagementContract, ());
+    let client = LabManagementContractClient::new(&env, &contract_id);
+    client.initialize(&provider_registry_id);
+
+    let unregistered_provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    // Must fail with ProviderNotRegistered (error code 5).
+    let res = client.try_order_lab_test(&unregistered_provider, &patient, &make_req(&env));
+    assert_eq!(
+        res.err().expect("expected ProviderNotRegistered error"),
+        Ok(Error::ProviderNotRegistered),
+    );
 }
