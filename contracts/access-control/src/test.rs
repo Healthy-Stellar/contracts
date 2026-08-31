@@ -915,9 +915,8 @@ fn test_revoke_access_by_unprivileged_non_grantor_rejected() {
 proptest! {
     #[test]
     fn test_soundness_provider_without_grant_never_has_access(resource_id in "resource-[0-9]{1,3}") {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (admin, client) = setup(&env);
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
         let (grantor, grantee) = register_two(&env, &client, &admin);
         let other = Address::generate(&env);
 
@@ -929,9 +928,8 @@ proptest! {
 
     #[test]
     fn test_completeness_after_grant_access_succeeds(resource_id in "resource-[0-9]{1,3}", expires_at in 1u64..1_000u64) {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (admin, client) = setup(&env);
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
         let (grantor, grantee) = register_two(&env, &client, &admin);
 
         let resource = String::from_str(&env, &resource_id);
@@ -942,9 +940,8 @@ proptest! {
 
     #[test]
     fn test_revocation_after_revoke_access_denied(resource_id in "resource-[0-9]{1,3}") {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (admin, client) = setup(&env);
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
         let (grantor, grantee) = register_two(&env, &client, &admin);
 
         let resource = String::from_str(&env, &resource_id);
@@ -956,9 +953,8 @@ proptest! {
 
     #[test]
     fn test_expiry_after_expiry_timestamp_denies_access(resource_id in "resource-[0-9]{1,3}", expires_at in 1u64..1_000u64) {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (admin, client) = setup(&env);
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
         let (grantor, grantee) = register_two(&env, &client, &admin);
 
         let resource = String::from_str(&env, &resource_id);
@@ -974,9 +970,8 @@ proptest! {
         resource_b in "resource-[0-9]{1,3}"
     ) {
         prop_assume!(resource_a != resource_b);
-        let env = Env::default();
-        env.mock_all_auths();
-        let (admin, client) = setup(&env);
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
         let (grantor, grantee) = register_two(&env, &client, &admin);
 
         let resource_a = String::from_str(&env, &resource_a);

@@ -160,7 +160,7 @@ impl FinancialRecordContract {
             .get(&DataKey::RecordCount(owner.clone()))
             .unwrap_or(0);
         let mut records = vec![&e];
-        let end = (offset + limit).min(count);
+        let end = offset.saturating_add(limit).min(count);
 
         for i in offset..end {
             if let Some(record) = e
@@ -251,7 +251,7 @@ impl FinancialRecordContract {
             .unwrap_or(0);
 
         let mut records = vec![&e];
-        let end = (offset + limit).min(type_seq);
+        let end = offset.saturating_add(limit).min(type_seq);
 
         for seq in offset..end {
             let record_idx: u32 =
