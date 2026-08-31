@@ -250,6 +250,46 @@ fn test_pagination_get_records_by_type() {
 }
 
 #[test]
+fn test_pagination_get_financial_records_offset_overflow() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register(FinancialRecordContract, ());
+    let client = FinancialRecordContractClient::new(&e, &contract_id);
+
+    let owner = Address::generate(&e);
+    client.add_financial_record(
+        &owner,
+        &RecordType::Receipt,
+        &encrypted_ref(&e, 2),
+        &policy(&e),
+    );
+
+    let records = client.get_financial_records(&owner, &owner, &u32::MAX, &1);
+    assert_eq!(records.len(), 0);
+}
+
+#[test]
+fn test_pagination_get_records_by_type_offset_overflow() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let contract_id = e.register(FinancialRecordContract, ());
+    let client = FinancialRecordContractClient::new(&e, &contract_id);
+
+    let owner = Address::generate(&e);
+    client.add_financial_record(
+        &owner,
+        &RecordType::Receipt,
+        &encrypted_ref(&e, 2),
+        &policy(&e),
+    );
+
+    let records = client.get_records_by_type(&owner, &owner, &RecordType::Receipt, &u32::MAX, &1);
+    assert_eq!(records.len(), 0);
+}
+
+#[test]
 fn test_type_index_unauthorized_returns_typed_error() {
     let e = Env::default();
     e.mock_all_auths();
