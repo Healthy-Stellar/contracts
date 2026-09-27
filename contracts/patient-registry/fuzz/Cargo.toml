@@ -9,11 +9,15 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-patient-registry = { path = ".." }
+patient-registry = { path = "..", features = ["testutils"] }
 ethnum = "=1.5.3"
+soroban-sdk = { version = "23", features = ["testutils"] }
+shared = { path = "../../shared" }
 
 [workspace]
 members = ["."]
+
+# ── existing targets (pure validation helpers) ────────────────────────────────
 
 [[bin]]
 name = "validate_cid"
@@ -32,6 +36,36 @@ bench = false
 [[bin]]
 name = "validate_score"
 path = "fuzz_targets/validate_score.rs"
+test = false
+doc = false
+bench = false
+
+# ── new targets (contract public API via soroban testutils) ───────────────────
+
+[[bin]]
+name = "fuzz_nonce"
+path = "fuzz_targets/fuzz_nonce.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_share_link"
+path = "fuzz_targets/fuzz_share_link.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_export_ticket"
+path = "fuzz_targets/fuzz_export_ticket.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_batch_register"
+path = "fuzz_targets/fuzz_batch_register.rs"
 test = false
 doc = false
 bench = false
