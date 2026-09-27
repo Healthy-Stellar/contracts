@@ -374,11 +374,8 @@ cargo test --test integration_tests
 <!-- handsoff-issue-850 -->
 - #850: [allergy-tracking] Documented patient-deregistration deletion does not exist
 
-<!-- handsoff-issue-874 -->
-- #874: [medical-device-tracking] get_patient_implants leaks any patient's implant records to any caller
+<!-- handsoff-issue-878 -->
+- #878: [medical-device-tracking] Unchecked u64 multiply/add when computing maintenance schedule
 
-<!-- handsoff-issue-876 -->
-- #876: [medical-claims] Claim and payment data readable by any caller, no auth required
-
-<!-- handsoff-issue-877 -->
-- #877: [mental-health] No mechanism to revoke previously granted patient consent
+<!-- handsoff-issue-890 -->
+- #890: [patient-registry] register_institution has no admin gate, undermining doctor verification
