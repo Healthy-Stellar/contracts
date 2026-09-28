@@ -1,18 +1,13 @@
 [package]
-lints = { workspace = true }
 name = "imaging-radiology"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
-publish = false
-
-[lib]
-crate-type = ["lib", "cdylib"]
-doctest = false
 
 [dependencies]
-shared-contracts = { path = "..", package = "Contracts" }
 soroban-sdk = { workspace = true }
-shared = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+
+[features]
+testutils = ["soroban-sdk/testutils"]

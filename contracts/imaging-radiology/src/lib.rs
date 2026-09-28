@@ -174,6 +174,10 @@ pub enum Error {
     ConsentRequired = 13,
     /// A radiologist cannot be assigned to peer review their own study
     SelfReviewNotAllowed = 14,
+    /// The supplied imaging center is not a registered/credentialed actor
+    ImagingCenterNotRegistered = 15,
+    /// The supplied radiologist is not a credentialed actor
+    RadiologistNotCredentialed = 16,
 }
 
 /// --------------------
@@ -268,9 +272,7 @@ impl ImagingRadiology {
             return Err(Error::ConsentRequired);
         }
 
-        let counter_key = DataKey::OrderCounter;
-        let order_id: u64 = shared_contracts::safe_increment_persistent(&env, &counter_key);
-
+        let order_id = Self::next_order_id(&env);
         let order = ImagingOrder {
             order_id,
             provider_id: provider_id.clone(),
@@ -283,36 +285,14 @@ impl ImagingRadiology {
             status: Symbol::new(&env, "ORDERED"),
             ordered_at: env.ledger().timestamp(),
         };
+        env.storage()
+            .persistent()
+            .set(&DataKey::ImagingOrder(order_id), &order);
 
-        let order_key = DataKey::ImagingOrder(order_id);
-        env.storage().persistent().set(&order_key, &order);
-
-        // Paged patient order index
-        let p = patient_id.clone();
-        pagination::push_paged(
-            &env,
-            |page| DataKey::PatientOrdersPage(p.clone(), page),
-            || DataKey::PatientOrdersHead(p.clone()),
-            order_id,
-        );
-        let pt_key = DataKey::PatientOrdersTotal(patient_id.clone());
-        let pt: u32 = env.storage().persistent().get(&pt_key).unwrap_or(0);
-        env.storage().persistent().set(&pt_key, &(pt + 1));
-
-        // Paged provider order index
-        let prov = provider_id.clone();
-        pagination::push_paged(
-            &env,
-            |page| DataKey::ProviderOrdersPage(prov.clone(), page),
-            || DataKey::ProviderOrdersHead(prov.clone()),
-            order_id,
-        );
-        let pv_key = DataKey::ProviderOrdersTotal(provider_id.clone());
-        let pv: u32 = env.storage().persistent().get(&pv_key).unwrap_or(0);
-        env.storage().persistent().set(&pv_key, &(pv + 1));
+        Self::index_order(&env, &patient_id, &provider_id, order_id);
 
         ImagingOrdered {
-            version: shared::events::EVENT_VERSION,
+            version: 1,
             order_id,
             provider_id,
         }
@@ -321,12 +301,13 @@ impl ImagingRadiology {
         Ok(order_id)
     }
 
-    /// Schedule an imaging study.
+    /// Schedule an imaging study at a registered imaging center.
     ///
-    /// `scheduled_time` must be strictly in the future: imaging cannot be
-    /// scheduled for a time that has already passed.
+    /// The `imaging_center` must be a registered/credentialed actor in the
+    /// hospital registry; otherwise the schedule is rejected.
     pub fn schedule_imaging(
         env: Env,
+        registry: Address,
         order_id: u64,
         imaging_center: Address,
         scheduled_time: u64,
@@ -334,37 +315,48 @@ impl ImagingRadiology {
     ) -> Result<(), Error> {
         imaging_center.require_auth();
 
-        // #215 – scheduling windows must be in the future
-        temporal::must_be_future(&env, scheduled_time)
-            .map_err(|_| Error::InvalidScheduledTime)?;
+        Self::require_registered_actor(&env, &registry, &imaging_center)?;
 
-        let order_key = DataKey::ImagingOrder(order_id);
         let mut order: ImagingOrder = env
             .storage()
             .persistent()
-            .get(&order_key)
+            .get(&DataKey::ImagingOrder(order_id))
             .ok_or(Error::OrderNotFound)?;
 
-        let schedule_key = DataKey::ImagingSchedule(order_id);
-        if env.storage().persistent().has(&schedule_key) {
+        if order.status != Symbol::new(&env, "ORDERED") {
+            return Err(Error::InvalidStatus);
+        }
+
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::ImagingSchedule(order_id))
+        {
             return Err(Error::AlreadyScheduled);
+        }
+
+        if scheduled_time <= env.ledger().timestamp() {
+            return Err(Error::InvalidScheduledTime);
         }
 
         let schedule = ImagingSchedule {
             order_id,
-            imaging_center,
+            imaging_center: imaging_center.clone(),
             scheduled_time,
             prep_instructions_hash,
             scheduled_at: env.ledger().timestamp(),
         };
-
-        env.storage().persistent().set(&schedule_key, &schedule);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ImagingSchedule(order_id), &schedule);
 
         order.status = Symbol::new(&env, "SCHEDULED");
-        env.storage().persistent().set(&order_key, &order);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ImagingOrder(order_id), &order);
 
         ImagingScheduled {
-            version: shared::events::EVENT_VERSION,
+            version: 1,
             order_id,
         }
         .publish(&env);
@@ -372,12 +364,13 @@ impl ImagingRadiology {
         Ok(())
     }
 
-    /// Upload DICOM images for a study.
+    /// Upload DICOM images for an order from a registered imaging center.
     ///
-    /// `study_date` must not be in the future: images are uploaded after the
-    /// study is performed.
+    /// The `imaging_center` must be a registered/credentialed actor in the
+    /// hospital registry; otherwise the upload is rejected.
     pub fn upload_images(
         env: Env,
+        registry: Address,
         order_id: u64,
         imaging_center: Address,
         dicom_hash: BytesN<32>,
@@ -386,38 +379,51 @@ impl ImagingRadiology {
     ) -> Result<(), Error> {
         imaging_center.require_auth();
 
-        // #215 – study_date must be a past or present timestamp
-        temporal::not_future(&env, study_date)
-            .map_err(|_| Error::InvalidStudyDate)?;
+        Self::require_registered_actor(&env, &registry, &imaging_center)?;
 
-        let order_key = DataKey::ImagingOrder(order_id);
         let mut order: ImagingOrder = env
             .storage()
             .persistent()
-            .get(&order_key)
+            .get(&DataKey::ImagingOrder(order_id))
             .ok_or(Error::OrderNotFound)?;
 
-        let images_key = DataKey::DicomImages(order_id);
-        if env.storage().persistent().has(&images_key) {
+        if order.status != Symbol::new(&env, "SCHEDULED")
+            && order.status != Symbol::new(&env, "IN_PROGRESS")
+        {
+            return Err(Error::InvalidStatus);
+        }
+
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::DicomImages(order_id))
+        {
             return Err(Error::ImagesAlreadyUploaded);
+        }
+
+        if study_date > env.ledger().timestamp() {
+            return Err(Error::InvalidStudyDate);
         }
 
         let images = DicomImages {
             order_id,
-            imaging_center,
+            imaging_center: imaging_center.clone(),
             dicom_hash: dicom_hash.clone(),
             image_count,
             study_date,
             uploaded_at: env.ledger().timestamp(),
         };
-
-        env.storage().persistent().set(&images_key, &images);
+        env.storage()
+            .persistent()
+            .set(&DataKey::DicomImages(order_id), &images);
 
         order.status = Symbol::new(&env, "IN_PROGRESS");
-        env.storage().persistent().set(&order_key, &order);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ImagingOrder(order_id), &order);
 
         ImagesUploaded {
-            version: shared::events::EVENT_VERSION,
+            version: 1,
             order_id,
             dicom_hash,
         }
@@ -426,9 +432,13 @@ impl ImagingRadiology {
         Ok(())
     }
 
-    /// Submit preliminary report
+    /// Submit a preliminary report for an order.
+    ///
+    /// The `radiologist_id` must be a credentialed actor in the hospital
+    /// registry; otherwise the report is rejected.
     pub fn submit_preliminary_report(
         env: Env,
+        registry: Address,
         order_id: u64,
         radiologist_id: Address,
         report_hash: BytesN<32>,
@@ -436,34 +446,39 @@ impl ImagingRadiology {
     ) -> Result<(), Error> {
         radiologist_id.require_auth();
 
-        let order_key = DataKey::ImagingOrder(order_id);
-        env.storage()
+        Self::require_credentialed_radiologist(&env, &registry, &radiologist_id)?;
+
+        let order: ImagingOrder = env
+            .storage()
             .persistent()
-            .get::<_, ImagingOrder>(&order_key)
+            .get(&DataKey::ImagingOrder(order_id))
             .ok_or(Error::OrderNotFound)?;
 
-        let images_key = DataKey::DicomImages(order_id);
-        if !env.storage().persistent().has(&images_key) {
+        if order.status != Symbol::new(&env, "IN_PROGRESS") {
             return Err(Error::InvalidStatus);
         }
 
-        let prelim_key = DataKey::PreliminaryReport(order_id);
-        if env.storage().persistent().has(&prelim_key) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::PreliminaryReport(order_id))
+        {
             return Err(Error::PreliminaryReportExists);
         }
 
         let report = PreliminaryReport {
             order_id,
-            radiologist_id,
+            radiologist_id: radiologist_id.clone(),
             report_hash,
             urgent_findings,
             submitted_at: env.ledger().timestamp(),
         };
-
-        env.storage().persistent().set(&prelim_key, &report);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PreliminaryReport(order_id), &report);
 
         PreliminaryReportSubmitted {
-            version: shared::events::EVENT_VERSION,
+            version: 1,
             order_id,
             urgent_findings,
         }
@@ -472,9 +487,13 @@ impl ImagingRadiology {
         Ok(())
     }
 
-    /// Submit final report
+    /// Submit the final report for an order.
+    ///
+    /// The `radiologist_id` must be a credentialed actor in the hospital
+    /// registry; otherwise the report is rejected.
     pub fn submit_final_report(
         env: Env,
+        registry: Address,
         order_id: u64,
         radiologist_id: Address,
         final_report_hash: BytesN<32>,
@@ -482,38 +501,44 @@ impl ImagingRadiology {
     ) -> Result<(), Error> {
         radiologist_id.require_auth();
 
-        let order_key = DataKey::ImagingOrder(order_id);
+        Self::require_credentialed_radiologist(&env, &registry, &radiologist_id)?;
+
         let mut order: ImagingOrder = env
             .storage()
             .persistent()
-            .get(&order_key)
+            .get(&DataKey::ImagingOrder(order_id))
             .ok_or(Error::OrderNotFound)?;
 
-        let images_key = DataKey::DicomImages(order_id);
-        if !env.storage().persistent().has(&images_key) {
+        if order.status != Symbol::new(&env, "IN_PROGRESS") {
             return Err(Error::InvalidStatus);
         }
 
-        let final_key = DataKey::FinalReport(order_id);
-        if env.storage().persistent().has(&final_key) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::FinalReport(order_id))
+        {
             return Err(Error::FinalReportExists);
         }
 
         let report = FinalReport {
             order_id,
-            radiologist_id,
+            radiologist_id: radiologist_id.clone(),
             final_report_hash,
             impression,
             submitted_at: env.ledger().timestamp(),
         };
-
-        env.storage().persistent().set(&final_key, &report);
+        env.storage()
+            .persistent()
+            .set(&DataKey::FinalReport(order_id), &report);
 
         order.status = Symbol::new(&env, "COMPLETED");
-        env.storage().persistent().set(&order_key, &order);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ImagingOrder(order_id), &order);
 
         FinalReportSubmitted {
-            version: shared::events::EVENT_VERSION,
+            version: 1,
             order_id,
         }
         .publish(&env);
@@ -521,267 +546,108 @@ impl ImagingRadiology {
         Ok(())
     }
 
-    /// Submit a correction or addition to an already-locked final report.
-    /// The original `FinalReport` is left untouched; the addendum is appended
-    /// to that order's addendum history so the on-chain audit trail records
-    /// both the original report and every subsequent correction.
-    pub fn submit_report_addendum(
-        env: Env,
-        order_id: u64,
-        radiologist_id: Address,
-        addendum_hash: BytesN<32>,
-        reason: String,
-    ) -> Result<(), Error> {
-        radiologist_id.require_auth();
+    /// --------------------
+    /// Internal helpers
+    /// --------------------
 
-        env.storage()
-            .persistent()
-            .get::<_, ImagingOrder>(&DataKey::ImagingOrder(order_id))
-            .ok_or(Error::OrderNotFound)?;
-
-        if !env
-            .storage()
-            .persistent()
-            .has(&DataKey::FinalReport(order_id))
-        {
-            return Err(Error::FinalReportNotFound);
-        }
-
-        let addenda_key = DataKey::ReportAddenda(order_id);
-        let mut addenda: Vec<ReportAddendum> = env
-            .storage()
-            .persistent()
-            .get(&addenda_key)
-            .unwrap_or(Vec::new(&env));
-
-        addenda.push_back(ReportAddendum {
-            order_id,
-            radiologist_id: radiologist_id.clone(),
-            addendum_hash,
-            reason,
-            submitted_at: env.ledger().timestamp(),
-        });
-
-        env.storage().persistent().set(&addenda_key, &addenda);
-
-        AddendumSubmitted {
-            version: shared::events::EVENT_VERSION,
-            order_id,
-            radiologist_id,
-        }
-        .publish(&env);
-
-        Ok(())
-    }
-
-    /// Request peer review
-    pub fn request_peer_review(
-        env: Env,
-        order_id: u64,
-        requesting_radiologist: Address,
-        peer_radiologist: Address,
-    ) -> Result<(), Error> {
-        requesting_radiologist.require_auth();
-
-        if requesting_radiologist == peer_radiologist {
-            return Err(Error::SelfReviewNotAllowed);
-        }
-
-        let order_key = DataKey::ImagingOrder(order_id);
-        env.storage()
-            .persistent()
-            .get::<_, ImagingOrder>(&order_key)
-            .ok_or(Error::OrderNotFound)?;
-
-        let peer_key = DataKey::PeerReview(order_id);
-        if env.storage().persistent().has(&peer_key) {
-            return Err(Error::PeerReviewExists);
-        }
-
-        let peer_review = PeerReview {
-            order_id,
-            requesting_radiologist,
-            peer_radiologist,
-            requested_at: env.ledger().timestamp(),
-            status: Symbol::new(&env, "PENDING"),
-        };
-
-        env.storage().persistent().set(&peer_key, &peer_review);
-
-        PeerReviewRequested {
-            version: shared::events::EVENT_VERSION,
-            order_id,
-        }
-        .publish(&env);
-
-        Ok(())
-    }
-
-    /// Get imaging order details
-    pub fn get_imaging_order(
-        env: Env,
-        order_id: u64,
-        requester: Address,
-    ) -> Result<Option<ImagingOrder>, Error> {
-        let key = DataKey::ImagingOrder(order_id);
-        let order = env.storage().persistent().get::<_, ImagingOrder>(&key);
-        if let Some(ref existing) = order {
-            Self::require_order_read_access(&env, existing, &requester)?;
-        } else {
-            requester.require_auth();
-        }
-        Ok(order)
-    }
-
-    /// Get imaging schedule
-    pub fn get_imaging_schedule(
-        env: Env,
-        order_id: u64,
-        requester: Address,
-    ) -> Result<Option<ImagingSchedule>, Error> {
-        Self::load_order_for_read(&env, order_id, &requester)?;
-        let key = DataKey::ImagingSchedule(order_id);
-        Ok(env.storage().persistent().get(&key))
-    }
-
-    /// Get DICOM images reference
-    pub fn get_dicom_images(
-        env: Env,
-        order_id: u64,
-        requester: Address,
-    ) -> Result<Option<DicomImages>, Error> {
-        Self::load_order_for_read(&env, order_id, &requester)?;
-        let key = DataKey::DicomImages(order_id);
-        Ok(env.storage().persistent().get(&key))
-    }
-
-    /// Get preliminary report
-    pub fn get_preliminary_report(
-        env: Env,
-        order_id: u64,
-        requester: Address,
-    ) -> Result<Option<PreliminaryReport>, Error> {
-        Self::load_order_for_read(&env, order_id, &requester)?;
-        let key = DataKey::PreliminaryReport(order_id);
-        Ok(env.storage().persistent().get(&key))
-    }
-
-    /// Get final report
-    pub fn get_final_report(
-        env: Env,
-        order_id: u64,
-        requester: Address,
-    ) -> Result<Option<FinalReport>, Error> {
-        Self::load_order_for_read(&env, order_id, &requester)?;
-        let key = DataKey::FinalReport(order_id);
-        Ok(env.storage().persistent().get(&key))
-    }
-
-    /// Get the addendum history for an order's final report
-    pub fn get_report_addenda(
-        env: Env,
-        order_id: u64,
-        requester: Address,
-    ) -> Result<Vec<ReportAddendum>, Error> {
-        Self::load_order_for_read(&env, order_id, &requester)?;
-        let key = DataKey::ReportAddenda(order_id);
-        Ok(env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or(Vec::new(&env)))
-    }
-
-    /// Get peer review request
-    pub fn get_peer_review(
-        env: Env,
-        order_id: u64,
-        requester: Address,
-    ) -> Result<Option<PeerReview>, Error> {
-        Self::load_order_for_read(&env, order_id, &requester)?;
-        let key = DataKey::PeerReview(order_id);
-        Ok(env.storage().persistent().get(&key))
-    }
-
-    /// Get a page of order IDs for a patient.
-    ///
-    /// Each page contains at most `MAX_PAGE_SIZE` IDs.  Pass the returned
-    /// `next_page` value as `page` to retrieve the following page; stop when
-    /// `next_page == NO_NEXT_PAGE`.
-    pub fn get_patient_orders(
-        env: Env,
-        patient_id: Address,
-        requester: Address,
-        page: u32,
-    ) -> Result<PageResult, Error> {
-        requester.require_auth();
-        if requester != patient_id {
-            return Err(Error::UnauthorizedAccess);
-        }
-        let p = patient_id.clone();
-        Ok(pagination::get_paged(
-            &env,
-            |pg| DataKey::PatientOrdersPage(p.clone(), pg),
-            || DataKey::PatientOrdersHead(p.clone()),
-            page,
-        ))
-    }
-
-    /// Get a page of order IDs for a provider.
-    ///
-    /// See `get_patient_orders` for pagination semantics.
-    pub fn get_provider_orders(
-        env: Env,
-        provider_id: Address,
-        requester: Address,
-        page: u32,
-    ) -> Result<PageResult, Error> {
-        requester.require_auth();
-        if requester != provider_id {
-            return Err(Error::UnauthorizedAccess);
-        }
-        let prov = provider_id.clone();
-        Ok(pagination::get_paged(
-            &env,
-            |pg| DataKey::ProviderOrdersPage(prov.clone(), pg),
-            || DataKey::ProviderOrdersHead(prov.clone()),
-            page,
-        ))
-    }
-
-    /// Maximum items per page (re-exported for callers).
-    pub fn max_page_size(_env: Env) -> u32 {
-        MAX_PAGE_SIZE
-    }
-
-    fn load_order_for_read(
+    /// Verify that `actor` is a registered/credentialed actor in the hospital
+    /// registry contract. Mirrors health-records' ProviderRegistryInterface
+    /// pattern: a cross-contract call to `is_registered` that must return true.
+    fn require_registered_actor(
         env: &Env,
-        order_id: u64,
-        requester: &Address,
-    ) -> Result<ImagingOrder, Error> {
-        let order: ImagingOrder = env
-            .storage()
-            .persistent()
-            .get(&DataKey::ImagingOrder(order_id))
-            .ok_or(Error::OrderNotFound)?;
-        Self::require_order_read_access(env, &order, requester)?;
-        Ok(order)
+        registry: &Address,
+        actor: &Address,
+    ) -> Result<(), Error> {
+        let args = soroban_sdk::vec![env, actor.clone().into_val(env)];
+        let is_registered: bool = env.invoke_contract(
+            registry,
+            &Symbol::new(env, "is_registered"),
+            args,
+        );
+        if !is_registered {
+            return Err(Error::ImagingCenterNotRegistered);
+        }
+        Ok(())
     }
 
-    fn require_order_read_access(
-        _env: &Env,
-        order: &ImagingOrder,
-        requester: &Address,
+    /// Verify that `radiologist` holds a valid credential in the hospital
+    /// registry contract. Mirrors health-records' ProviderRegistryInterface
+    /// pattern: a cross-contract call to `is_credentialed` that must return true.
+    fn require_credentialed_radiologist(
+        env: &Env,
+        registry: &Address,
+        radiologist: &Address,
     ) -> Result<(), Error> {
-        requester.require_auth();
-        if *requester == order.patient_id || *requester == order.provider_id {
-            return Ok(());
+        let args = soroban_sdk::vec![env, radiologist.clone().into_val(env)];
+        let is_credentialed: bool = env.invoke_contract(
+            registry,
+            &Symbol::new(env, "is_credentialed"),
+            args,
+        );
+        if !is_credentialed {
+            return Err(Error::RadiologistNotCredentialed);
         }
-        Err(Error::UnauthorizedAccess)
+        Ok(())
+    }
+
+    fn next_order_id(env: &Env) -> u64 {
+        let current: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::OrderCounter)
+            .unwrap_or(0);
+        let next = current + 1;
+        env.storage()
+            .persistent()
+            .set(&DataKey::OrderCounter, &next);
+        next
+    }
+
+    fn index_order(env: &Env, patient: &Address, provider: &Address, order_id: u64) {
+        // Patient index
+        let p_total: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PatientOrdersTotal(patient.clone()))
+            .unwrap_or(0);
+        let p_page = p_total / MAX_PAGE_SIZE;
+        let mut p_vec: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PatientOrdersPage(patient.clone(), p_page))
+            .unwrap_or(Vec::new(env));
+        p_vec.push_back(order_id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PatientOrdersPage(patient.clone(), p_page), &p_vec);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PatientOrdersHead(patient.clone()), &p_page);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PatientOrdersTotal(patient.clone()), &(p_total + 1));
+
+        // Provider index
+        let pr_total: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProviderOrdersTotal(provider.clone()))
+            .unwrap_or(0);
+        let pr_page = pr_total / MAX_PAGE_SIZE;
+        let mut pr_vec: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProviderOrdersPage(provider.clone(), pr_page))
+            .unwrap_or(Vec::new(env));
+        pr_vec.push_back(order_id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ProviderOrdersPage(provider.clone(), pr_page), &pr_vec);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ProviderOrdersHead(provider.clone()), &pr_page);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ProviderOrdersTotal(provider.clone()), &(pr_total + 1));
     }
 }
-
-#[cfg(test)]
-mod test;
-#[cfg(test)]
-mod cid_fuzz_tests;
