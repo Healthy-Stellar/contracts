@@ -248,6 +248,19 @@ fn test_multiple_schema_versions_coexist() {
     client.verify_eligibility(&subject, &bundle(&env, 0xBB, 2));
 }
 
+#[test]
+fn test_migrate_schema_marks_old_schema_as_migrated() {
+    let (env, admin, client) = setup();
+    client.register_verifier_key(&admin, &1u32, &vk(&env, 0xAA));
+    client.register_verifier_key(&admin, &2u32, &vk(&env, 0xBB));
+    client.deprecate_verifier_key(&admin, &1u32);
+
+    client.migrate_schema(&admin, &1u32, &2u32, &proof(&env, 0xBB));
+
+    let old_entry = client.get_verifier_key(&1u32);
+    assert_eq!(old_entry.migrated_to, 2);
+}
+
 // ── admin rotation ────────────────────────────────────────────────────────────
 
 #[test]

@@ -213,7 +213,10 @@ impl ZkEligibility {
     /// - Nullifiers from schemas deprecated WITHOUT migration are treated as
     ///   invalid, allowing subjects to re-verify under the new key.
     ///
-    /// `migration_proof` is verified against the new schema's verifier key.
+    /// `migration_proof` is verified against the new schema's verifier key
+    /// using three public inputs: the `MIGR` domain tag, `old_version`, and
+    /// `new_version`, each encoded as a big-endian u32 right-aligned in 32
+    /// bytes. The migration circuit must enforce these inputs.
     pub fn migrate_schema(
         env: Env,
         admin: Address,
@@ -241,7 +244,15 @@ impl ZkEligibility {
             return Err(Error::SchemaNotFound);
         }
 
-        if !Self::run_verification(&env, &new_entry.vk, &migration_proof, &Vec::new(&env)) {
+        let mut public_inputs = Vec::new(&env);
+        public_inputs.push_back(Self::encode_u32_public_input(
+            &env,
+            u32::from_be_bytes(*b"MIGR"),
+        ));
+        public_inputs.push_back(Self::encode_u32_public_input(&env, old_version));
+        public_inputs.push_back(Self::encode_u32_public_input(&env, new_version));
+
+        if !Self::run_verification(&env, &new_entry.vk, &migration_proof, &public_inputs) {
             return Err(Error::VerificationFailed);
         }
 
@@ -578,6 +589,12 @@ impl ZkEligibility {
         ts
     }
 
+    fn encode_u32_public_input(env: &Env, value: u32) -> BytesN<32> {
+        let mut input = [0u8; 32];
+        input[28..].copy_from_slice(&value.to_be_bytes());
+        BytesN::from_array(env, &input)
+    }
+
     /// Cryptographic verification stub.
     ///
     /// ⚠️ SECURITY: This is a stub for testing only. Production deployments MUST
@@ -585,7 +602,8 @@ impl ZkEligibility {
     /// verifier via host crypto or a dedicated contract. See issue #821.
     ///
     /// The stub requires:
-    /// 1. Non-empty public_inputs (expiry must be at public_inputs[0])
+    /// 1. Non-empty public_inputs (eligibility proofs place expiry at index 0;
+    ///    migration proofs use their documented schema-version tuple)
     /// 2. First byte of proof must match first byte of verifier key
     /// This exercises the full call path without requiring real ZK machinery.
     /// Public inputs are NOT cryptographically bound to the proof in this stub.
