@@ -20,6 +20,17 @@ fn create(env: &Env, client: &GovernanceVotingContractClient, admin: &Address) -
 }
 
 #[test]
+fn initialize_requires_admin_auth() {
+    let env = Env::default();
+    let contract_id = env.register(GovernanceVotingContract, ());
+    let client = GovernanceVotingContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    // Without mocking auths, initialize must require the admin's authorization.
+    let res = client.try_initialize(&admin);
+    assert!(res.is_err());
+}
+
+#[test]
 fn create_proposal_returns_id_1() {
     let (env, client, admin) = setup();
     let id = create(&env, &client, &admin);
