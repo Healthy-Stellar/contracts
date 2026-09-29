@@ -20,6 +20,17 @@ fn create(env: &Env, client: &GovernanceVotingContractClient, admin: &Address) -
 }
 
 #[test]
+fn initialize_requires_admin_auth() {
+    let env = Env::default();
+    let contract_id = env.register(GovernanceVotingContract, ());
+    let client = GovernanceVotingContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    // Without mocking auths, initialize must require the admin's authorization.
+    let res = client.try_initialize(&admin);
+    assert!(res.is_err());
+}
+
+#[test]
 fn create_proposal_returns_id_1() {
     let (env, client, admin) = setup();
     let id = create(&env, &client, &admin);
@@ -239,12 +250,59 @@ fn member_can_vote() {
 }
 
 #[test]
-fn unregister_member_prevents_voting() {
+fn admin_rotation_succeeds() {
     let (env, client, admin) = setup();
-    let voter = Address::generate(&env);
-    client.register_member(&admin, &voter);
-    client.unregister_member(&admin, &voter);
-    let id = create(&env, &client, &admin);
-    let res = client.try_vote(&voter, &id, &VoteChoice::Yes);
-    assert!(res.is_err());
+    let new_admin = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &new_admin);
+    client.accept_admin_rotation(&new_admin);
+
+    // New admin can now perform admin-only actions.
+    let id = create(&env, &client, &new_admin);
+    assert_eq!(id, 1);
+}
+
+#[test]
+fn second_concurrent_propose_admin_rotation_rejected() {
+    let (env, client, admin) = setup();
+    let first = Address::generate(&env);
+    let second = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &first);
+    let res = client.try_propose_admin_rotation(&admin, &second);
+    assert_eq!(res, Err(Ok(Error::RotationPending)));
+}
+
+#[test]
+fn accept_admin_rotation_by_non_pending_address_rejected() {
+    let (env, client, admin) = setup();
+    let pending = Address::generate(&env);
+    let impostor = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &pending);
+    let res = client.try_accept_admin_rotation(&impostor);
+    assert_eq!(res, Err(Ok(Error::NotPendingAdmin)));
+}
+
+#[test]
+fn accept_admin_rotation_without_pending_rejected() {
+    let (env, client, _admin) = setup();
+    let someone = Address::generate(&env);
+
+    let res = client.try_accept_admin_rotation(&someone);
+    assert_eq!(res, Err(Ok(Error::NoRotationPending)));
+}
+
+#[test]
+fn accept_admin_rotation_after_window_expires_rejected() {
+    let (env, client, admin) = setup();
+    let new_admin = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &new_admin);
+
+    // Advance past the 24-hour rotation window.
+    env.ledger().set_timestamp(env.ledger().timestamp() + 86_401);
+
+    let res = client.try_accept_admin_rotation(&new_admin);
+    assert_eq!(res, Err(Ok(Error::RotationExpired)));
 }

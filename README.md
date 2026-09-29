@@ -380,5 +380,5 @@ cargo test --test integration_tests
 <!-- handsoff-issue-890 -->
 - #890: [patient-registry] register_institution has no admin gate, undermining doctor verification
 
-<!-- handsoff-issue-864 -->
-- #864: [hospital-discharge-management] assess_discharge_readiness has an unchecked overflow panic and no score bounds
+<!-- handsoff-issue-860 -->
+- #860: [hai-tracking] record_patient_days lets any caller modify any case's denominator data
