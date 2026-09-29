@@ -214,6 +214,37 @@ impl PacsContract {
         radiologist_id.require_auth();
 
         let current = load_study(&env, current_study_id).ok_or(Error::NotFound)?;
+
+        // Access control: caller must be the ordering provider on the current study
+        // or hold an active access grant for it (purpose-scoped).
+        // This prevents any authenticated address from enumerating a patient's
+        // full imaging history by guessing a known study_id.
+        let is_ordering_provider = current.ordering_provider == radiologist_id;
+        if !is_ordering_provider {
+            // Require an active grant; the purpose must be non-empty, so we
+            // derive it from the comparison context.
+            let grants = load_access_list(&env, current_study_id);
+            let mut authorized = false;
+            for grant in grants.iter() {
+                if grant.viewer_id == radiologist_id {
+                    if Self::assert_active_grant(
+                        &env,
+                        current_study_id,
+                        &radiologist_id,
+                        &grant.purpose,
+                    )
+                    .is_ok()
+                    {
+                        authorized = true;
+                        break;
+                    }
+                }
+            }
+            if !authorized {
+                return Err(Error::Unauthorized);
+            }
+        }
+
         let patient_ids = load_patient_studies(&env, &current.patient_id);
 
         let now = env.ledger().timestamp();
@@ -429,10 +460,18 @@ impl PacsContract {
     ) -> Result<String, Error> {
         requesting_researcher.require_auth();
 
-        load_study(&env, study_id).ok_or(Error::NotFound)?;
+        let study = load_study(&env, study_id).ok_or(Error::NotFound)?;
 
         if purpose.is_empty() {
             return Err(Error::InvalidInput);
+        }
+
+        // Access control: caller must be the patient, the ordering provider,
+        // or hold an active (non-revoked, non-expired) access grant for this study.
+        let is_owner = study.patient_id == requesting_researcher
+            || study.ordering_provider == requesting_researcher;
+        if !is_owner {
+            Self::assert_active_grant(&env, study_id, &requesting_researcher, &purpose)?;
         }
 
         // Load or initialise the per-contract global salt.
@@ -449,7 +488,6 @@ impl PacsContract {
         env.storage().instance().set(&DataKey::AnonSalt, &salt);
 
         // Derive anonymized ID: sha256(study_id_be || patient_xdr || salt || epoch_be)
-        let study = load_study(&env, study_id).ok_or(Error::NotFound)?;
         let mut data = Bytes::new(&env);
         data.extend_from_array(&study_id.to_be_bytes());
         data.append(&study.patient_id.clone().to_xdr(&env));
