@@ -508,11 +508,9 @@ impl TelemedicineContract {
         license_number: String,
         valid_until: u64,
     ) -> Result<(), Error> {
-        // Both parties must sign.
-        admin.require_auth();
-        provider_id.require_auth();
-
-        // Verify `admin` is the stored credentialing authority.
+        // Verify `admin` is the stored credentialing authority before requiring
+        // signatures, so a self-attestation attempt (admin == provider_id) is
+        // rejected with a typed error rather than a duplicate-auth host abort.
         let stored_admin: Address = env
             .storage()
             .instance()
@@ -521,6 +519,10 @@ impl TelemedicineContract {
         if admin != stored_admin {
             return Err(Error::ProviderNotVerified);
         }
+
+        // Both parties must sign.
+        admin.require_auth();
+        provider_id.require_auth();
 
         let license = ProviderLicense {
             provider_id: provider_id.clone(),

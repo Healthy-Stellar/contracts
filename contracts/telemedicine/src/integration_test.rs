@@ -20,7 +20,7 @@ fn setup(env: &Env) -> (TelemedicineContractClient<'static>, Address) {
     let cid = env.register(TelemedicineContract, ());
     let client = TelemedicineContractClient::new(env, &cid);
     let admin = Address::generate(env);
-    client.initialize(&admin).unwrap();
+    client.initialize(&admin);
     (client, admin)
 }
 

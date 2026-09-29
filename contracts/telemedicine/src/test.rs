@@ -37,7 +37,7 @@ fn test_telemedicine_lifecycle() {
     let client = TelemedicineContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.initialize(&admin).unwrap();
+    client.initialize(&admin);
 
     let patient_id = Address::generate(&env);
     let provider_id = Address::generate(&env);
@@ -206,7 +206,7 @@ fn test_session_tokens_are_unique_bound_expiring_and_non_replayable() {
     let client = TelemedicineContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.initialize(&admin).unwrap();
+    client.initialize(&admin);
 
     let patient_id = Address::generate(&env);
     let provider_id = Address::generate(&env);
@@ -336,7 +336,7 @@ fn test_prescribe_cross_state_allowed_with_license() {
     let contract_id = env.register(TelemedicineContract, ());
     let client = TelemedicineContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    client.initialize(&admin).unwrap();
+    client.initialize(&admin);
     let patient = Address::generate(&env);
     let provider = Address::generate(&env);
 
@@ -361,7 +361,7 @@ fn test_prescribe_cross_state_blocked_without_license() {
     let contract_id = env.register(TelemedicineContract, ());
     let client = TelemedicineContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    client.initialize(&admin).unwrap();
+    client.initialize(&admin);
     let patient = Address::generate(&env);
     let provider = Address::generate(&env);
 
@@ -424,7 +424,7 @@ fn test_prescribe_blocked_after_session_end() {
     let contract_id = env.register(TelemedicineContract, ());
     let client = TelemedicineContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    client.initialize(&admin).unwrap();
+    client.initialize(&admin);
     let patient = Address::generate(&env);
     let provider = Address::generate(&env);
 
@@ -455,7 +455,7 @@ fn test_prescribe_controlled_substance_blocked_by_policy() {
     let admin = Address::generate(&env);
 
     // Initialize with admin
-    client.initialize(&admin).unwrap();
+    client.initialize(&admin);
 
     let visit_id = setup_active_visit(&env, &client, &admin, &provider, &patient, "NY", "NY");
 
@@ -464,7 +464,7 @@ fn test_prescribe_controlled_substance_blocked_by_policy() {
         &admin,
         &String::from_str(&env, "NY"),
         &true,
-    ).unwrap();
+    );
 
     let rx = PrescriptionRequest {
         medication_name: String::from_str(&env, "Oxycodone"),
@@ -488,8 +488,50 @@ fn test_initialize_admin() {
     let client = TelemedicineContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
 
-    let result = client.initialize(&admin);
+    let result = client.try_initialize(&admin);
     assert!(result.is_ok());
+}
+
+#[test]
+fn test_multiple_prescriptions_persist_by_rx_id() {
+    // Regression for #920: prescriptions are stored under DataKey::Prescription(rx_id)
+    // with an auto-incrementing DataKey::PrescriptionCount, so each one can be read back.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(TelemedicineContract, ());
+    let client = TelemedicineContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    let patient = Address::generate(&env);
+    let provider = Address::generate(&env);
+
+    let visit_id = setup_active_visit(&env, &client, &admin, &provider, &patient, "NY", "NY");
+
+    let rx_one = PrescriptionRequest {
+        medication_name: String::from_str(&env, "Amoxicillin"),
+        dosage: String::from_str(&env, "500mg"),
+        frequency: String::from_str(&env, "BID"),
+        duration_days: 10,
+        is_controlled_substance: false,
+    };
+    let rx_two = PrescriptionRequest {
+        medication_name: String::from_str(&env, "Ibuprofen"),
+        dosage: String::from_str(&env, "400mg"),
+        frequency: String::from_str(&env, "TID"),
+        duration_days: 7,
+        is_controlled_substance: false,
+    };
+
+    let id_one = client.prescribe_during_visit(&visit_id, &provider, &patient, &rx_one);
+    let id_two = client.prescribe_during_visit(&visit_id, &provider, &patient, &rx_two);
+    assert_eq!(id_one, 1);
+    assert_eq!(id_two, 2);
+
+    assert_eq!(client.get_prescription(&id_one), rx_one);
+    assert_eq!(client.get_prescription(&id_two), rx_two);
+
+    // Unknown rx_id is rejected rather than returning stale data.
+    assert!(client.try_get_prescription(&3).is_err());
 }
 
 #[test]
@@ -501,7 +543,7 @@ fn test_set_rate_limit_rejects_non_admin() {
     let admin = Address::generate(&env);
     let non_admin = Address::generate(&env);
 
-    client.initialize(&admin).unwrap();
+    client.initialize(&admin);
 
     let result = client.try_set_rate_limit_config(&non_admin, &10u32, &86400u64);
     assert_eq!(result, Err(Ok(crate::types::Error::NotAuthorized)));
@@ -516,7 +558,7 @@ fn test_set_jurisdiction_policy_rejects_non_admin() {
     let admin = Address::generate(&env);
     let non_admin = Address::generate(&env);
 
-    client.initialize(&admin).unwrap();
+    client.initialize(&admin);
 
     let result = client.try_set_jurisdiction_policy(
         &non_admin,
@@ -536,7 +578,7 @@ fn test_set_controlled_substance_policy_rejects_non_admin() {
     let admin = Address::generate(&env);
     let non_admin = Address::generate(&env);
 
-    client.initialize(&admin).unwrap();
+    client.initialize(&admin);
 
     let result = client.try_set_controlled_substance_policy(
         &non_admin,
@@ -576,7 +618,7 @@ fn test_register_license_non_admin_blocked() {
     let client = TelemedicineContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.initialize(&admin).unwrap();
+    client.initialize(&admin);
 
     let attacker = Address::generate(&env);
     let provider = Address::generate(&env);
@@ -609,7 +651,7 @@ fn test_register_license_admin_co_signature_succeeds() {
     let client = TelemedicineContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.initialize(&admin).unwrap();
+    client.initialize(&admin);
 
     let provider = Address::generate(&env);
 
@@ -642,7 +684,7 @@ fn test_self_attestation_without_admin_blocked_and_has_no_effect() {
     let client = TelemedicineContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.initialize(&admin).unwrap();
+    client.initialize(&admin);
 
     let attacker = Address::generate(&env);
 
