@@ -578,7 +578,16 @@ impl HealthcareAnalytics {
             return Err(Error::Unauthorized);
         }
         if env.storage().instance().has(&DataKey::PendingAdmin) {
-            return Err(Error::RotationPending);
+            let expiry: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::RotationExpiry)
+                .unwrap_or(0);
+            if env.ledger().timestamp() <= expiry {
+                return Err(Error::RotationPending);
+            }
+            env.storage().instance().remove(&DataKey::PendingAdmin);
+            env.storage().instance().remove(&DataKey::RotationExpiry);
         }
         let expiry = env.ledger().timestamp() + ADMIN_ROTATION_WINDOW;
         env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
@@ -608,6 +617,25 @@ impl HealthcareAnalytics {
             return Err(Error::RotationExpired);
         }
         env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage().instance().remove(&DataKey::RotationExpiry);
+        Ok(())
+    }
+
+    /// Cancel a pending admin rotation.
+    pub fn cancel_admin_rotation(env: Env, admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let stored: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::Unauthorized)?;
+        if admin != stored {
+            return Err(Error::Unauthorized);
+        }
+        if !env.storage().instance().has(&DataKey::PendingAdmin) {
+            return Err(Error::NoRotationPending);
+        }
         env.storage().instance().remove(&DataKey::PendingAdmin);
         env.storage().instance().remove(&DataKey::RotationExpiry);
         Ok(())

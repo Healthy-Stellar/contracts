@@ -563,7 +563,16 @@ impl ZkEligibility {
         Self::assert_initialized(&env)?;
         Self::assert_admin(&env, &admin)?;
         if env.storage().persistent().has(&DataKey::PendingAdmin) {
-            return Err(Error::RotationPending);
+            let expiry: u64 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::RotationExpiry)
+                .unwrap_or(0);
+            if env.ledger().timestamp() <= expiry {
+                return Err(Error::RotationPending);
+            }
+            env.storage().persistent().remove(&DataKey::PendingAdmin);
+            env.storage().persistent().remove(&DataKey::RotationExpiry);
         }
         let expiry = env.ledger().timestamp() + ADMIN_ROTATION_WINDOW;
         env.storage().persistent().set(&DataKey::PendingAdmin, &new_admin);
@@ -594,6 +603,18 @@ impl ZkEligibility {
             return Err(Error::RotationExpired);
         }
         env.storage().persistent().set(&DataKey::Admin, &new_admin);
+        env.storage().persistent().remove(&DataKey::PendingAdmin);
+        env.storage().persistent().remove(&DataKey::RotationExpiry);
+        Ok(())
+    }
+
+    /// Cancel a pending admin rotation.
+    pub fn cancel_admin_rotation(env: Env, admin: Address) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        Self::assert_admin(&env, &admin)?;
+        if !env.storage().persistent().has(&DataKey::PendingAdmin) {
+            return Err(Error::NoRotationPending);
+        }
         env.storage().persistent().remove(&DataKey::PendingAdmin);
         env.storage().persistent().remove(&DataKey::RotationExpiry);
         Ok(())

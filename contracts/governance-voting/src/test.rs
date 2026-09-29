@@ -86,7 +86,7 @@ fn finalize_passes_when_quorum_met_and_yes_majority() {
 }
 
 #[test]
-fn finalize_rejected_when_quorum_not_met() {
+fn finalize_expires_when_quorum_not_met() {
     let (env, client, admin) = setup();
     let id = create(&env, &client, &admin);
     let v = Address::generate(&env);
@@ -94,7 +94,7 @@ fn finalize_rejected_when_quorum_not_met() {
     client.vote(&v, &id, &VoteChoice::Yes); // only 1, quorum=3
     env.ledger().set_timestamp(env.ledger().timestamp() + 86_401);
     let status = client.finalize(&id);
-    assert_eq!(status, ProposalStatus::Rejected);
+    assert_eq!(status, ProposalStatus::Expired);
 }
 
 #[test]
@@ -147,11 +147,11 @@ fn active_proposals_decremented_on_finalize_and_allows_new_proposals() {
     let res = client.try_create_proposal(&admin, &s(&env, "T"), &s(&env, "D"), &3, &86_400);
     assert_eq!(res, Err(Ok(Error::TooManyProposals)));
 
-    // Advance time past deadline and finalize 5 proposals (they become Rejected because quorum not met)
+    // Advance time past deadline and finalize 5 below-quorum proposals.
     env.ledger().set_timestamp(env.ledger().timestamp() + 86_401);
     for id in 1..=5 {
         let status = client.finalize(&id);
-        assert_eq!(status, ProposalStatus::Rejected);
+        assert_eq!(status, ProposalStatus::Expired);
     }
 
     // Now 5 more proposals (IDs 101 to 105) can be created
@@ -210,12 +210,15 @@ fn vote_after_deadline_returns_proposal_expired() {
     assert_eq!(result, Err(Ok(Error::ProposalExpired)));
 
     let proposal = client.get_proposal(&id);
-    assert_eq!(proposal.status, ProposalStatus::Expired);
+    assert_eq!(proposal.status, ProposalStatus::Active);
     assert!(!client.has_voted(&id, &voter));
+
+    let status = client.finalize(&id);
+    assert_eq!(status, ProposalStatus::Expired);
 }
 
 #[test]
-fn active_proposals_decremented_on_expiry_during_vote() {
+fn active_proposals_decremented_on_expiry_during_finalize() {
     let (env, client, admin) = setup();
     let voter = Address::generate(&env);
     client.register_member(&admin, &voter);
@@ -232,8 +235,14 @@ fn active_proposals_decremented_on_expiry_during_vote() {
     assert_eq!(result, Err(Ok(Error::ProposalExpired)));
 
     let proposal = client.get_proposal(&proposal_id);
-    assert_eq!(proposal.status, ProposalStatus::Expired);
+    assert_eq!(proposal.status, ProposalStatus::Active);
     assert!(!client.has_voted(&proposal_id, &voter));
+
+    let result = client.try_create_proposal(&admin, &s(&env, "T"), &s(&env, "D"), &3, &86_400);
+    assert_eq!(result, Err(Ok(Error::TooManyProposals)));
+
+    let status = client.finalize(&proposal_id);
+    assert_eq!(status, ProposalStatus::Expired);
 
     let new_id = create(&env, &client, &admin);
     assert_eq!(new_id, 101);
@@ -305,4 +314,42 @@ fn accept_admin_rotation_after_window_expires_rejected() {
 
     let res = client.try_accept_admin_rotation(&new_admin);
     assert_eq!(res, Err(Ok(Error::RotationExpired)));
+}
+
+#[test]
+fn expired_admin_rotation_can_be_replaced() {
+    let (env, client, admin) = setup();
+    let typo = Address::generate(&env);
+    let replacement = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &typo);
+    env.ledger().set_timestamp(env.ledger().timestamp() + ADMIN_ROTATION_WINDOW + 1);
+
+    client.propose_admin_rotation(&admin, &replacement);
+    client.accept_admin_rotation(&replacement);
+}
+
+#[test]
+fn admin_can_cancel_rotation() {
+    let (env, client, admin) = setup();
+    let pending = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &pending);
+    client.cancel_admin_rotation(&admin);
+
+    let replacement = Address::generate(&env);
+    client.propose_admin_rotation(&admin, &replacement);
+    client.accept_admin_rotation(&replacement);
+}
+
+#[test]
+fn non_admin_cannot_cancel_rotation() {
+    let (env, client, admin) = setup();
+    let pending = Address::generate(&env);
+    let impostor = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &pending);
+    let res = client.try_cancel_admin_rotation(&impostor);
+    assert_eq!(res, Err(Ok(Error::Unauthorized)));
+    client.accept_admin_rotation(&pending);
 }
