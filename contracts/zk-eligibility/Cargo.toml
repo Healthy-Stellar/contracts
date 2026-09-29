@@ -9,6 +9,18 @@ publish = false
 crate-type = ["lib", "cdylib"]
 doctest = false
 
+# ── Feature flags ─────────────────────────────────────────────────────────────
+#
+# `mainnet` MUST NOT be enabled until a real Groth16/PLONK pairing verifier
+# replaces the stub in `run_verification`.  Building with this feature active
+# will emit a hard compile error so CI can enforce the gate.
+#
+# Usage:
+#   cargo build --features mainnet          # → compile error (intentional)
+#   cargo build                             # → ok (testnet/staging only)
+[features]
+mainnet = []
+
 [dependencies]
 soroban-sdk = { workspace = true }
 

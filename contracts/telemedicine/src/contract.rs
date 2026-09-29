@@ -479,15 +479,37 @@ impl TelemedicineContract {
     }
 
     /// Register or update a provider's license for a jurisdiction.
-    /// Only the provider themselves may register their own license.
+    ///
+    /// Requires an admin co-signature to prevent arbitrary self-attestation.
+    /// The stored admin (set via `initialize`) must sign alongside the provider,
+    /// ensuring every license record is vouched for by a credentialing authority
+    /// before it is trusted by `verify_telemedicine_eligibility` and
+    /// `prescribe_during_visit`.
+    ///
+    /// Both `admin` and `provider_id` must authorize the call:
+    /// - `admin` proves a credentialing authority approved the license.
+    /// - `provider_id` proves the provider consents to the record.
     pub fn register_provider_license(
         env: Env,
+        admin: Address,
         provider_id: Address,
         jurisdiction: String,
         license_number: String,
         valid_until: u64,
     ) -> Result<(), Error> {
+        // Both parties must sign.
+        admin.require_auth();
         provider_id.require_auth();
+
+        // Verify `admin` is the stored credentialing authority.
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::ProviderNotVerified)?;
+        if admin != stored_admin {
+            return Err(Error::ProviderNotVerified);
+        }
 
         let license = ProviderLicense {
             provider_id: provider_id.clone(),
