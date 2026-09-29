@@ -36,6 +36,9 @@ fn test_telemedicine_lifecycle() {
     let contract_id = env.register(TelemedicineContract, ());
     let client = TelemedicineContractClient::new(&env, &contract_id);
 
+    let admin = Address::generate(&env);
+    client.initialize(&admin).unwrap();
+
     let patient_id = Address::generate(&env);
     let provider_id = Address::generate(&env);
     let visit_time = 1700000000;
@@ -57,6 +60,7 @@ fn test_telemedicine_lifecycle() {
 
     // Register provider license in NY so eligibility passes.
     client.register_provider_license(
+        &admin,
         &provider_id,
         &String::from_str(&env, "NY"),
         &String::from_str(&env, "LIC-NY-001"),
@@ -201,6 +205,9 @@ fn test_session_tokens_are_unique_bound_expiring_and_non_replayable() {
     let contract_id = env.register(TelemedicineContract, ());
     let client = TelemedicineContractClient::new(&env, &contract_id);
 
+    let admin = Address::generate(&env);
+    client.initialize(&admin).unwrap();
+
     let patient_id = Address::generate(&env);
     let provider_id = Address::generate(&env);
     let other_provider = Address::generate(&env);
@@ -211,6 +218,7 @@ fn test_session_tokens_are_unique_bound_expiring_and_non_replayable() {
 
     // Register provider license in NY so eligibility passes.
     client.register_provider_license(
+        &admin,
         &provider_id,
         &String::from_str(&env, "NY"),
         &String::from_str(&env, "LIC-NY-001"),
@@ -276,12 +284,14 @@ fn test_session_tokens_are_unique_bound_expiring_and_non_replayable() {
 fn setup_active_visit(
     env: &Env,
     client: &crate::contract::TelemedicineContractClient,
+    admin: &Address,
     provider_id: &Address,
     patient_id: &Address,
     provider_state: &str,
     patient_state: &str,
 ) -> u64 {
     client.register_provider_license(
+        admin,
         provider_id,
         &String::from_str(env, provider_state),
         &String::from_str(env, "LIC-001"),
@@ -301,6 +311,7 @@ fn setup_active_visit(
 
     // Register license in patient state too so eligibility passes for cross-state.
     client.register_provider_license(
+        admin,
         provider_id,
         &String::from_str(env, patient_state),
         &String::from_str(env, "LIC-002"),
@@ -324,10 +335,12 @@ fn test_prescribe_cross_state_allowed_with_license() {
     env.mock_all_auths();
     let contract_id = env.register(TelemedicineContract, ());
     let client = TelemedicineContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin).unwrap();
     let patient = Address::generate(&env);
     let provider = Address::generate(&env);
 
-    let visit_id = setup_active_visit(&env, &client, &provider, &patient, "NY", "CA");
+    let visit_id = setup_active_visit(&env, &client, &admin, &provider, &patient, "NY", "CA");
 
     let rx = PrescriptionRequest {
         medication_name: String::from_str(&env, "Ibuprofen"),
@@ -347,11 +360,14 @@ fn test_prescribe_cross_state_blocked_without_license() {
     env.mock_all_auths();
     let contract_id = env.register(TelemedicineContract, ());
     let client = TelemedicineContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin).unwrap();
     let patient = Address::generate(&env);
     let provider = Address::generate(&env);
 
     // Only register license in NY (home state), not CA (patient state).
     client.register_provider_license(
+        &admin,
         &provider,
         &String::from_str(&env, "NY"),
         &String::from_str(&env, "LIC-NY-001"),
@@ -371,6 +387,7 @@ fn test_prescribe_cross_state_blocked_without_license() {
 
     // Add CA license temporarily just for start_virtual_session eligibility.
     client.register_provider_license(
+        &admin,
         &provider,
         &String::from_str(&env, "CA"),
         &String::from_str(&env, "LIC-CA-TMP"),
@@ -406,10 +423,12 @@ fn test_prescribe_blocked_after_session_end() {
     env.mock_all_auths();
     let contract_id = env.register(TelemedicineContract, ());
     let client = TelemedicineContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin).unwrap();
     let patient = Address::generate(&env);
     let provider = Address::generate(&env);
 
-    let visit_id = setup_active_visit(&env, &client, &provider, &patient, "NY", "NY");
+    let visit_id = setup_active_visit(&env, &client, &admin, &provider, &patient, "NY", "NY");
 
     // End the session.
     client.end_virtual_session(&visit_id, &provider, &1_700_001_000u64, &30);
@@ -438,7 +457,7 @@ fn test_prescribe_controlled_substance_blocked_by_policy() {
     // Initialize with admin
     client.initialize(&admin).unwrap();
 
-    let visit_id = setup_active_visit(&env, &client, &provider, &patient, "NY", "NY");
+    let visit_id = setup_active_visit(&env, &client, &admin, &provider, &patient, "NY", "NY");
 
     // Set NY policy: controlled substances require in-person.
     client.set_controlled_substance_policy(
@@ -525,4 +544,150 @@ fn test_set_controlled_substance_policy_rejects_non_admin() {
         &true,
     );
     assert_eq!(result, Err(Ok(crate::types::Error::NotAuthorized)));
+}
+
+// ── register_provider_license authorization tests ────────────────────────────
+
+#[test]
+fn test_register_license_without_initialize_blocked() {
+    // Contract not initialized → no stored admin → ProviderNotVerified.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(TelemedicineContract, ());
+    let client = TelemedicineContractClient::new(&env, &contract_id);
+
+    let anyone = Address::generate(&env);
+    let result = client.try_register_provider_license(
+        &anyone,
+        &anyone,
+        &String::from_str(&env, "NY"),
+        &String::from_str(&env, "LIC-FAKE"),
+        &0_u64,
+    );
+    assert_eq!(result, Err(Ok(crate::types::Error::ProviderNotVerified)));
+}
+
+#[test]
+fn test_register_license_non_admin_blocked() {
+    // Contract is initialized but caller is not the stored admin.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(TelemedicineContract, ());
+    let client = TelemedicineContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin).unwrap();
+
+    let attacker = Address::generate(&env);
+    let provider = Address::generate(&env);
+
+    let result = client.try_register_provider_license(
+        &attacker,           // non-admin co-signer
+        &provider,
+        &String::from_str(&env, "NY"),
+        &String::from_str(&env, "LIC-FAKE"),
+        &0_u64,
+    );
+    assert_eq!(result, Err(Ok(crate::types::Error::ProviderNotVerified)));
+
+    // Confirm no license was stored: eligibility must still be false.
+    let eligibility = client.verify_telemedicine_eligibility(
+        &Address::generate(&env),
+        &provider,
+        &String::from_str(&env, "NY"),
+        &String::from_str(&env, "NY"),
+    );
+    assert!(!eligibility.is_eligible);
+}
+
+#[test]
+fn test_register_license_admin_co_signature_succeeds() {
+    // Admin co-signs → license stored → eligibility becomes true.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(TelemedicineContract, ());
+    let client = TelemedicineContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin).unwrap();
+
+    let provider = Address::generate(&env);
+
+    client
+        .register_provider_license(
+            &admin,
+            &provider,
+            &String::from_str(&env, "NY"),
+            &String::from_str(&env, "LIC-NY-001"),
+            &0_u64,
+        );
+
+    let eligibility = client.verify_telemedicine_eligibility(
+        &Address::generate(&env),
+        &provider,
+        &String::from_str(&env, "NY"),
+        &String::from_str(&env, "NY"),
+    );
+    assert!(eligibility.is_eligible);
+}
+
+#[test]
+fn test_self_attestation_without_admin_blocked_and_has_no_effect() {
+    // The core attack: attacker tries to self-register a license with no admin.
+    // With the fix the call must return ProviderNotVerified and the attacker
+    // must remain ineligible.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(TelemedicineContract, ());
+    let client = TelemedicineContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin).unwrap();
+
+    let attacker = Address::generate(&env);
+
+    // Attacker passes themselves as both admin and provider_id — must still fail
+    // because attacker != stored admin.
+    let result = client.try_register_provider_license(
+        &attacker,
+        &attacker,
+        &String::from_str(&env, "NY"),
+        &String::from_str(&env, "LIC-ATTACKER"),
+        &0_u64,
+    );
+    assert_eq!(result, Err(Ok(crate::types::Error::ProviderNotVerified)));
+
+    // Attacker must not be eligible.
+    let eligibility = client.verify_telemedicine_eligibility(
+        &Address::generate(&env),
+        &attacker,
+        &String::from_str(&env, "NY"),
+        &String::from_str(&env, "NY"),
+    );
+    assert!(!eligibility.is_eligible);
+
+    // Attacker must not be able to start a session.
+    let patient = Address::generate(&env);
+    let visit_id = client
+        .schedule_virtual_visit(
+            &patient,
+            &attacker,
+            &1_700_000_000u64,
+            &Symbol::new(&env, "Consult"),
+            &30,
+            &Symbol::new(&env, "ZoomHD"),
+            &true,
+            &false,
+        );
+    let session_result = client.try_start_virtual_session(
+        &visit_id,
+        &attacker,
+        &1_700_000_010u64,
+        &String::from_str(&env, "NY"),
+        &String::from_str(&env, "NY"),
+    );
+    assert!(
+        session_result.is_err(),
+        "attacker with self-attested license must not start a session"
+    );
 }

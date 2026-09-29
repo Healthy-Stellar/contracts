@@ -27,6 +27,8 @@ pub enum Error {
     RateLimitExceeded = 16,
     /// Provider is not registered in the provider registry
     ProviderNotRegistered = 17,
+    /// Caller is not a credentialed/verified provider; admin co-signature required
+    ProviderNotVerified = 18,
 }
 
 /// On-chain record of a provider's license in a given jurisdiction (state/region).
@@ -150,4 +152,8 @@ pub enum DataKey {
     ProviderRegistryAddress,
     /// Address of the stored admin
     Admin,
+    /// rx_id -> PrescriptionRequest
+    Prescription(u64),
+    /// Running counter for prescription IDs
+    PrescriptionCount,
 }
