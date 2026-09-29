@@ -54,6 +54,7 @@ name = "allergy-tracking"
 version = "0.1.0"
 dependencies = [
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -1554,7 +1555,9 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 name = "rehabilitation-services"
 version = "0.1.0"
 dependencies = [
+ "shared",
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]

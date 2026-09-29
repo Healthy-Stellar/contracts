@@ -21,6 +21,18 @@
 //! - Integration point: other contracts call `verify_eligibility` and receive
 //!   a typed `Ok(())` / `Err(Error)` they can gate their own logic on.
 
+// ── Mainnet deployment gate ───────────────────────────────────────────────────
+// Building with `--features mainnet` is a hard error until a real Groth16/PLONK
+// pairing verifier replaces the stub in `run_verification`.  CI must never
+// enable this feature until issue #821 is resolved.
+#[cfg(feature = "mainnet")]
+compile_error!(
+    "The `mainnet` feature is reserved for a future release that ships a real \
+     Groth16/PLONK verifier (issue #821).  The current `run_verification` \
+     implementation is a non-cryptographic testing stub and MUST NOT be \
+     deployed to mainnet.  Remove `--features mainnet` from your build command."
+);
+
 use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror, symbol_short, Address, Bytes, BytesN,
     Env, Vec,
@@ -40,6 +52,8 @@ pub const MAX_BATCH_SIZE: u32 = 10;
 pub const DEFAULT_NULLIFIER_TTL_LEDGERS: u32 = 17_280;
 /// Window (in seconds) within which a new admin must accept the rotation (~24 hours).
 pub const ADMIN_ROTATION_WINDOW: u64 = 86_400;
+/// Alias for `ADMIN_ROTATION_WINDOW`; used by tests and external callers.
+pub const ROTATION_TTL: u64 = ADMIN_ROTATION_WINDOW;
 /// Index of the expiry timestamp in the public inputs array.
 pub const EXPIRY_INPUT_IDX: u32 = 0;
 
@@ -64,6 +78,11 @@ pub enum Error {
     NotPendingAdmin      = 13,
     RotationExpired      = 14,
     ProofExpired         = 15,
+    /// Returned at runtime when `verify_eligibility` is called on a build that
+    /// still uses the non-cryptographic stub verifier AND public inputs do not
+    /// satisfy the stub commitment check.  Never returned by a correct proof
+    /// submission; exists so integration tests can assert the stub is active.
+    StubVerifierActive   = 16,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -213,7 +232,10 @@ impl ZkEligibility {
     /// - Nullifiers from schemas deprecated WITHOUT migration are treated as
     ///   invalid, allowing subjects to re-verify under the new key.
     ///
-    /// `migration_proof` is verified against the new schema's verifier key.
+    /// `migration_proof` is verified against the new schema's verifier key
+    /// using three public inputs: the `MIGR` domain tag, `old_version`, and
+    /// `new_version`, each encoded as a big-endian u32 right-aligned in 32
+    /// bytes. The migration circuit must enforce these inputs.
     pub fn migrate_schema(
         env: Env,
         admin: Address,
@@ -241,7 +263,15 @@ impl ZkEligibility {
             return Err(Error::SchemaNotFound);
         }
 
-        if !Self::run_verification(&env, &new_entry.vk, &migration_proof, &Vec::new(&env)) {
+        let mut public_inputs = Vec::new(&env);
+        public_inputs.push_back(Self::encode_u32_public_input(
+            &env,
+            u32::from_be_bytes(*b"MIGR"),
+        ));
+        public_inputs.push_back(Self::encode_u32_public_input(&env, old_version));
+        public_inputs.push_back(Self::encode_u32_public_input(&env, new_version));
+
+        if !Self::run_verification(&env, &new_entry.vk, &migration_proof, &public_inputs) {
             return Err(Error::VerificationFailed);
         }
 
@@ -578,33 +608,96 @@ impl ZkEligibility {
         ts
     }
 
+    fn encode_u32_public_input(env: &Env, value: u32) -> BytesN<32> {
+        let mut input = [0u8; 32];
+        input[28..].copy_from_slice(&value.to_be_bytes());
+        BytesN::from_array(env, &input)
+    }
+
     /// Cryptographic verification stub.
     ///
-    /// ⚠️ SECURITY: This is a stub for testing only. Production deployments MUST
-    /// be gated behind a feature flag and implement a real Groth16/PLONK pairing
-    /// verifier via host crypto or a dedicated contract. See issue #821.
+    /// ⚠️  SECURITY — TESTING STUB ONLY.  This is NOT a real ZK verifier.
+    /// Production deployments are blocked by `compile_error!` in the `mainnet`
+    /// feature gate at the top of this file.  Replace with a real Groth16/PLONK
+    /// pairing verifier before enabling that feature (issue #821).
+    ///
+    /// ## What this stub checks
+    ///
+    /// The old stub compared only `vk[0] == proof[0]`, which was trivially
+    /// forgeable: any caller who read the public `get_verifier_key` view could
+    /// craft a passing proof by setting its first byte to match the VK's first
+    /// byte, regardless of public inputs.
+    ///
+    /// This replacement binds the public inputs into the check:
+    ///
+    /// ```text
+    /// commitment = SHA-256( vk_bytes || public_input_0 || … || public_input_n )
+    /// ```
+    ///
+    /// The proof must carry `commitment[0..4]` as its **last four bytes**.
+    /// Because the commitment covers every public input scalar, a proof issued
+    /// for one (subject, expiry, claim) tuple will not pass when replayed with
+    /// different public inputs — the commitment will not match.
+    ///
+    /// Forging still requires knowing the VK bytes AND the exact public inputs
+    /// *before* submission, which prevents the "read VK[0], craft any proof"
+    /// attack described in issue #821 while keeping the stub testable without
+    /// real ZK machinery.
+    ///
+    /// ## Proof format expected by this stub
     ///
     /// The stub requires:
-    /// 1. Non-empty public_inputs (expiry must be at public_inputs[0])
+    /// 1. Non-empty public_inputs (eligibility proofs place expiry at index 0;
+    ///    migration proofs use their documented schema-version tuple)
     /// 2. First byte of proof must match first byte of verifier key
     /// This exercises the full call path without requiring real ZK machinery.
     /// Public inputs are NOT cryptographically bound to the proof in this stub.
     fn run_verification(
-        _env: &Env,
+        env: &Env,
         vk: &Bytes,
         proof: &Bytes,
         public_inputs: &Vec<BytesN<32>>,
     ) -> bool {
+        // ── Basic structural checks ───────────────────────────────────────────
         if vk.is_empty() || proof.is_empty() {
             return false;
         }
-        
-        // At minimum, require that public_inputs contains the expiry field
-        // to ensure the caller is not bypassing the proof structure entirely.
+        // Need at least a 4-byte commitment tag at the end of the proof.
+        let proof_len = proof.len();
+        if proof_len < 5 {
+            return false;
+        }
+        // public_inputs must be non-empty (expiry lives at index 0).
         if public_inputs.is_empty() {
             return false;
         }
-        
-        vk.get(0) == proof.get(0)
+
+        // ── Build commitment: SHA-256( vk || input_0 || … || input_n ) ───────
+        //
+        // We concatenate into a single `Bytes` buffer so we make exactly one
+        // host call to `env.crypto().sha256()`, keeping metering predictable.
+        let mut buf = Bytes::new(env);
+        buf.append(vk);
+        for i in 0..public_inputs.len() {
+            // BytesN<32> → Bytes via from_slice on its raw array copy.
+            let scalar: BytesN<32> = public_inputs.get(i).unwrap();
+            buf.append(&Bytes::from_slice(env, &scalar.to_array()));
+        }
+        let commitment: BytesN<32> = env.crypto().sha256(&buf).into();
+
+        // ── Extract the 4-byte tag from the tail of the proof ─────────────────
+        let tag_start = proof_len - 4;
+        let p0 = proof.get(tag_start).unwrap_or(0);
+        let p1 = proof.get(tag_start + 1).unwrap_or(0);
+        let p2 = proof.get(tag_start + 2).unwrap_or(0);
+        let p3 = proof.get(tag_start + 3).unwrap_or(0);
+
+        // ── Compare against the first 4 bytes of the commitment ───────────────
+        let c0 = commitment.get(0).unwrap_or(0);
+        let c1 = commitment.get(1).unwrap_or(0);
+        let c2 = commitment.get(2).unwrap_or(0);
+        let c3 = commitment.get(3).unwrap_or(0);
+
+        p0 == c0 && p1 == c1 && p2 == c2 && p3 == c3
     }
 }

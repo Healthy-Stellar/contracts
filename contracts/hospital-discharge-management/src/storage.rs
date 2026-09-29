@@ -116,3 +116,8 @@ pub fn get_hospital_registry(env: &Env) -> Result<Address, Error> {
         .get(&DataKey::HospitalRegistry)
         .ok_or(Error::Unauthorized)
 }
+
+// Initialization guard
+pub fn is_initialized(env: &Env) -> bool {
+    env.storage().instance().has(&DataKey::HospitalRegistry)
+}

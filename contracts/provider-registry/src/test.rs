@@ -2,7 +2,7 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::Address as _, Address, BytesN, Env, String,
+    testutils::Address as _, testutils::Ledger as _, Address, BytesN, Env, String,
 };
 
 fn dummy_hash(env: &Env, byte: u8) -> BytesN<32> {
@@ -342,4 +342,209 @@ fn test_batch_register_providers_over_limit_fails() {
         .unwrap_err()
         .unwrap();
     assert_eq!(err, Error::BatchTooLarge);
+}
+
+// ── admin rotation ────────────────────────────────────────────────────────────
+
+#[test]
+fn test_admin_rotation_success() {
+    let (env, admin, client) = setup();
+    let new_admin = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &new_admin);
+    client.accept_admin_rotation(&new_admin);
+
+    // New admin can perform admin-only actions; old admin cannot.
+    let provider = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    client.register_provider(
+        &new_admin,
+        &provider,
+        &String::from_str(&env, "Dr. New"),
+        &String::from_str(&env, "General"),
+        &String::from_str(&env, "LIC-NEW"),
+        &dummy_hash(&env, 1),
+        &issuer,
+        &dummy_hash(&env, 2),
+        &u64::MAX,
+        &dummy_hash(&env, 3),
+    );
+    assert!(client.is_provider(&provider));
+
+    let err = client
+        .try_revoke_provider(&admin, &provider)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::Unauthorized);
+}
+
+#[test]
+fn test_propose_rotation_double_propose_returns_error() {
+    let (env, admin, client) = setup();
+    let first = Address::generate(&env);
+    let second = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &first);
+
+    let err = client
+        .try_propose_admin_rotation(&admin, &second)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::RotationPending);
+}
+
+#[test]
+fn test_accept_rotation_wrong_address_returns_error() {
+    let (env, admin, client) = setup();
+    let pending = Address::generate(&env);
+    let stranger = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &pending);
+
+    let err = client
+        .try_accept_admin_rotation(&stranger)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::NotPendingAdmin);
+    // Pending state must still be intact after a failed accept.
+    client.accept_admin_rotation(&pending);
+}
+
+#[test]
+fn test_accept_rotation_without_proposal_returns_error() {
+    let (env, _, client) = setup();
+    let stranger = Address::generate(&env);
+
+    let err = client
+        .try_accept_admin_rotation(&stranger)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::NoRotationPending);
+}
+
+#[test]
+fn test_accept_rotation_after_expiry_returns_error_and_clears_state() {
+    let (env, admin, client) = setup();
+    let pending = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &pending);
+
+    // Advance the ledger timestamp past the 24-hour window.
+    env.ledger().with_mut(|l| {
+        l.timestamp += ADMIN_ROTATION_WINDOW + 1;
+    });
+
+    let err = client
+        .try_accept_admin_rotation(&pending)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::RotationExpired);
+
+    // PendingAdmin must have been cleared; a new proposal must be accepted.
+    client.propose_admin_rotation(&admin, &pending);
+    client.accept_admin_rotation(&pending);
+}
+
+#[test]
+fn test_accept_rotation_at_exact_expiry_boundary_succeeds() {
+    let (env, admin, client) = setup();
+    let pending = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &pending);
+
+    // Exactly at the expiry timestamp the rotation is still valid
+    // (contract uses `> expiry`, so equality is within the window).
+    env.ledger().with_mut(|l| {
+        l.timestamp += ADMIN_ROTATION_WINDOW;
+    });
+
+    client.accept_admin_rotation(&pending);
+
+    // Confirm the new admin is active.
+    let provider = Address::generate(&env);
+    register_provider_with_anchor(&env, &client, &pending, &provider);
+    assert!(client.is_provider(&provider));
+}
+
+#[test]
+fn test_propose_rotation_non_admin_returns_error() {
+    let (env, _, client) = setup();
+    let stranger = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    let err = client
+        .try_propose_admin_rotation(&stranger, &new_admin)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::Unauthorized);
+}
+
+// ── reactivate_provider ───────────────────────────────────────────────────────
+
+#[test]
+fn test_reactivate_provider_restores_active_and_clears_revoked_at() {
+    let (env, admin, client) = setup();
+    let provider = Address::generate(&env);
+
+    register_provider_with_anchor(&env, &client, &admin, &provider);
+    client.revoke_provider(&admin, &provider);
+
+    // Confirm provider is inactive and has a revoked_at timestamp.
+    let profile = client.get_provider_profile(&provider);
+    assert!(!profile.active);
+    assert!(profile.credential.revoked_at.is_some());
+    assert!(!client.is_provider(&provider));
+
+    client.reactivate_provider(&admin, &provider);
+
+    let profile = client.get_provider_profile(&provider);
+    assert!(profile.active);
+    assert!(profile.credential.revoked_at.is_none());
+    assert!(client.is_provider(&provider));
+}
+
+#[test]
+fn test_reactivate_provider_non_admin_returns_error() {
+    let (env, admin, client) = setup();
+    let non_admin = Address::generate(&env);
+    let provider = Address::generate(&env);
+
+    register_provider_with_anchor(&env, &client, &admin, &provider);
+    client.revoke_provider(&admin, &provider);
+
+    let err = client
+        .try_reactivate_provider(&non_admin, &provider)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::Unauthorized);
+}
+
+#[test]
+fn test_reactivate_unknown_provider_returns_error() {
+    let (env, admin, client) = setup();
+    let nobody = Address::generate(&env);
+
+    let err = client
+        .try_reactivate_provider(&admin, &nobody)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::RecordNotFound);
+}
+
+#[test]
+fn test_reactivate_already_active_provider_is_idempotent() {
+    // reactivate_provider on an already-active provider should succeed and
+    // leave the profile active with no revoked_at (no-op semantics).
+    let (env, admin, client) = setup();
+    let provider = Address::generate(&env);
+
+    register_provider_with_anchor(&env, &client, &admin, &provider);
+    assert!(client.is_provider(&provider));
+
+    client.reactivate_provider(&admin, &provider);
+
+    let profile = client.get_provider_profile(&provider);
+    assert!(profile.active);
+    assert!(profile.credential.revoked_at.is_none());
+    assert!(client.is_provider(&provider));
 }

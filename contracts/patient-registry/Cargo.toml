@@ -9,6 +9,9 @@ publish = false
 crate-type = ["lib", "cdylib"]
 doctest = false
 
+[features]
+testutils = ["soroban-sdk/testutils"]
+
 [dependencies]
 shared = { workspace = true }
 soroban-sdk = { workspace = true }

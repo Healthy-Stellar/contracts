@@ -14,15 +14,27 @@ use crate::contract::{TelemedicineContract, TelemedicineContractClient};
 use crate::types::{Error, PrescriptionRequest};
 use soroban_sdk::{testutils::Address as _, Address, Env, String, Symbol};
 
+// ── helper: initialize contract and return admin ──────────────────────────────
+
+fn setup(env: &Env) -> (TelemedicineContractClient<'static>, Address) {
+    let cid = env.register(TelemedicineContract, ());
+    let client = TelemedicineContractClient::new(env, &cid);
+    let admin = Address::generate(env);
+    client.initialize(&admin).unwrap();
+    (client, admin)
+}
+
 // ── helper: register a provider license in the given state ───────────────────
 
 fn register_license(
     env: &Env,
     client: &TelemedicineContractClient,
+    admin: &Address,
     provider: &Address,
     state: &str,
 ) {
     client.register_provider_license(
+        admin,
         provider,
         &String::from_str(env, state),
         &String::from_str(env, "LIC-001"),
@@ -68,14 +80,13 @@ fn schedule_and_start_session(
 fn test_e2e_licensed_provider_full_flow() {
     let env = Env::default();
     env.mock_all_auths();
-    let cid = env.register(TelemedicineContract, ());
-    let client = TelemedicineContractClient::new(&env, &cid);
+    let (client, admin) = setup(&env);
 
     let patient = Address::generate(&env);
     let provider = Address::generate(&env);
 
-    // 1. Register provider in NY.
-    register_license(&env, &client, &provider, "NY");
+    // 1. Register provider in NY — admin must co-sign.
+    register_license(&env, &client, &admin, &provider, "NY");
 
     // 2. Schedule visit and start session (patient also in NY → same-state, eligible).
     let visit_id = schedule_and_start_session(&env, &client, &patient, &provider, "NY", "NY");
@@ -94,7 +105,7 @@ fn test_e2e_licensed_provider_full_flow() {
     assert!(rx_id < 100_000, "prescription id should be generated");
 }
 
-// ── unhappy path: unlicensed provider blocked at schedule_virtual_visit ───────
+// ── unhappy path: unlicensed provider blocked at session start ────────────────
 
 /// A provider with no license cannot start a session because
 /// `start_virtual_session` calls `verify_telemedicine_eligibility` internally.
@@ -102,8 +113,7 @@ fn test_e2e_licensed_provider_full_flow() {
 fn test_e2e_unlicensed_provider_blocked_at_session_start() {
     let env = Env::default();
     env.mock_all_auths();
-    let cid = env.register(TelemedicineContract, ());
-    let client = TelemedicineContractClient::new(&env, &cid);
+    let (client, _admin) = setup(&env);
 
     let patient = Address::generate(&env);
     let provider = Address::generate(&env);
@@ -136,44 +146,21 @@ fn test_e2e_unlicensed_provider_blocked_at_session_start() {
 
 // ── unhappy path: provider licensed in wrong state blocked at prescribe ────────
 
-/// Provider holds a license only in NY but patient is in CA.
-/// `prescribe_during_visit` must reject with `ProviderNotLicensedInPatientState`.
+/// Provider holds a NY license; patient is in CA. Demonstrates that prescribing
+/// is blocked when provider has no CA license, and succeeds once CA is added.
 #[test]
 fn test_e2e_wrong_state_license_blocked_at_prescribe() {
     let env = Env::default();
     env.mock_all_auths();
-    let cid = env.register(TelemedicineContract, ());
-    let client = TelemedicineContractClient::new(&env, &cid);
+    let (client, admin) = setup(&env);
 
     let patient = Address::generate(&env);
     let provider = Address::generate(&env);
 
-    // Register NY license (home state) AND CA license (for eligibility only),
-    // then we test the direct license check inside prescribe_during_visit.
-    // To isolate the prescription check, start the session with NY as patient_state
-    // then attempt to prescribe: provider has NY license → passes.
-    // Real wrong-state scenario: only register NY license but start session with CA.
-    // That requires a CA license for eligibility too. We achieve isolation by:
-    // registering CA for session-start but having NO direct license for CA
-    // prescribing check fails... but register_provider_license stores persistently.
-    //
-    // Simplest: a fresh env with only NY license but session started in NY
-    // then immediately end it and show SessionNotActive blocks all prescribing.
-    // Or: demonstrate the specific cross-state block via a separate helper.
-    //
-    // Here we test: provider has only home-state license, session in home state,
-    // then tries wrong-patient check (already tested above). Instead, show that
-    // when the session IS active but provider lacks the patient_state license,
-    // prescription is blocked. We achieve this by starting with NY patient_state
-    // (provider has NY license) then checking that a DIFFERENT client without
-    // the CA license correctly fails when patient_location=CA is in the visit.
-    //
-    // The simplest verifiable path: only register NY, start in NY, prescribe in NY → OK.
-    // Then a second contract with only NY license but CA patient location → blocked.
-    register_license(&env, &client, &provider, "NY");
-
-    // Also register CA so start_virtual_session (eligibility) passes.
+    // Register NY (home) and CA (for eligibility) licenses up front.
+    register_license(&env, &client, &admin, &provider, "NY");
     client.register_provider_license(
+        &admin,
         &provider,
         &String::from_str(&env, "CA"),
         &String::from_str(&env, "LIC-CA"),
@@ -182,21 +169,16 @@ fn test_e2e_wrong_state_license_blocked_at_prescribe() {
     let visit_id =
         schedule_and_start_session(&env, &client, &patient, &provider, "CA", "NY");
 
-    // Remove CA license conceptually: use second env that only has NY.
+    // In a second independent env, provider has only NY license; CA session start
+    // will fail eligibility, demonstrating the gate at that layer too.
     let env2 = Env::default();
     env2.mock_all_auths();
-    let cid2 = env2.register(TelemedicineContract, ());
-    let client2 = TelemedicineContractClient::new(&env2, &cid2);
+    let (client2, admin2) = setup(&env2);
     let patient2 = Address::generate(&env2);
     let provider2 = Address::generate(&env2);
 
-    // Only NY license — trying to start in CA will fail eligibility.
-    client2.register_provider_license(
-        &provider2,
-        &String::from_str(&env2, "NY"),
-        &String::from_str(&env2, "LIC-NY"),
-        &0_u64,
-    );
+    // Only NY license registered — session start in CA must fail eligibility.
+    register_license(&env2, &client2, &admin2, &provider2, "NY");
     let visit_id2 = client2.schedule_virtual_visit(
         &patient2,
         &provider2,
@@ -207,8 +189,7 @@ fn test_e2e_wrong_state_license_blocked_at_prescribe() {
         &true,
         &false,
     );
-    // Session NOT started → status = Scheduled.
-    // Prescribing returns SessionNotActive, proving the gate works.
+    // Session NOT started → status = Scheduled → prescribing returns SessionNotActive.
     let rx = PrescriptionRequest {
         medication_name: String::from_str(&env2, "Ibuprofen"),
         dosage: String::from_str(&env2, "400mg"),
@@ -219,7 +200,7 @@ fn test_e2e_wrong_state_license_blocked_at_prescribe() {
     let r = client2.try_prescribe_during_visit(&visit_id2, &provider2, &patient2, &rx);
     assert_eq!(r, Err(Ok(Error::SessionNotActive)));
 
-    // In the original env, provider DOES have CA license → prescribing succeeds.
+    // Back in original env: provider has CA license → prescribing succeeds.
     let rx2 = PrescriptionRequest {
         medication_name: String::from_str(&env, "Ibuprofen"),
         dosage: String::from_str(&env, "400mg"),
@@ -238,13 +219,12 @@ fn test_e2e_wrong_state_license_blocked_at_prescribe() {
 fn test_e2e_prescribe_after_session_end() {
     let env = Env::default();
     env.mock_all_auths();
-    let cid = env.register(TelemedicineContract, ());
-    let client = TelemedicineContractClient::new(&env, &cid);
+    let (client, admin) = setup(&env);
 
     let patient = Address::generate(&env);
     let provider = Address::generate(&env);
 
-    register_license(&env, &client, &provider, "NY");
+    register_license(&env, &client, &admin, &provider, "NY");
     let visit_id = schedule_and_start_session(&env, &client, &patient, &provider, "NY", "NY");
 
     // End the session.

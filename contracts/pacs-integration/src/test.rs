@@ -165,7 +165,39 @@ fn comparison_study_returns_prior_match() {
     let prior = register_ct_chest(&env, &client, &patient, &provider);
     let current = register_ct_chest(&env, &client, &patient, &provider);
 
+    // Ordering provider is always authorized.
+    let criteria = ComparisonCriteria {
+        modality: Some(Symbol::new(&env, "CT")),
+        body_part: String::from_str(&env, "Chest"),
+        max_age_days: 365,
+        same_side: false,
+    };
+
+    let matches = client.request_comparison_study(&current, &provider, &criteria);
+    assert!(matches.contains(prior));
+    assert!(!matches.contains(current));
+}
+
+#[test]
+fn comparison_study_granted_radiologist_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, patient, provider) = setup(&env);
+
+    let prior = register_ct_chest(&env, &client, &patient, &provider);
+    let current = register_ct_chest(&env, &client, &patient, &provider);
+
     let rad = Address::generate(&env);
+    // Patient grants the radiologist access to the current study.
+    client.grant_imaging_access(
+        &current,
+        &patient,
+        &rad,
+        &Symbol::new(&env, "view_only"),
+        &String::from_str(&env, "comparison-read"),
+        &None,
+    );
+
     let criteria = ComparisonCriteria {
         modality: Some(Symbol::new(&env, "CT")),
         body_part: String::from_str(&env, "Chest"),
@@ -179,6 +211,28 @@ fn comparison_study_returns_prior_match() {
 }
 
 #[test]
+fn comparison_study_unauthorized_caller_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, patient, provider) = setup(&env);
+
+    register_ct_chest(&env, &client, &patient, &provider);
+    let current = register_ct_chest(&env, &client, &patient, &provider);
+
+    // Unrelated address — not ordering provider, no grant.
+    let stranger = Address::generate(&env);
+    let criteria = ComparisonCriteria {
+        modality: Some(Symbol::new(&env, "CT")),
+        body_part: String::from_str(&env, "Chest"),
+        max_age_days: 365,
+        same_side: false,
+    };
+
+    let result = client.try_request_comparison_study(&current, &stranger, &criteria);
+    assert!(matches!(result, Err(Ok(Error::Unauthorized))));
+}
+
+#[test]
 fn comparison_study_wrong_modality_no_match() {
     let env = Env::default();
     env.mock_all_auths();
@@ -187,14 +241,14 @@ fn comparison_study_wrong_modality_no_match() {
     register_ct_chest(&env, &client, &patient, &provider);
     let current = register_ct_chest(&env, &client, &patient, &provider);
 
-    let rad = Address::generate(&env);
+    // Provider is the authorized caller; test is purely about filter logic.
     let criteria = ComparisonCriteria {
         modality: Some(Symbol::new(&env, "MRI")),
         body_part: String::from_str(&env, "Chest"),
         max_age_days: 365,
         same_side: false,
     };
-    let matches = client.request_comparison_study(&current, &rad, &criteria);
+    let matches = client.request_comparison_study(&current, &provider, &criteria);
     assert_eq!(matches.len(), 0);
 }
 
@@ -291,12 +345,68 @@ fn create_imaging_cd_ok() {
 }
 
 #[test]
-fn anonymize_study_returns_uid() {
+fn anonymize_study_returns_uid_for_patient() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, patient, provider) = setup(&env);
+    let sid = register_ct_chest(&env, &client, &patient, &provider);
+
+    // Patient (study owner) may anonymize.
+    let uid = client.anonymize_study(
+        &sid,
+        &patient,
+        &Symbol::new(&env, "full"),
+        &String::from_str(&env, "cancer study"),
+        &1_u32,
+    );
+    assert!(!uid.is_empty());
+
+    // Different epoch produces an unlinkable UID.
+    let uid2 = client.anonymize_study(
+        &sid,
+        &patient,
+        &Symbol::new(&env, "full"),
+        &String::from_str(&env, "cancer study"),
+        &2_u32,
+    );
+    assert_ne!(uid, uid2);
+}
+
+#[test]
+fn anonymize_study_returns_uid_for_ordering_provider() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, patient, provider) = setup(&env);
+    let sid = register_ct_chest(&env, &client, &patient, &provider);
+
+    // Ordering provider may also anonymize without a separate grant.
+    let uid = client.anonymize_study(
+        &sid,
+        &provider,
+        &Symbol::new(&env, "full"),
+        &String::from_str(&env, "research"),
+        &1_u32,
+    );
+    assert!(!uid.is_empty());
+}
+
+#[test]
+fn anonymize_study_returns_uid_for_granted_researcher() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, patient, provider) = setup(&env);
     let sid = register_ct_chest(&env, &client, &patient, &provider);
     let researcher = Address::generate(&env);
+
+    // Patient grants the researcher access with the matching purpose.
+    client.grant_imaging_access(
+        &sid,
+        &patient,
+        &researcher,
+        &Symbol::new(&env, "research"),
+        &String::from_str(&env, "cancer study"),
+        &None,
+    );
 
     let uid = client.anonymize_study(
         &sid,
@@ -306,15 +416,25 @@ fn anonymize_study_returns_uid() {
         &1_u32,
     );
     assert!(!uid.is_empty());
-    // Different epoch produces a different (unlinkable) UID.
-    let uid2 = client.anonymize_study(
+}
+
+#[test]
+fn anonymize_study_unauthorized_researcher_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, patient, provider) = setup(&env);
+    let sid = register_ct_chest(&env, &client, &patient, &provider);
+    let stranger = Address::generate(&env);
+
+    // No grant and not patient/provider — must be rejected.
+    let result = client.try_anonymize_study(
         &sid,
-        &researcher,
+        &stranger,
         &Symbol::new(&env, "full"),
         &String::from_str(&env, "cancer study"),
-        &2_u32,
+        &1_u32,
     );
-    assert_ne!(uid, uid2);
+    assert!(matches!(result, Err(Ok(Error::Unauthorized))));
 }
 
 #[test]

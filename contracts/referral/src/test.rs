@@ -399,3 +399,62 @@ fn test_update_referral_status_allows_legal_transitions() {
         &None,
     );
 }
+
+#[test]
+fn test_referring_provider_cannot_apply_receiving_provider_statuses() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ReferralContract, ());
+    let client = ReferralContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let referring_provider = Address::generate(&env);
+    let patient_id = Address::generate(&env);
+    let receiving_provider = Address::generate(&env);
+
+    let pr_client = setup_provider_registry(&env, &admin, &contract_id);
+    register_provider(&env, &pr_client, &admin, &receiving_provider);
+
+    let referral_id = client.create_referral(
+        &referring_provider,
+        &patient_id,
+        &receiving_provider,
+        &Symbol::new(&env, "Ortho"),
+        &String::from_str(&env, "Knee pain"),
+        &Symbol::new(&env, "Routine"),
+        &BytesN::from_array(&env, &[1; 32]),
+        &Vec::new(&env),
+    );
+
+    for status in ["Accepted", "Declined"] {
+        let err = client
+            .try_update_referral_status(
+                &referral_id,
+                &referring_provider,
+                &Symbol::new(&env, status),
+                &None,
+            )
+            .unwrap_err()
+            .unwrap();
+        assert_eq!(err, Error::NotAuthorized);
+    }
+
+    client.update_referral_status(
+        &referral_id,
+        &receiving_provider,
+        &Symbol::new(&env, "Accepted"),
+        &None,
+    );
+
+    let err = client
+        .try_update_referral_status(
+            &referral_id,
+            &referring_provider,
+            &Symbol::new(&env, "Completed"),
+            &None,
+        )
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::NotAuthorized);
+}
