@@ -218,6 +218,15 @@ impl ReferralContract {
             return Err(Error::InvalidStatusTransition);
         };
 
+        if referral.receiving_provider != provider_id
+            && matches!(
+                &new_status,
+                ReferralStatus::Accepted | ReferralStatus::Declined | ReferralStatus::Completed
+            )
+        {
+            return Err(Error::NotAuthorized);
+        }
+
         if !Self::is_valid_status_transition(&referral.status, &new_status) {
             return Err(Error::InvalidStatusTransition);
         }

@@ -6,6 +6,7 @@ use soroban_sdk::{
     contract, contractclient, contractimpl, panic_with_error, xdr::ToXdr, Address, Bytes, BytesN,
     Env, String, Symbol, Vec,
 };
+use ttl_config::{extend_critical_ttl, extend_critical_ttl_if_exists};
 
 const SESSION_TTL_SECONDS: u64 = 60 * 60;
 const DEFAULT_MAX_SESSIONS_PER_WINDOW: u32 = 20;
@@ -157,9 +158,9 @@ impl TelemedicineContract {
             recording_consent: Some(recording_consent),
         };
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::VirtualVisit(visit_id), &visit);
+        let visit_key = DataKey::VirtualVisit(visit_id);
+        env.storage().persistent().set(&visit_key, &visit);
+        extend_critical_ttl(&env, &visit_key);
         env.storage()
             .instance()
             .set(&DataKey::VisitCount, &visit_id);
@@ -194,10 +195,12 @@ impl TelemedicineContract {
     ) -> Result<(), Error> {
         provider_id.require_auth();
 
+        let visit_key = DataKey::VirtualVisit(visit_id);
+        extend_critical_ttl_if_exists(&env, &visit_key);
         let visit: VirtualVisit = env
             .storage()
             .persistent()
-            .get(&DataKey::VirtualVisit(visit_id))
+            .get(&visit_key)
             .ok_or_else(|| {
                 panic_with_error!(&env, Error::VisitNotFound);
             })?;
@@ -232,10 +235,12 @@ impl TelemedicineContract {
         // Check rate limit: max sessions per provider per window
         Self::check_and_update_rate_limit(&env, &provider_id)?;
 
+        let visit_key = DataKey::VirtualVisit(visit_id);
+        extend_critical_ttl_if_exists(&env, &visit_key);
         let mut visit: VirtualVisit = env
             .storage()
             .persistent()
-            .get(&DataKey::VirtualVisit(visit_id))
+            .get(&visit_key)
             .unwrap_or_else(|| panic_with_error!(&env, Error::VisitNotFound));
 
         if visit.provider_id != provider_id {
@@ -262,9 +267,8 @@ impl TelemedicineContract {
         visit.session_start = Some(session_start_time);
         visit.patient_location = patient_location_state;
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::VirtualVisit(visit_id), &visit);
+        env.storage().persistent().set(&visit_key, &visit);
+        extend_critical_ttl(&env, &visit_key);
 
         let nonce = env
             .storage()
@@ -290,9 +294,9 @@ impl TelemedicineContract {
             expires_at: session_start_time + SESSION_TTL_SECONDS,
             used: false,
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey::Session(visit_id), &session);
+        let session_key = DataKey::Session(visit_id);
+        env.storage().persistent().set(&session_key, &session);
+        extend_critical_ttl(&env, &session_key);
 
         env.events()
             .publish((Symbol::new(&env, "session_started"), visit_id), ());
@@ -308,10 +312,12 @@ impl TelemedicineContract {
     ) -> Result<(), Error> {
         caller.require_auth();
 
+        let session_key = DataKey::Session(visit_id);
+        extend_critical_ttl_if_exists(&env, &session_key);
         let mut session: SessionRecord = env
             .storage()
             .persistent()
-            .get(&DataKey::Session(visit_id))
+            .get(&session_key)
             .unwrap_or_else(|| panic_with_error!(&env, Error::InvalidSessionToken));
 
         if session.visit_id != visit_id || session.caller != caller {
@@ -328,9 +334,8 @@ impl TelemedicineContract {
         }
 
         session.used = true;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Session(visit_id), &session);
+        env.storage().persistent().set(&session_key, &session);
+        extend_critical_ttl(&env, &session_key);
 
         Ok(())
     }
@@ -346,10 +351,12 @@ impl TelemedicineContract {
     ) -> Result<(), Error> {
         provider_id.require_auth();
 
+        let visit_key = DataKey::VirtualVisit(visit_id);
+        extend_critical_ttl_if_exists(&env, &visit_key);
         let visit: VirtualVisit = env
             .storage()
             .persistent()
-            .get(&DataKey::VirtualVisit(visit_id))
+            .get(&visit_key)
             .unwrap_or_else(|| panic_with_error!(&env, Error::VisitNotFound));
 
         if visit.provider_id != provider_id {
@@ -373,10 +380,12 @@ impl TelemedicineContract {
     ) -> Result<(), Error> {
         provider_id.require_auth();
 
+        let visit_key = DataKey::VirtualVisit(visit_id);
+        extend_critical_ttl_if_exists(&env, &visit_key);
         let mut visit: VirtualVisit = env
             .storage()
             .persistent()
-            .get(&DataKey::VirtualVisit(visit_id))
+            .get(&visit_key)
             .unwrap_or_else(|| panic_with_error!(&env, Error::VisitNotFound));
 
         if visit.provider_id != provider_id {
@@ -390,9 +399,8 @@ impl TelemedicineContract {
         visit.status = VisitStatus::Completed;
         visit.session_end = Some(session_end_time);
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::VirtualVisit(visit_id), &visit);
+        env.storage().persistent().set(&visit_key, &visit);
+        extend_critical_ttl(&env, &visit_key);
         env.events().publish(
             (Symbol::new(&env, "session_ended"), visit_id),
             session_duration,
@@ -412,6 +420,7 @@ impl TelemedicineContract {
 
         // 1. Look up the provider's license for the patient's jurisdiction (where care is delivered).
         let license_key = DataKey::LicenseRegistry(provider_id.clone(), patient_state.clone());
+        extend_critical_ttl_if_exists(&env, &license_key);
         let home_license: Option<ProviderLicense> =
             env.storage().persistent().get(&license_key);
 
@@ -433,6 +442,7 @@ impl TelemedicineContract {
         if patient_state == provider_state {
             let provider_home_key =
                 DataKey::LicenseRegistry(provider_id.clone(), provider_state.clone());
+            extend_critical_ttl_if_exists(&env, &provider_home_key);
             let provider_home: Option<ProviderLicense> =
                 env.storage().persistent().get(&provider_home_key);
             if let Some(lic) = provider_home {
@@ -458,6 +468,7 @@ impl TelemedicineContract {
                     // Verify provider has a valid license in their home state.
                     let provider_home_key =
                         DataKey::LicenseRegistry(provider_id.clone(), provider_state.clone());
+                    extend_critical_ttl_if_exists(&env, &provider_home_key);
                     let provider_home: Option<ProviderLicense> =
                         env.storage().persistent().get(&provider_home_key);
                     if let Some(lic) = provider_home {
@@ -519,9 +530,9 @@ impl TelemedicineContract {
             active: true,
         };
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::LicenseRegistry(provider_id, jurisdiction), &license);
+        let license_key = DataKey::LicenseRegistry(provider_id, jurisdiction);
+        env.storage().persistent().set(&license_key, &license);
+        extend_critical_ttl(&env, &license_key);
         Ok(())
     }
 
@@ -565,10 +576,12 @@ impl TelemedicineContract {
     ) -> Result<(), Error> {
         reporter.require_auth();
 
+        let visit_key = DataKey::VirtualVisit(visit_id);
+        extend_critical_ttl_if_exists(&env, &visit_key);
         let visit: VirtualVisit = env
             .storage()
             .persistent()
-            .get(&DataKey::VirtualVisit(visit_id))
+            .get(&visit_key)
             .unwrap_or_else(|| panic_with_error!(&env, Error::VisitNotFound));
 
         if visit.provider_id != reporter && visit.patient_id != reporter {
@@ -592,10 +605,12 @@ impl TelemedicineContract {
     ) -> Result<u64, Error> {
         provider_id.require_auth();
 
+        let visit_key = DataKey::VirtualVisit(visit_id);
+        extend_critical_ttl_if_exists(&env, &visit_key);
         let visit: VirtualVisit = env
             .storage()
             .persistent()
-            .get(&DataKey::VirtualVisit(visit_id))
+            .get(&visit_key)
             .unwrap_or_else(|| panic_with_error!(&env, Error::VisitNotFound));
 
         if visit.provider_id != provider_id {
@@ -616,6 +631,7 @@ impl TelemedicineContract {
             let now = env.ledger().timestamp();
             let lic_key =
                 DataKey::LicenseRegistry(provider_id.clone(), patient_state.clone());
+            extend_critical_ttl_if_exists(&env, &lic_key);
             let has_license = env
                 .storage()
                 .persistent()
@@ -649,9 +665,11 @@ impl TelemedicineContract {
             .persistent()
             .set(&DataKey::PrescriptionCount, &rx_id);
 
+        let prescription_key = DataKey::Prescription(rx_id);
         env.storage()
             .persistent()
-            .set(&DataKey::Prescription(rx_id), &prescription_details);
+            .set(&prescription_key, &prescription_details);
+        extend_critical_ttl(&env, &prescription_key);
 
         env.events().publish(
             (Symbol::new(&env, "prescription_issued"), visit_id),
@@ -691,9 +709,11 @@ impl TelemedicineContract {
         env: Env,
         rx_id: u64,
     ) -> Result<PrescriptionRequest, Error> {
+        let prescription_key = DataKey::Prescription(rx_id);
+        extend_critical_ttl_if_exists(&env, &prescription_key);
         env.storage()
             .persistent()
-            .get(&DataKey::Prescription(rx_id))
+            .get(&prescription_key)
             .ok_or(Error::VisitNotFound)
     }
 }

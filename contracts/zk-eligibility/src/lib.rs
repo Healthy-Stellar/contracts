@@ -232,7 +232,10 @@ impl ZkEligibility {
     /// - Nullifiers from schemas deprecated WITHOUT migration are treated as
     ///   invalid, allowing subjects to re-verify under the new key.
     ///
-    /// `migration_proof` is verified against the new schema's verifier key.
+    /// `migration_proof` is verified against the new schema's verifier key
+    /// using three public inputs: the `MIGR` domain tag, `old_version`, and
+    /// `new_version`, each encoded as a big-endian u32 right-aligned in 32
+    /// bytes. The migration circuit must enforce these inputs.
     pub fn migrate_schema(
         env: Env,
         admin: Address,
@@ -260,14 +263,15 @@ impl ZkEligibility {
             return Err(Error::SchemaNotFound);
         }
 
-        // Migration proofs are verified against the new schema's VK.
-        // The single public input is a 32-byte truncation/hash of the new VK
-        // itself, which binds the migration proof to this specific schema
-        // without requiring a user-supplied expiry timestamp.
-        let vk_hash: BytesN<32> = env.crypto().sha256(&new_entry.vk).into();
-        let mut migration_inputs: Vec<BytesN<32>> = Vec::new(&env);
-        migration_inputs.push_back(vk_hash);
-        if !Self::run_verification(&env, &new_entry.vk, &migration_proof, &migration_inputs) {
+        let mut public_inputs = Vec::new(&env);
+        public_inputs.push_back(Self::encode_u32_public_input(
+            &env,
+            u32::from_be_bytes(*b"MIGR"),
+        ));
+        public_inputs.push_back(Self::encode_u32_public_input(&env, old_version));
+        public_inputs.push_back(Self::encode_u32_public_input(&env, new_version));
+
+        if !Self::run_verification(&env, &new_entry.vk, &migration_proof, &public_inputs) {
             return Err(Error::VerificationFailed);
         }
 
@@ -604,6 +608,12 @@ impl ZkEligibility {
         ts
     }
 
+    fn encode_u32_public_input(env: &Env, value: u32) -> BytesN<32> {
+        let mut input = [0u8; 32];
+        input[28..].copy_from_slice(&value.to_be_bytes());
+        BytesN::from_array(env, &input)
+    }
+
     /// Cryptographic verification stub.
     ///
     /// ⚠️  SECURITY — TESTING STUB ONLY.  This is NOT a real ZK verifier.
@@ -636,11 +646,12 @@ impl ZkEligibility {
     ///
     /// ## Proof format expected by this stub
     ///
-    /// ```text
-    /// [ arbitrary_payload (0 .. proof.len()-4) ][ commitment[0..4] (last 4 bytes) ]
-    /// ```
-    ///
-    /// Total length must be ≥ 5 bytes (1 byte payload + 4-byte tag).
+    /// The stub requires:
+    /// 1. Non-empty public_inputs (eligibility proofs place expiry at index 0;
+    ///    migration proofs use their documented schema-version tuple)
+    /// 2. First byte of proof must match first byte of verifier key
+    /// This exercises the full call path without requiring real ZK machinery.
+    /// Public inputs are NOT cryptographically bound to the proof in this stub.
     fn run_verification(
         env: &Env,
         vk: &Bytes,

@@ -24,6 +24,7 @@
 //! mathematically. Authorization required before disbursement.
 
 use soroban_sdk::{contract,contracterror,contractimpl,contracttype,symbol_short,token,Address,Env,String};
+use ttl_config::{extend_critical_ttl, extend_critical_ttl_if_exists};
 #[contracterror]
 #[derive(Copy,Clone,Debug,Eq,PartialEq)]
 #[repr(u32)]
@@ -50,8 +51,11 @@ impl ScholarshipFundContract{
         let token_addr:Address=env.storage().instance().get(&DataKey::Token).ok_or(Error::NotInitialized)?;
         let pool=env.current_contract_address();
         token::Client::new(&env,&token_addr).transfer(&depositor,&pool,&amount);
-        let prev:i128=env.storage().persistent().get(&DataKey::Deposit(depositor.clone())).unwrap_or(0);
-        env.storage().persistent().set(&DataKey::Deposit(depositor.clone()),&(prev+amount));
+        let deposit_key = DataKey::Deposit(depositor.clone());
+        extend_critical_ttl_if_exists(&env, &deposit_key);
+        let prev:i128=env.storage().persistent().get(&deposit_key).unwrap_or(0);
+        env.storage().persistent().set(&deposit_key,&(prev+amount));
+        extend_critical_ttl(&env, &deposit_key);
         let pool_bal:i128=env.storage().instance().get(&DataKey::PoolBalance).unwrap_or(0);
         env.storage().instance().set(&DataKey::PoolBalance,&(pool_bal+amount));
         env.events().publish((symbol_short!("DEPOSIT"),depositor),amount);
@@ -60,7 +64,9 @@ impl ScholarshipFundContract{
     pub fn withdraw(env:Env,depositor:Address,amount:i128)->Result<(),Error>{
         depositor.require_auth();
         if amount<=0{return Err(Error::ZeroAmount);}
-        let held:i128=env.storage().persistent().get(&DataKey::Deposit(depositor.clone())).unwrap_or(0);
+        let deposit_key = DataKey::Deposit(depositor.clone());
+        extend_critical_ttl_if_exists(&env, &deposit_key);
+        let held:i128=env.storage().persistent().get(&deposit_key).unwrap_or(0);
         if held<amount{return Err(Error::InsufficientFunds);}
         let pool:i128=env.storage().instance().get(&DataKey::PoolBalance).unwrap_or(0);
         if pool<amount{return Err(Error::InsufficientFunds);}
@@ -69,7 +75,8 @@ impl ScholarshipFundContract{
         let token_addr:Address=env.storage().instance().get(&DataKey::Token).ok_or(Error::NotInitialized)?;
         let pool_addr=env.current_contract_address();
         token::Client::new(&env,&token_addr).transfer(&pool_addr,&depositor,&amount);
-        env.storage().persistent().set(&DataKey::Deposit(depositor.clone()),&(held-amount));
+        env.storage().persistent().set(&deposit_key,&(held-amount));
+        extend_critical_ttl(&env, &deposit_key);
         env.storage().instance().set(&DataKey::PoolBalance,&(pool-amount));
         env.events().publish((symbol_short!("WITHDRAW"),depositor),amount);
         Ok(())
@@ -93,10 +100,16 @@ impl ScholarshipFundContract{
         let stored:Address=env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
         if admin!=stored{return Err(Error::Unauthorized);}
         if amount<=0{return Err(Error::ZeroAmount);}
-        let eligible:bool=env.storage().persistent().get(&DataKey::Eligible(recipient.clone())).unwrap_or(false);
+        let eligible_key = DataKey::Eligible(recipient.clone());
+        extend_critical_ttl_if_exists(&env, &eligible_key);
+        let eligible:bool=env.storage().persistent().get(&eligible_key).unwrap_or(false);
         if !eligible{return Err(Error::RecipientNotEligible);}
-        let prior_awards:i128=env.storage().persistent().get(&DataKey::RecipientAwards(recipient.clone())).unwrap_or(0);
-        let cap:i128=env.storage().persistent().get(&DataKey::RecipientCap(recipient.clone())).unwrap_or(0);
+        let awards_key = DataKey::RecipientAwards(recipient.clone());
+        extend_critical_ttl_if_exists(&env, &awards_key);
+        let prior_awards:i128=env.storage().persistent().get(&awards_key).unwrap_or(0);
+        let cap_key = DataKey::RecipientCap(recipient.clone());
+        extend_critical_ttl_if_exists(&env, &cap_key);
+        let cap:i128=env.storage().persistent().get(&cap_key).unwrap_or(0);
         if cap>0 && prior_awards+amount>cap{return Err(Error::RecipientCapExceeded);}
         let pool:i128=env.storage().instance().get(&DataKey::PoolBalance).unwrap_or(0);
         if pool<amount{return Err(Error::InsufficientFunds);}
@@ -109,7 +122,8 @@ impl ScholarshipFundContract{
             let released=if amount<committed{amount}else{committed};
             env.storage().instance().set(&DataKey::CommittedFunds,&(committed-released));
         }
-        env.storage().persistent().set(&DataKey::RecipientAwards(recipient.clone()),&(prior_awards+amount));
+        env.storage().persistent().set(&awards_key,&(prior_awards+amount));
+        extend_critical_ttl(&env, &awards_key);
         env.events().publish((symbol_short!("DISBURSE"),recipient),(amount,reason));
         Ok(())
     }
@@ -118,7 +132,9 @@ impl ScholarshipFundContract{
         admin.require_auth();
         let stored:Address=env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
         if admin!=stored{return Err(Error::Unauthorized);}
-        env.storage().persistent().set(&DataKey::Eligible(recipient.clone()),&eligible);
+        let eligible_key = DataKey::Eligible(recipient.clone());
+        env.storage().persistent().set(&eligible_key,&eligible);
+        extend_critical_ttl(&env, &eligible_key);
         env.events().publish((symbol_short!("ELIGIBLE"),recipient),eligible);
         Ok(())
     }
@@ -129,13 +145,15 @@ impl ScholarshipFundContract{
         let stored:Address=env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
         if admin!=stored{return Err(Error::Unauthorized);}
         if cap<0{return Err(Error::ZeroAmount);}
-        env.storage().persistent().set(&DataKey::RecipientCap(recipient),&cap);
+        let cap_key = DataKey::RecipientCap(recipient);
+        env.storage().persistent().set(&cap_key,&cap);
+        extend_critical_ttl(&env, &cap_key);
         Ok(())
     }
     pub fn get_stats(env:Env)->FundStats{FundStats{pool_balance:env.storage().instance().get(&DataKey::PoolBalance).unwrap_or(0),committed_balance:env.storage().instance().get(&DataKey::CommittedFunds).unwrap_or(0)}}
-    pub fn get_deposit(env:Env,depositor:Address)->i128{env.storage().persistent().get(&DataKey::Deposit(depositor)).unwrap_or(0)}
+    pub fn get_deposit(env:Env,depositor:Address)->i128{let key=DataKey::Deposit(depositor);extend_critical_ttl_if_exists(&env,&key);env.storage().persistent().get(&key).unwrap_or(0)}
     /// Cumulative amount this recipient has received across all disbursements.
-    pub fn get_recipient_awards(env:Env,recipient:Address)->i128{env.storage().persistent().get(&DataKey::RecipientAwards(recipient)).unwrap_or(0)}
+    pub fn get_recipient_awards(env:Env,recipient:Address)->i128{let key=DataKey::RecipientAwards(recipient);extend_critical_ttl_if_exists(&env,&key);env.storage().persistent().get(&key).unwrap_or(0)}
 }
 #[cfg(test)]
 mod test;
