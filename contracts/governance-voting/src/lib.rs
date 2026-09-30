@@ -104,6 +104,79 @@ impl GovernanceVotingContract {
         Ok(())
     }
 
+    /// Propose transferring admin to `new_admin`. Must be confirmed within 24 hours.
+    pub fn propose_admin_rotation(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let stored: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        if admin != stored {
+            return Err(Error::Unauthorized);
+        }
+        if env.storage().instance().has(&DataKey::PendingAdmin) {
+            let expiry: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::RotationExpiry)
+                .unwrap_or(0);
+            if env.ledger().timestamp() <= expiry {
+                return Err(Error::RotationPending);
+            }
+            env.storage().instance().remove(&DataKey::PendingAdmin);
+            env.storage().instance().remove(&DataKey::RotationExpiry);
+        }
+        let expiry = env.ledger().timestamp() + ADMIN_ROTATION_WINDOW;
+        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        env.storage().instance().set(&DataKey::RotationExpiry, &expiry);
+        Ok(())
+    }
+
+    /// New admin confirms the rotation proposed by the current admin.
+    pub fn accept_admin_rotation(env: Env, new_admin: Address) -> Result<(), Error> {
+        new_admin.require_auth();
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoRotationPending)?;
+        if new_admin != pending {
+            return Err(Error::NotPendingAdmin);
+        }
+        let expiry: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RotationExpiry)
+            .unwrap_or(0);
+        if env.ledger().timestamp() > expiry {
+            return Err(Error::RotationExpired);
+        }
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage().instance().remove(&DataKey::RotationExpiry);
+        Ok(())
+    }
+
+    /// Cancel a pending admin rotation.
+    pub fn cancel_admin_rotation(env: Env, admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let stored: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        if admin != stored {
+            return Err(Error::Unauthorized);
+        }
+        if !env.storage().instance().has(&DataKey::PendingAdmin) {
+            return Err(Error::NoRotationPending);
+        }
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage().instance().remove(&DataKey::RotationExpiry);
+        Ok(())
+    }
+
     /// Register a member eligible to vote.
     pub fn register_member(env: Env, admin: Address, member: Address) -> Result<(), Error> {
         admin.require_auth();
@@ -245,6 +318,113 @@ impl GovernanceVotingContract {
 
         let mut is_member = false;
         let mut i = 0u32;
-        while i < member
+        while i < members.len() {
+            if let Some(member) = members.get(i) {
+                if member == voter {
+                    is_member = true;
+                    break;
+                }
+            }
+            i += 1;
+        }
 
-/* … truncated 5171 chars — edit only what you need near the top … */
+        if !is_member {
+            return Err(Error::Unauthorized);
+        }
+
+        let vote_key = DataKey::Vote(proposal_id, voter.clone());
+        if env.storage().persistent().has(&vote_key) {
+            return Err(Error::AlreadyVoted);
+        }
+
+        let mut proposal: Proposal = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Proposal(proposal_id))
+            .ok_or(Error::ProposalNotFound)?;
+
+        if proposal.status != ProposalStatus::Active {
+            return Err(Error::ProposalClosed);
+        }
+        if env.ledger().timestamp() > proposal.deadline {
+            return Err(Error::ProposalExpired);
+        }
+
+        match choice {
+            VoteChoice::Yes => proposal.yes_votes += 1,
+            VoteChoice::No => proposal.no_votes += 1,
+        }
+
+        env.storage().persistent().set(&vote_key, &choice);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Proposal(proposal_id), &proposal);
+
+        env.events().publish(
+            (symbol_short!("VOTE"), voter),
+            (proposal_id, proposal.yes_votes, proposal.no_votes),
+        );
+        Ok(())
+    }
+
+    /// Finalize a proposal after its deadline. Below-quorum proposals expire.
+    pub fn finalize(env: Env, proposal_id: u64) -> Result<ProposalStatus, Error> {
+        let mut proposal: Proposal = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Proposal(proposal_id))
+            .ok_or(Error::ProposalNotFound)?;
+
+        if proposal.status != ProposalStatus::Active {
+            return Ok(proposal.status.clone());
+        }
+
+        if env.ledger().timestamp() < proposal.deadline {
+            return Ok(proposal.status.clone());
+        }
+
+        let total = proposal.yes_votes + proposal.no_votes;
+        proposal.status = if total < proposal.quorum {
+            ProposalStatus::Expired
+        } else if proposal.yes_votes <= proposal.no_votes {
+            ProposalStatus::Rejected
+        } else {
+            ProposalStatus::Passed
+        };
+        Self::decrement_active_proposals(&env);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Proposal(proposal_id), &proposal);
+        Ok(proposal.status.clone())
+    }
+
+    fn decrement_active_proposals(env: &Env) {
+        let active: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveProposalCount)
+            .unwrap_or(0);
+        if active > 0 {
+            env.storage()
+                .instance()
+                .set(&DataKey::ActiveProposalCount, &(active - 1));
+        }
+    }
+
+    pub fn get_proposal(env: Env, id: u64) -> Result<Proposal, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Proposal(id))
+            .ok_or(Error::ProposalNotFound)
+    }
+
+    pub fn has_voted(env: Env, proposal_id: u64, voter: Address) -> bool {
+        env.storage()
+            .persistent()
+            .has(&DataKey::Vote(proposal_id, voter))
+    }
+}
+
+#[cfg(test)]
+mod test;

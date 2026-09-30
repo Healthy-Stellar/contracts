@@ -1130,6 +1130,43 @@ fn test_propose_admin_rotation_rejects_duplicate_pending() {
 }
 
 #[test]
+fn test_expired_rotation_can_be_replaced_without_accept_attempt() {
+    let (env, client, admin) = setup_with_admin();
+    let typo = Address::generate(&env);
+    let replacement = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &typo);
+    env.ledger().set_timestamp(env.ledger().timestamp() + ADMIN_ROTATION_WINDOW + 1);
+
+    client.propose_admin_rotation(&admin, &replacement);
+    client.accept_admin_rotation(&replacement);
+}
+
+#[test]
+fn test_admin_can_cancel_rotation() {
+    let (env, client, admin) = setup_with_admin();
+    let pending = Address::generate(&env);
+    let replacement = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &pending);
+    client.cancel_admin_rotation(&admin);
+    client.propose_admin_rotation(&admin, &replacement);
+    client.accept_admin_rotation(&replacement);
+}
+
+#[test]
+fn test_non_admin_cannot_cancel_rotation() {
+    let (env, client, admin) = setup_with_admin();
+    let pending = Address::generate(&env);
+    let impostor = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &pending);
+    let result = client.try_cancel_admin_rotation(&impostor);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    client.accept_admin_rotation(&pending);
+}
+
+#[test]
 fn test_accept_admin_rotation_rejects_wrong_pending_admin() {
     let (env, client, admin) = setup_with_admin();
     let new_admin = Address::generate(&env);

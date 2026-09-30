@@ -423,7 +423,7 @@ fn test_accept_rotation_without_proposal_returns_error() {
 }
 
 #[test]
-fn test_accept_rotation_after_expiry_returns_error_and_clears_state() {
+fn test_accept_rotation_after_expiry_returns_error_and_reproposal_succeeds() {
     let (env, admin, client) = setup();
     let pending = Address::generate(&env);
 
@@ -440,8 +440,52 @@ fn test_accept_rotation_after_expiry_returns_error_and_clears_state() {
         .unwrap();
     assert_eq!(err, Error::RotationExpired);
 
-    // PendingAdmin must have been cleared; a new proposal must be accepted.
+    // A new proposal must replace the expired pending entry even though the
+    // failed accept rolled back its attempted cleanup.
+    let replacement = Address::generate(&env);
+    client.propose_admin_rotation(&admin, &replacement);
+    client.accept_admin_rotation(&replacement);
+}
+
+#[test]
+fn test_expired_rotation_can_be_replaced_without_accept_attempt() {
+    let (env, admin, client) = setup();
+    let typo = Address::generate(&env);
+    let replacement = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &typo);
+    env.ledger().with_mut(|l| {
+        l.timestamp += ADMIN_ROTATION_WINDOW + 1;
+    });
+
+    client.propose_admin_rotation(&admin, &replacement);
+    client.accept_admin_rotation(&replacement);
+}
+
+#[test]
+fn test_admin_can_cancel_rotation() {
+    let (env, admin, client) = setup();
+    let pending = Address::generate(&env);
+    let replacement = Address::generate(&env);
+
     client.propose_admin_rotation(&admin, &pending);
+    client.cancel_admin_rotation(&admin);
+    client.propose_admin_rotation(&admin, &replacement);
+    client.accept_admin_rotation(&replacement);
+}
+
+#[test]
+fn test_non_admin_cannot_cancel_rotation() {
+    let (env, admin, client) = setup();
+    let pending = Address::generate(&env);
+    let impostor = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &pending);
+    let err = client
+        .try_cancel_admin_rotation(&impostor)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::Unauthorized);
     client.accept_admin_rotation(&pending);
 }
 

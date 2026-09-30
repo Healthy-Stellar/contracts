@@ -503,6 +503,48 @@ fn test_accept_after_expiry_returns_error() {
 }
 
 #[test]
+fn test_expired_rotation_can_be_replaced_without_accept_attempt() {
+    let (env, admin, client) = setup();
+    let typo = Address::generate(&env);
+    let replacement = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &typo);
+    env.ledger().with_mut(|l| {
+        l.timestamp += ROTATION_TTL + 1;
+    });
+
+    client.propose_admin_rotation(&admin, &replacement);
+    client.accept_admin_rotation(&replacement);
+}
+
+#[test]
+fn test_admin_can_cancel_rotation() {
+    let (env, admin, client) = setup();
+    let pending = Address::generate(&env);
+    let replacement = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &pending);
+    client.cancel_admin_rotation(&admin);
+    client.propose_admin_rotation(&admin, &replacement);
+    client.accept_admin_rotation(&replacement);
+}
+
+#[test]
+fn test_non_admin_cannot_cancel_rotation() {
+    let (env, admin, client) = setup();
+    let pending = Address::generate(&env);
+    let impostor = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &pending);
+    let err = client
+        .try_cancel_admin_rotation(&impostor)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::Unauthorized);
+    client.accept_admin_rotation(&pending);
+}
+
+#[test]
 fn test_accept_at_exact_expiry_boundary() {
     let (env, admin, client) = setup();
     let pending = Address::generate(&env);
