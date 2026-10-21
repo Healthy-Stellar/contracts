@@ -993,6 +993,8 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 name = "imaging-radiology"
 version = "0.1.0"
 dependencies = [
+ "Contracts",
+ "shared",
  "soroban-sdk",
 ]
 
@@ -1331,6 +1333,7 @@ version = "0.1.0"
 dependencies = [
  "shared",
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
