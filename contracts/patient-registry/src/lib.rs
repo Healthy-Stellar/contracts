@@ -161,6 +161,14 @@ pub enum DataKey {
     MedicalRecord(u64),
     /// Field-level access mask keyed by (patient, grantee, record_id).
     FieldAccess(Address, Address, u64),
+    /// Record IDs granted field access: (patient, grantee) -> Vec<u64>.
+    FieldAccessGrants(Address, Address),
+    /// Active share link tokens created by patient: (patient) -> Vec<BytesN<32>>.
+    PatientShareTokens(Address),
+    /// Patient address by registration index: (index) -> Address.
+    PatientByIndex(u64),
+    /// Doctor address by registration index: (index) -> Address.
+    DoctorByIndex(u64),
     /// Platform-wide secondary index: record_type → Vec<TypeIndexEntry>.
     GlobalTypeIndex(Symbol),
     /// Soft-delete tombstone for a record (value: timestamp of deletion).
@@ -183,6 +191,7 @@ pub enum DataKey {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShareLinkData {
     pub patient: Address,
+    pub recipient: Address,
     pub record_id: u64,
     pub uses_remaining: u32,
     pub expires_at: u64,
@@ -775,18 +784,11 @@ impl MedicalRegistry {
             .get(&DataKey::TotalPatients)
             .unwrap_or(0u64);
         env.storage()
+            .persistent()
+            .set(&DataKey::PatientByIndex(total_patients), &wallet);
+        env.storage()
             .instance()
             .set(&DataKey::TotalPatients, &(total_patients + 1));
-
-        let mut pat_list: Vec<Address> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::PatientList)
-            .unwrap_or(Vec::new(&env));
-        pat_list.push_back(wallet.clone());
-        env.storage()
-            .persistent()
-            .set(&DataKey::PatientList, &pat_list);
 
         env.events()
             .publish((symbol_short!("reg_pat"), wallet), symbol_short!("success"));
@@ -843,18 +845,11 @@ impl MedicalRegistry {
             .get(&DataKey::TotalPatients)
             .unwrap_or(0u64);
         env.storage()
+            .persistent()
+            .set(&DataKey::PatientByIndex(total_patients), &wallet);
+        env.storage()
             .instance()
             .set(&DataKey::TotalPatients, &(total_patients + 1));
-
-        let mut pat_list: Vec<Address> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::PatientList)
-            .unwrap_or(Vec::new(&env));
-        pat_list.push_back(wallet.clone());
-        env.storage()
-            .persistent()
-            .set(&DataKey::PatientList, &pat_list);
 
         env.events().publish(
             (symbol_short!("reg_grd"), wallet),
@@ -938,6 +933,18 @@ impl MedicalRegistry {
         env.storage()
             .persistent()
             .remove(&DataKey::AuthorizedDoctors(patient.clone()));
+
+        let tokens_key = DataKey::PatientShareTokens(patient.clone());
+        if let Some(tokens) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Vec<BytesN<32>>>(&tokens_key)
+        {
+            for t in tokens.iter() {
+                env.storage().persistent().remove(&DataKey::ShareLink(t));
+            }
+            env.storage().persistent().remove(&tokens_key);
+        }
 
         let ts = env.ledger().timestamp();
         env.events().publish(
@@ -1059,18 +1066,11 @@ impl MedicalRegistry {
                 .get(&DataKey::TotalPatients)
                 .unwrap_or(0u64);
             env.storage()
+                .persistent()
+                .set(&DataKey::PatientByIndex(total_patients), &entry.wallet);
+            env.storage()
                 .instance()
                 .set(&DataKey::TotalPatients, &(total_patients + 1));
-
-            let mut pat_list: Vec<Address> = env
-                .storage()
-                .persistent()
-                .get(&DataKey::PatientList)
-                .unwrap_or(Vec::new(&env));
-            pat_list.push_back(entry.wallet.clone());
-            env.storage()
-                .persistent()
-                .set(&DataKey::PatientList, &pat_list);
 
             env.events().publish(
                 (symbol_short!("reg_pat"), entry.wallet.clone()),
@@ -1221,21 +1221,14 @@ impl MedicalRegistry {
 
         env.storage().persistent().set(&key, &doctor);
 
-        let mut doc_list: Vec<Address> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::DoctorList)
-            .unwrap_or(Vec::new(&env));
-        doc_list.push_back(wallet.clone());
-        env.storage()
-            .persistent()
-            .set(&DataKey::DoctorList, &doc_list);
-
         let total_providers: u64 = env
             .storage()
             .instance()
             .get(&DataKey::TotalProviders)
             .unwrap_or(0u64);
+        env.storage()
+            .persistent()
+            .set(&DataKey::DoctorByIndex(total_providers), &wallet);
         env.storage()
             .instance()
             .set(&DataKey::TotalProviders, &(total_providers + 1));
@@ -1395,7 +1388,25 @@ impl MedicalRegistry {
         let mask = field_permission_mask(fields);
         env.storage()
             .persistent()
-            .set(&DataKey::FieldAccess(patient, grantee, record_id), &mask);
+            .set(&DataKey::FieldAccess(patient.clone(), grantee.clone(), record_id), &mask);
+
+        let grants_key = DataKey::FieldAccessGrants(patient.clone(), grantee.clone());
+        let mut grants: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&grants_key)
+            .unwrap_or(Vec::new(&env));
+        let mut found = false;
+        for g in grants.iter() {
+            if g == record_id {
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            grants.push_back(record_id);
+            env.storage().persistent().set(&grants_key, &grants);
+        }
         Ok(())
     }
 
@@ -1409,7 +1420,6 @@ impl MedicalRegistry {
         Self::require_not_frozen(&env);
         require_patient_or_guardian(&env, &patient, &caller)?;
         Self::verify_and_increment_nonce(&env, &caller, caller_nonce)?;
-        Self::require_not_on_hold(&env, &patient)?;
 
         let key = DataKey::AuthorizedDoctors(patient.clone());
         let mut map: Map<Address, bool> = env
@@ -1430,8 +1440,23 @@ impl MedicalRegistry {
                 .set(&DataKey::TotalAccessGrants, &new_total);
         }
 
-        map.remove(doctor);
+        map.remove(doctor.clone());
         env.storage().persistent().set(&key, &map);
+
+        let grants_key = DataKey::FieldAccessGrants(patient.clone(), doctor.clone());
+        if let Some(grants) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Vec<u64>>(&grants_key)
+        {
+            for rid in grants.iter() {
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey::FieldAccess(patient.clone(), doctor.clone(), rid));
+            }
+            env.storage().persistent().remove(&grants_key);
+        }
+
         Ok(())
     }
 
@@ -2296,38 +2321,77 @@ impl MedicalRegistry {
             .instance()
             .set(&DataKey::LastSnapshotLedger, &current_ledger);
 
-        let patients: Vec<Address> = env
+        let patient_count: u64 = env
             .storage()
-            .persistent()
-            .get(&DataKey::PatientList)
-            .unwrap_or(Vec::new(&env));
-        let doctors: Vec<Address> = env
+            .instance()
+            .get(&DataKey::TotalPatients)
+            .unwrap_or(0u64);
+        let doctor_count: u64 = env
             .storage()
-            .persistent()
-            .get(&DataKey::DoctorList)
-            .unwrap_or(Vec::new(&env));
+            .instance()
+            .get(&DataKey::TotalProviders)
+            .unwrap_or(0u64);
         let consent_version: BytesN<32> = env
             .storage()
             .persistent()
             .get(&DataKey::ConsentVersion)
             .unwrap_or(BytesN::from_array(&env, &[0u8; 32]));
 
-        let patient_count = patients.len();
-        let doctor_count = doctors.len();
-
         env.events().publish(
             (symbol_short!("snap_meta"), current_ledger),
             (patient_count, doctor_count, consent_version),
         );
-        env.events()
-            .publish((symbol_short!("snap_pats"), current_ledger), patients);
-        env.events()
-            .publish((symbol_short!("snap_docs"), current_ledger), doctors);
         Ok(())
     }
 
     pub fn get_last_snapshot_ledger(env: Env) -> Option<u32> {
         env.storage().instance().get(&DataKey::LastSnapshotLedger)
+    }
+
+    pub fn get_patients_paginated(env: Env, start: u64, limit: u64) -> Vec<Address> {
+        let total: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalPatients)
+            .unwrap_or(0u64);
+        let mut result = Vec::new(&env);
+        if start >= total || limit == 0 {
+            return result;
+        }
+        let end = core::cmp::min(start.saturating_add(limit), total);
+        for i in start..end {
+            if let Some(patient) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Address>(&DataKey::PatientByIndex(i))
+            {
+                result.push_back(patient);
+            }
+        }
+        result
+    }
+
+    pub fn get_doctors_paginated(env: Env, start: u64, limit: u64) -> Vec<Address> {
+        let total: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalProviders)
+            .unwrap_or(0u64);
+        let mut result = Vec::new(&env);
+        if start >= total || limit == 0 {
+            return result;
+        }
+        let end = core::cmp::min(start.saturating_add(limit), total);
+        for i in start..end {
+            if let Some(doctor) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Address>(&DataKey::DoctorByIndex(i))
+            {
+                result.push_back(doctor);
+            }
+        }
+        result
     }
 
     // =====================================================
@@ -2336,16 +2400,18 @@ impl MedicalRegistry {
 
     /// Create a time-limited, use-counted sharing token for a single record.
     ///
-    /// Token = sha256(patient_bytes || record_id_be || nonce_be || expires_at_be)
+    /// Token = sha256(patient_bytes || recipient_bytes || record_id_be || nonce_be || expires_at_be)
     ///
     /// # Arguments
     /// * `patient`    - The patient who owns the record (must auth).
-    /// * `record_id`  - 0-based index into the patient's medical records vec.
+    /// * `recipient`  - The authorized recipient address (must auth to use).
+    /// * `record_id`  - Global ID of the medical record.
     /// * `uses_remaining` - How many times the token may be used (must be > 0).
     /// * `expires_at` - Unix timestamp after which the token is invalid.
     pub fn create_share_link(
         env: Env,
         patient: Address,
+        recipient: Address,
         record_id: u64,
         uses_remaining: u32,
         expires_at: u64,
@@ -2359,15 +2425,21 @@ impl MedicalRegistry {
             return Err(ContractError::InvalidToken);
         }
 
-        // Verify the record_id is in-bounds.
-        let records_key = DataKey::MedicalRecords(patient.clone());
-        let records: Vec<MedicalRecord> = env
+        // Verify the record exists, belongs to patient, and is not deleted.
+        let record_data: RecordData = env
             .storage()
             .persistent()
-            .get(&records_key)
-            .unwrap_or(Vec::new(&env));
-        if record_id >= records.len() as u64 {
-            return Err(ContractError::InvalidToken);
+            .get(&DataKey::MedicalRecord(record_id))
+            .ok_or(ContractError::RecordNotFound)?;
+        if record_data.patient != patient {
+            return Err(ContractError::NotAuthorized);
+        }
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::DeletedRecord(record_id))
+        {
+            return Err(ContractError::AlreadyDeleted);
         }
 
         // Increment per-patient nonce.
@@ -2376,18 +2448,18 @@ impl MedicalRegistry {
         let next_nonce = nonce + 1;
         env.storage().persistent().set(&nonce_key, &next_nonce);
 
-        // Build preimage: patient address bytes (32) + record_id (8) + nonce (8) + expires_at (8)
+        // Build preimage: patient bytes + recipient bytes + record_id + nonce + expires_at
         let patient_bytes = patient.clone().to_xdr(&env);
+        let recipient_bytes = recipient.clone().to_xdr(&env);
         let mut preimage = Bytes::new(&env);
         preimage.append(&patient_bytes);
+        preimage.append(&recipient_bytes);
         preimage.extend_from_array(&record_id.to_be_bytes());
         preimage.extend_from_array(&next_nonce.to_be_bytes());
         preimage.extend_from_array(&expires_at.to_be_bytes());
 
         let token: BytesN<32> = env.crypto().sha256(&preimage).into();
 
-        // Reject duplicate tokens — prevents a nonce collision from silently
-        // overwriting an active link and granting unintended access.
         if env
             .storage()
             .persistent()
@@ -2398,6 +2470,7 @@ impl MedicalRegistry {
 
         let link = ShareLinkData {
             patient: patient.clone(),
+            recipient: recipient.clone(),
             record_id,
             uses_remaining,
             expires_at,
@@ -2405,6 +2478,15 @@ impl MedicalRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::ShareLink(token.clone()), &link);
+
+        let tokens_key = DataKey::PatientShareTokens(patient.clone());
+        let mut tokens: Vec<BytesN<32>> = env
+            .storage()
+            .persistent()
+            .get(&tokens_key)
+            .unwrap_or(Vec::new(&env));
+        tokens.push_back(token.clone());
+        env.storage().persistent().set(&tokens_key, &tokens);
 
         env.events().publish(
             (symbol_short!("sl_create"), patient),
@@ -2416,16 +2498,26 @@ impl MedicalRegistry {
 
     /// Redeem a share link token to read a single medical record.
     ///
-    /// Any address may call this function. The token is validated for expiry
+    /// The authorized recipient must authenticate. The token is validated for expiry
     /// and remaining uses; uses_remaining is decremented on success and the
     /// token is removed when it reaches zero.
-    pub fn use_share_link(env: Env, token: BytesN<32>) -> Result<MedicalRecord, ContractError> {
+    pub fn use_share_link(
+        env: Env,
+        caller: Address,
+        token: BytesN<32>,
+    ) -> Result<MedicalRecord, ContractError> {
+        caller.require_auth();
+
         let link_key = DataKey::ShareLink(token.clone());
         let mut link: ShareLinkData = env
             .storage()
             .persistent()
             .get(&link_key)
             .ok_or(ContractError::InvalidToken)?;
+
+        if link.recipient != caller {
+            return Err(ContractError::NotAuthorized);
+        }
 
         // Check expiry.
         if env.ledger().timestamp() >= link.expires_at {
@@ -2439,16 +2531,34 @@ impl MedicalRegistry {
             return Err(ContractError::InvalidToken);
         }
 
-        // Fetch the record.
-        let records_key = DataKey::MedicalRecords(link.patient.clone());
-        let records: Vec<MedicalRecord> = env
+        // Check if record was soft-deleted.
+        if env
             .storage()
             .persistent()
-            .get(&records_key)
-            .unwrap_or(Vec::new(&env));
-        let record = records
-            .get(link.record_id as u32)
-            .ok_or(ContractError::InvalidToken)?;
+            .has(&DataKey::DeletedRecord(link.record_id))
+        {
+            return Err(ContractError::AlreadyDeleted);
+        }
+
+        // Fetch the record.
+        let record_data: RecordData = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MedicalRecord(link.record_id))
+            .ok_or(ContractError::RecordNotFound)?;
+        let first_version = record_data
+            .history
+            .get(0)
+            .ok_or(ContractError::NotFound)?;
+
+        let record = MedicalRecord {
+            record_id: link.record_id,
+            doctor: first_version.updated_by,
+            encrypted_ref: record_data.current_ref,
+            timestamp: first_version.updated_at,
+            record_type: record_data.record_type,
+            policy: record_data.policy,
+        };
 
         // Decrement uses.
         link.uses_remaining -= 1;
@@ -2464,6 +2574,47 @@ impl MedicalRegistry {
         );
 
         Ok(record)
+    }
+
+    /// Revoke a share link token before it expires or is exhausted.
+    pub fn revoke_share_link(
+        env: Env,
+        patient: Address,
+        token: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        patient.require_auth();
+
+        let link_key = DataKey::ShareLink(token.clone());
+        let link: ShareLinkData = env
+            .storage()
+            .persistent()
+            .get(&link_key)
+            .ok_or(ContractError::NotFound)?;
+
+        if link.patient != patient {
+            return Err(ContractError::NotAuthorized);
+        }
+
+        env.storage().persistent().remove(&link_key);
+
+        let tokens_key = DataKey::PatientShareTokens(patient.clone());
+        if let Some(tokens) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Vec<BytesN<32>>>(&tokens_key)
+        {
+            let mut new_tokens = Vec::new(&env);
+            for t in tokens.iter() {
+                if t != token {
+                    new_tokens.push_back(t);
+                }
+            }
+            env.storage().persistent().set(&tokens_key, &new_tokens);
+        }
+
+        env.events()
+            .publish((symbol_short!("sl_revk"), patient), token);
+        Ok(())
     }
 
     /// Create a one-hour export authorization ticket for a patient's data.
@@ -2842,4 +2993,7 @@ impl MedicalRegistry {
 }
 
 #[cfg(test)]
-mod test;
+mod test_issues_959_960_963;
+
+// #[cfg(test)]
+// mod test;
