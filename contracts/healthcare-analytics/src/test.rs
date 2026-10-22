@@ -9,8 +9,9 @@ fn setup() -> (Env, HealthcareAnalyticsClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
     let admin = Address::generate(&env);
-    let contract_id = env.register(HealthcareAnalytics, (&admin,));
-    let client = HealthcareAnalyticsClient::new(&env, &contract_id);
+    client.initialize(&admin);
+    client.set_minimum_cohort_size(&admin, &1);
+    env.ledger().set_timestamp(1700000000);
     let recorder = Address::generate(&env);
     client.authorize_provider(&admin, &recorder);
     (env, client, recorder)
@@ -110,19 +111,12 @@ fn test_statistics_sum_overflow_rejected() {
         &1700000000,
         &None,
     );
-    client.record_metric(
+    let result = client.try_record_metric(
         &recorder,
         &symbol_short!("bp"),
         &1,
         &symbol_short!("vitals"),
         &1700000001,
-        &None,
-    );
-
-    let result = client.try_get_statistics(
-        &symbol_short!("bp"),
-        &1699999999,
-        &1700000002,
         &None,
     );
 
@@ -269,8 +263,8 @@ fn test_get_statistics_time_range_filter() {
     assert_eq!(stats.sum, 260);
     assert_eq!(stats.min, 120);
     assert_eq!(stats.max, 140);
-    assert_eq!(stats.period_start, 1699999999);
-    assert_eq!(stats.period_end, 1700050001);
+    assert_eq!(stats.period_start, 1699999999 / 86400 * 86400);
+    assert_eq!(stats.period_end, 1700050001 / 86400 * 86400 + 86399);
 }
 
 #[test]
@@ -344,15 +338,15 @@ fn test_get_statistics_time_and_category_filter() {
         &None,
     );
 
-    // Vitals category + only first time window
+    // Time filters are snapped to UTC days, so both values in this day match.
     let stats = client.get_statistics(
         &symbol_short!("bp"),
         &1699999999,
         &1700001001,
         &Some(symbol_short!("vitals")),
     );
-    assert_eq!(stats.count, 1);
-    assert_eq!(stats.sum, 120);
+    assert_eq!(stats.count, 2);
+    assert_eq!(stats.sum, 250);
 }
 
 #[test]
@@ -408,6 +402,68 @@ fn test_get_statistics_single_record() {
     assert_eq!(stats.average, 72);
     assert_eq!(stats.min, 72);
     assert_eq!(stats.max, 72);
+}
+
+#[test]
+fn test_get_statistics_default_cohort_withholds_single_record() {
+    let (env, client, admin) = setup_with_admin();
+    let recorder = Address::generate(&env);
+    client.authorize_provider(&admin, &recorder);
+    env.ledger().set_timestamp(1700000000);
+
+    client.record_metric(
+        &recorder,
+        &symbol_short!("hr"),
+        &72,
+        &symbol_short!("vitals"),
+        &1700000000,
+        &None,
+    );
+
+    let result = client.try_get_statistics(&symbol_short!("hr"), &1700000000, &1700000000, &None);
+    assert_eq!(result, Err(Ok(Error::InsufficientCohort)));
+}
+
+#[test]
+fn test_get_statistics_default_cohort_allows_eleven_records() {
+    let (env, client, admin) = setup_with_admin();
+    let recorder = Address::generate(&env);
+    client.authorize_provider(&admin, &recorder);
+    env.ledger().set_timestamp(1700000000);
+
+    for value in 20..31 {
+        client.record_metric(
+            &recorder,
+            &symbol_short!("bmi"),
+            &value,
+            &symbol_short!("pop"),
+            &1700000000,
+            &None,
+        );
+    }
+
+    let stats = client.get_statistics(&symbol_short!("bmi"), &1700000000, &1700000000, &None);
+    assert_eq!(stats.count, 11);
+    assert_eq!(stats.sum, 275);
+    assert_eq!(stats.min, 20);
+    assert_eq!(stats.max, 30);
+}
+
+#[test]
+fn test_record_metric_rejects_stale_timestamp() {
+    let (env, client, recorder) = setup();
+    let stale_timestamp = 1700000000 - 1;
+
+    let result = client.try_record_metric(
+        &recorder,
+        &symbol_short!("bp"),
+        &120,
+        &symbol_short!("vitals"),
+        &stale_timestamp,
+        &None,
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidValue)));
 }
 
 #[test]
