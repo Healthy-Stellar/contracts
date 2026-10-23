@@ -40,53 +40,26 @@ fn payload(env: &Env) -> Bytes {
     Bytes::from_slice(env, b"export_all_records")
 }
 
-// ── initialize ────────────────────────────────────────────────────────────────
+// ── constructor ───────────────────────────────────────────────────────────────
 
 #[test]
-fn test_double_initialize_returns_error() {
-    let (_env, signers, client) = setup(3, 2);
-    let err = client
-        .try_initialize(&signers, &2u32, &3600u64, &2u32)
-        .unwrap_err()
-        .unwrap();
-    assert_eq!(err, Error::AlreadyInitialized);
-}
-
-#[test]
-fn test_front_run_initialize_prevented() {
-    // With mock_all_auths, any address can authenticate, so the legitimate
-    // deployer's initialize succeeds and locks out subsequent attempts.
+fn test_constructor_atomic_init() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(MultisigGovernance, ());
-    let client = MultisigGovernanceClient::new(&env, &contract_id);
-
-    let deployer = Address::generate(&env);
-
-    // Legitimate deployer initializes with their own signer set
-    let mut real_signers = Vec::new(&env);
-    real_signers.push_back(deployer.clone());
-    client.initialize(&real_signers, &1u32, &3600u64, &1u32);
-
-    // An attacker (with different signers) tries to re-initialize — should fail
-    let attacker = Address::generate(&env);
-    let mut attacker_signers = Vec::new(&env);
-    attacker_signers.push_back(attacker.clone());
-    let err = client
-        .try_initialize(&attacker_signers, &1u32, &3600u64, &1u32)
-        .unwrap_err()
-        .unwrap();
-    assert_eq!(err, Error::AlreadyInitialized);
-
-    // Verify that the deployer's signer set is intact, not the attacker's
+    let signers = make_signers(&env, 3);
+    let contract_id = env.register(
+        MultisigGovernance,
+        (&signers, &2u32, &3600u64, &2u32),
+    );
+    let _client = MultisigGovernanceClient::new(&env, &contract_id);
     let stored_signers: Vec<Address> = env.as_contract(&contract_id, || {
         env.storage()
             .persistent()
             .get(&DataKey::Signers)
             .unwrap()
     });
-    assert_eq!(stored_signers.len(), 1);
-    assert_eq!(stored_signers.get(0).unwrap(), deployer);
+    assert_eq!(stored_signers.len(), 3);
+    assert_eq!(stored_signers, signers);
 }
 
 #[test]

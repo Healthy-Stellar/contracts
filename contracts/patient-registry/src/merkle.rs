@@ -1,15 +1,12 @@
 //! Merkle tree utilities for patient record membership proofs.
 //!
 //! ## Tree construction
-//! Leaves are the patient's record IDs in insertion order.
+//! Leaves are computed from record ID and record content hash:
 //! ```text
-//! leaf  = sha256(0x00 || record_id_be_8)
-//! node  = sha256(0x01 || min(left, right) || max(left, right))
+//! leaf = sha256(0x00 || record_id_be_8 || sha256(xdr(RecordData)))
+//! node = sha256(0x01 || left || right) (ordered pairing, no sorting)
 //! ```
-//! Sorting children before hashing means the verifier never needs position
-//! bits — the proof is just `Vec<BytesN<32>>` of sibling hashes.
-//!
-//! Odd-length layers: the dangling node is paired with itself.
+//! Odd-length layers: the dangling node is promoted to the next layer as-is.
 
 use soroban_sdk::{panic_with_error, Bytes, BytesN, Env, Vec};
 
@@ -18,53 +15,44 @@ const NODE_TAG: u8 = 0x01;
 
 // ─── primitives ────────────────────────────────────────────────────────────
 
-/// Hash a record ID as a Merkle leaf.
-///
-/// `leaf = sha256(0x00 || record_id_be_8)`
-pub fn hash_leaf(env: &Env, record_id: u64) -> BytesN<32> {
+/// Hash a record ID and its content hash as a Merkle leaf:
+/// `leaf = sha256(0x00 || record_id_be_8 || content_hash)`
+pub fn hash_leaf(env: &Env, record_id: u64, content_hash: &BytesN<32>) -> BytesN<32> {
     let mut pre = Bytes::new(env);
     pre.extend_from_array(&[LEAF_TAG]);
     pre.extend_from_array(&record_id.to_be_bytes());
+    pre.append(&content_hash.clone().into());
     env.crypto().sha256(&pre).into()
 }
 
-/// Hash two child hashes into a parent node.
-///
-/// Children are sorted lexicographically before hashing so that no position
-/// information needs to be stored alongside proof siblings:
-///
-/// `node = sha256(0x01 || min(a,b) || max(a,b))`
-pub fn hash_pair(env: &Env, a: BytesN<32>, b: BytesN<32>) -> BytesN<32> {
-    let (lo, hi) = if a.to_array() <= b.to_array() {
-        (a, b)
-    } else {
-        (b, a)
-    };
+/// Fallback for leaf hashing when only record_id is available (or empty content)
+pub fn hash_leaf_id_only(env: &Env, record_id: u64) -> BytesN<32> {
+    let empty_hash: BytesN<32> = env.crypto().sha256(&Bytes::new(env)).into();
+    hash_leaf(env, record_id, &empty_hash)
+}
+
+/// Hash two child hashes into a parent node using strict ordered pairing (no sorting).
+/// `node = sha256(0x01 || left || right)`
+pub fn hash_pair(env: &Env, left: BytesN<32>, right: BytesN<32>) -> BytesN<32> {
     let mut pre = Bytes::new(env);
     pre.extend_from_array(&[NODE_TAG]);
-    pre.extend_from_array(&lo.to_array());
-    pre.extend_from_array(&hi.to_array());
+    pre.extend_from_array(&left.to_array());
+    pre.extend_from_array(&right.to_array());
     env.crypto().sha256(&pre).into()
 }
 
 // ─── root computation ──────────────────────────────────────────────────────
 
-/// Compute the Merkle root over an ordered slice of record IDs.
-///
-/// Empty set: returns `sha256("")` as a deterministic sentinel.
-pub fn compute_merkle_root(env: &Env, record_ids: &Vec<u64>) -> BytesN<32> {
-    let n = record_ids.len();
+/// Compute the Merkle root over an ordered slice of leaf hashes.
+/// Promotes odd dangling nodes without duplicating.
+pub fn compute_merkle_root(env: &Env, leaves: &Vec<BytesN<32>>) -> BytesN<32> {
+    let n = leaves.len();
     if n == 0 {
         return env.crypto().sha256(&Bytes::new(env)).into();
     }
 
-    // Build leaf layer
-    let mut layer: Vec<BytesN<32>> = Vec::new(env);
-    for id in record_ids.iter() {
-        layer.push_back(hash_leaf(env, id));
-    }
+    let mut layer = leaves.clone();
 
-    // Reduce layer-by-layer until a single root remains
     while layer.len() > 1 {
         let len = layer.len();
         let mut next: Vec<BytesN<32>> = Vec::new(env);
@@ -77,10 +65,10 @@ pub fn compute_merkle_root(env: &Env, record_ids: &Vec<u64>) -> BytesN<32> {
             ));
             i += 2;
         }
-        // Odd node: pair with itself
+        // Odd node: promote to next layer without pairing with itself
         if len % 2 == 1 {
             let last = layer.get(len - 1).unwrap_or_else(|| panic_with_error!(env, crate::ContractError::NotFound));
-            next.push_back(hash_pair(env, last.clone(), last));
+            next.push_back(last);
         }
         layer = next;
     }
@@ -90,30 +78,17 @@ pub fn compute_merkle_root(env: &Env, record_ids: &Vec<u64>) -> BytesN<32> {
 
 // ─── proof generation ───────────────────────────────────────────────────────
 
-/// Generate a Merkle membership proof for the leaf at `target_index` within
-/// `record_ids` (insertion order, matching `compute_merkle_root`).
-///
-/// Returns one sibling hash per tree level (leaf level → root), in the same
-/// shape `verify_membership` / `verify_leaf_membership` expect. Returns an
-/// empty `Vec` if `target_index` is out of bounds.
-///
-/// Mirrors `compute_merkle_root`'s layer-by-layer reduction (same pairing
-/// and odd-node-self-pairing rules) while tracking which sibling pairs with
-/// the target leaf at each level. Because `hash_pair` sorts its two inputs
-/// before hashing, the proof never needs to record left/right position.
-pub fn generate_proof(env: &Env, record_ids: &Vec<u64>, target_index: u32) -> Vec<BytesN<32>> {
+/// Generate a Merkle membership proof for the leaf at `target_index` within `leaves`.
+pub fn generate_proof(env: &Env, leaves: &Vec<BytesN<32>>, target_index: u32) -> Vec<BytesN<32>> {
     let mut proof: Vec<BytesN<32>> = Vec::new(env);
-    let n = record_ids.len();
+    let n = leaves.len();
     if target_index >= n {
         return proof;
     }
 
-    let mut layer: Vec<BytesN<32>> = Vec::new(env);
-    for id in record_ids.iter() {
-        layer.push_back(hash_leaf(env, id));
-    }
-
+    let mut layer = leaves.clone();
     let mut idx = target_index;
+
     while layer.len() > 1 {
         let len = layer.len();
         let mut next: Vec<BytesN<32>> = Vec::new(env);
@@ -129,13 +104,10 @@ pub fn generate_proof(env: &Env, record_ids: &Vec<u64>, target_index: u32) -> Ve
             next.push_back(hash_pair(env, left, right));
             i += 2;
         }
-        // Odd node: pair with itself; if it's our target, the "sibling" is itself.
+        // Odd node: promoted as-is
         if len % 2 == 1 {
             let last = layer.get(len - 1).unwrap_or_else(|| panic_with_error!(env, crate::ContractError::NotFound));
-            if idx == len - 1 {
-                proof.push_back(last.clone());
-            }
-            next.push_back(hash_pair(env, last.clone(), last));
+            next.push_back(last);
         }
         idx /= 2;
         layer = next;
@@ -146,31 +118,50 @@ pub fn generate_proof(env: &Env, record_ids: &Vec<u64>, target_index: u32) -> Ve
 
 // ─── membership verification ───────────────────────────────────────────────
 
-/// Verify that `record_id` belongs to the tree with the given `root`.
-///
-/// `proof` contains one sibling hash per tree level (leaf level → root).
-/// Returns `true` iff the recomputed root matches `root`.
-pub fn verify_membership(
-    env: &Env,
-    record_id: u64,
-    proof: &Vec<BytesN<32>>,
-    root: &BytesN<32>,
-) -> bool {
-    verify_leaf_membership(env, hash_leaf(env, record_id), proof, root)
-}
-
-/// Verify that a precomputed leaf hash belongs to the tree with the given
-/// `root`, given a sibling proof. Same as `verify_membership` but for
-/// callers that already have the leaf hash rather than the raw record ID.
-pub fn verify_leaf_membership(
+/// Verify that `leaf_hash` at `leaf_index` within a tree of `total_leaves` belongs to `root`.
+pub fn verify_leaf_membership_with_index(
     env: &Env,
     leaf_hash: BytesN<32>,
+    leaf_index: u32,
+    total_leaves: u32,
     proof: &Vec<BytesN<32>>,
     root: &BytesN<32>,
 ) -> bool {
-    let mut current = leaf_hash;
-    for sibling in proof.iter() {
-        current = hash_pair(env, current, sibling);
+    if total_leaves == 0 || leaf_index >= total_leaves {
+        return false;
     }
-    &current == root
+    if total_leaves == 1 {
+        return proof.len() == 0 && &leaf_hash == root;
+    }
+
+    let mut current = leaf_hash;
+    let mut idx = leaf_index;
+    let mut cur_len = total_leaves;
+    let mut proof_idx = 0u32;
+
+    while cur_len > 1 {
+        if idx % 2 == 1 {
+            // We are right child; sibling is on left
+            if proof_idx >= proof.len() {
+                return false;
+            }
+            let sibling = proof.get(proof_idx).unwrap();
+            proof_idx += 1;
+            current = hash_pair(env, sibling, current);
+        } else if idx == cur_len - 1 && cur_len % 2 == 1 {
+            // Odd dangling node: promoted as-is, no sibling at this level
+        } else {
+            // We are left child; sibling is on right
+            if proof_idx >= proof.len() {
+                return false;
+            }
+            let sibling = proof.get(proof_idx).unwrap();
+            proof_idx += 1;
+            current = hash_pair(env, current, sibling);
+        }
+        idx /= 2;
+        cur_len = (cur_len + 1) / 2;
+    }
+
+    proof_idx == proof.len() && &current == root
 }
