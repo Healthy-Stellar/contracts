@@ -162,7 +162,6 @@ pub enum Error {
     UnauthorizedAppointmentAction = 6,
     /// datetime must be strictly in the future for new appointments
     InvalidDatetime = 7,
-    AlreadyInitialized = 8,
 }
 
 /// Versioned event: a new appointment was scheduled.
@@ -193,16 +192,12 @@ pub struct HealthcareRegistry;
 
 #[contractimpl]
 impl HealthcareRegistry {
-    // Set an admin/verifier during initialization
-    pub fn init(env: Env, admin: Address) -> Result<(), Error> {
-        admin.require_auth();
-
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::AlreadyInitialized);
-        }
-
+    /// Bind the registry to an admin/verifier address.
+    ///
+    /// Runs atomically as part of contract creation and cannot be called again,
+    /// so an attacker cannot front-run deployment with their own admin.
+    pub fn __constructor(env: Env, admin: Address) {
         env.storage().instance().set(&DataKey::Admin, &admin);
-        Ok(())
     }
 
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {

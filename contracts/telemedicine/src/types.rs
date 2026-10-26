@@ -29,6 +29,10 @@ pub enum Error {
     ProviderNotRegistered = 17,
     /// Caller is not a credentialed/verified provider; admin co-signature required
     ProviderNotVerified = 18,
+    /// Patient has not attested their location for this visit
+    PatientLocationNotConfirmed = 19,
+    /// Session start is outside the allowed window around the scheduled time
+    OutsideScheduledWindow = 20,
 }
 
 /// On-chain record of a provider's license in a given jurisdiction (state/region).
@@ -78,7 +82,11 @@ pub struct VirtualVisit {
     pub status: VisitStatus,
     pub session_start: Option<u64>,
     pub session_end: Option<u64>,
+    /// Patient-attested location. Empty until the patient confirms via
+    /// `confirm_location`; never set from provider-supplied arguments.
     pub patient_location: String,
+    /// True once the patient has attested `patient_location` on-chain.
+    pub location_confirmed: bool,
     pub consent_documented: bool,
     /// Explicit per-session recording consent (HIPAA). None = not yet decided.
     pub recording_consent: Option<bool>,
@@ -100,6 +108,21 @@ pub struct PrescriptionRequest {
     pub duration_days: u32,
     /// Whether this is a controlled substance (DEA schedule I–V).
     /// When true, stricter in-person requirements apply per jurisdiction policy.
+    pub is_controlled_substance: bool,
+}
+
+/// Stored prescription record. Keeps the patient and prescriber so that
+/// reads can be authorized to those parties (and authorized pharmacies).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Prescription {
+    pub rx_id: u64,
+    pub patient_id: Address,
+    pub prescriber_id: Address,
+    pub medication_name: String,
+    pub dosage: String,
+    pub frequency: String,
+    pub duration_days: u32,
     pub is_controlled_substance: bool,
 }
 
@@ -152,8 +175,10 @@ pub enum DataKey {
     ProviderRegistryAddress,
     /// Address of the stored admin
     Admin,
-    /// rx_id -> PrescriptionRequest
+    /// rx_id -> Prescription
     Prescription(u64),
     /// Running counter for prescription IDs
     PrescriptionCount,
+    /// pharmacy address -> bool (true = authorized to read prescriptions)
+    AuthorizedPharmacy(Address),
 }

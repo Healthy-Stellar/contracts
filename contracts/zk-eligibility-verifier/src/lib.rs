@@ -12,12 +12,25 @@
 
 pub mod interface;
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env};
+use soroban_sdk::{contract, contractclient, contracterror, contractimpl, contracttype, Address, Env};
 
 pub use interface::{
     verify_eligibility_proof, PlaceholderZkProofVerifier, PublicInputs, RUST_INTERFACE_VERSION,
     ZKProofVerifier,
 };
+
+/// Minimal client for the `zk-eligibility` contract.
+///
+/// Declared locally (instead of depending on the full `zk-eligibility` contract
+/// crate) so the verifier only references the single method it needs. Depending
+/// on the contract crate caused both crates' `#[contractimpl]` blocks to emit an
+/// `initialize` export symbol, which clashed when linking the WASM and left the
+/// verifier's own `initialize` unexported while leaking zk-eligibility's full
+/// API onto the verifier's storage (#990).
+#[contractclient(name = "ZkEligibilityClient")]
+pub trait ZkEligibilityInterface {
+    fn is_eligible(env: Env, subject: Address) -> bool;
+}
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -30,7 +43,6 @@ pub enum DataKey {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
-    AlreadyInitialized = 1,
     NotInitialized = 2,
     Unauthorized = 3,
 }
@@ -40,20 +52,17 @@ pub struct ZkEligibilityVerifier;
 
 #[contractimpl]
 impl ZkEligibilityVerifier {
-    pub fn initialize(
+    /// Runs atomically as part of contract creation, so the deployer binds the
+    /// admin and verifier addresses and no front-running `initialize` call is possible.
+    pub fn __constructor(
         env: Env,
         admin: Address,
         zk_eligibility_contract: Address,
-    ) -> Result<(), Error> {
-        if env.storage().persistent().has(&DataKey::ZkEligibilityContract) {
-            return Err(Error::AlreadyInitialized);
-        }
-        admin.require_auth();
+    ) {
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage()
             .persistent()
             .set(&DataKey::ZkEligibilityContract, &zk_eligibility_contract);
-        Ok(())
     }
 
     /// Check eligibility by delegating to the configured zk-eligibility contract.
@@ -68,7 +77,7 @@ impl ZkEligibilityVerifier {
         };
         // Fail closed: a missing, archived, trapping or interface-incompatible
         // target must answer "not eligible" instead of aborting the caller (#951).
-        let client = zk_eligibility::ZkEligibilityClient::new(&env, &zk_contract);
+        let client = ZkEligibilityClient::new(&env, &zk_contract);
         match client.try_is_eligible(&subject) {
             Ok(Ok(eligible)) => eligible,
             _ => false,

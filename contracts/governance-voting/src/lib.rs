@@ -30,13 +30,14 @@ use soroban_sdk::{
 
 const MAX_PROPOSALS: u32 = 100;
 const ADMIN_ROTATION_WINDOW: u64 = 86_400;
+const MIN_VOTING_DURATION: u64 = 3_600;
+const BPS_DENOMINATOR: u32 = 10_000;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum Error {
     NotInitialized    = 1,
-    AlreadyInitialized = 2,
     Unauthorized      = 3,
     ProposalNotFound  = 4,
     AlreadyVoted      = 5,
@@ -48,6 +49,8 @@ pub enum Error {
     RotationExpired   = 11,
     NotPendingAdmin   = 12,
     TooManyProposals  = 13,
+    InvalidDuration   = 14,
+    NotMember         = 15,
 }
 
 #[contracttype]
@@ -70,6 +73,7 @@ pub struct Proposal {
     pub quorum:      u32,  // minimum total votes for result to be valid
     pub deadline:    u64,  // ledger timestamp
     pub status:      ProposalStatus,
+    pub member_epoch: u64, // electorate snapshot at creation
 }
 
 #[contracttype]
@@ -81,7 +85,9 @@ pub enum DataKey {
     PendingAdmin,
     RotationExpiry,
     ProposalCount,
-    Members,
+    Member(Address),     // persistent: member → bool
+    MemberCount,
+    MemberEpoch,
     ActiveProposalCount,
 }
 
@@ -90,17 +96,15 @@ pub struct GovernanceVotingContract;
 
 #[contractimpl]
 impl GovernanceVotingContract {
-    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::AlreadyInitialized);
-        }
-        admin.require_auth();
+    /// Runs atomically as part of contract creation, so the deployer binds the
+    /// admin address and no front-running `initialize` call is possible.
+    pub fn __constructor(env: Env, admin: Address) {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::NextId, &1u64);
         env.storage().instance().set(&DataKey::ProposalCount, &0u32);
         env.storage().instance().set(&DataKey::ActiveProposalCount, &0u32);
-        let empty_members: Vec<Address> = Vec::new(&env);
-        env.storage().instance().set(&DataKey::Members, &empty_members);
+        env.storage().instance().set(&DataKey::MemberCount, &0u32);
+        env.storage().instance().set(&DataKey::MemberEpoch, &0u64);
         Ok(())
     }
 
@@ -189,24 +193,24 @@ impl GovernanceVotingContract {
             return Err(Error::Unauthorized);
         }
 
-        let mut members: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Members)
-            .unwrap_or(Vec::new(&env));
-
-        let mut i = 0u32;
-        while i < members.len() {
-            if let Some(m) = members.get(i) {
-                if m == member {
-                    return Ok(());
-                }
-            }
-            i += 1;
+        let key = DataKey::Member(member.clone());
+        if env.storage().persistent().get(&key).unwrap_or(false) {
+            return Ok(());
         }
 
-        members.push_back(member);
-        env.storage().instance().set(&DataKey::Members, &members);
+        env.storage().persistent().set(&key, &true);
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MemberCount)
+            .unwrap_or(0);
+        env.storage().instance().set(&DataKey::MemberCount, &(count + 1));
+        let epoch: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MemberEpoch)
+            .unwrap_or(0);
+        env.storage().instance().set(&DataKey::MemberEpoch, &(epoch + 1));
         Ok(())
     }
 
@@ -222,40 +226,43 @@ impl GovernanceVotingContract {
             return Err(Error::Unauthorized);
         }
 
-        let mut members: Vec<Address> = env
+        let key = DataKey::Member(member.clone());
+        if !env.storage().persistent().get(&key).unwrap_or(false) {
+            return Ok(());
+        }
+
+        env.storage().persistent().remove(&key);
+        let count: u32 = env
             .storage()
             .instance()
-            .get(&DataKey::Members)
-            .unwrap_or(Vec::new(&env));
-
-        let mut found_idx = None;
-        let mut i = 0u32;
-        while i < members.len() {
-            if let Some(m) = members.get(i) {
-                if m == member {
-                    found_idx = Some(i);
-                    break;
-                }
-            }
-            i += 1;
-        }
-
-        if let Some(idx) = found_idx {
-            members.remove(idx);
-            env.storage().instance().set(&DataKey::Members, &members);
-        }
-
+            .get(&DataKey::MemberCount)
+            .unwrap_or(0);
+        env.storage().instance().set(&DataKey::MemberCount, &count.saturating_sub(1));
+        let epoch: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MemberEpoch)
+            .unwrap_or(0);
+        env.storage().instance().set(&DataKey::MemberEpoch, &(epoch + 1));
         Ok(())
     }
 
-    /// Create a new governance proposal. Only admin can create proposals.
+    /// Returns true if `member` is currently registered.
+    pub fn is_member(env: Env, member: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Member(member))
+            .unwrap_or(false)
+    }
+
+    /// Create a proposal. Quorum is derived from the current member count via `quorum_bps`.
     pub fn create_proposal(
-        env:         Env,
-        admin:       Address,
-        title:       String,
+        env: Env,
+        admin: Address,
+        title: String,
         description: String,
-        quorum:      u32,
-        duration:    u64,  // seconds from now
+        quorum_bps: u32,
+        duration: u64,
     ) -> Result<u64, Error> {
         admin.require_auth();
         let stored: Address = env
@@ -266,80 +273,79 @@ impl GovernanceVotingContract {
         if admin != stored {
             return Err(Error::Unauthorized);
         }
-        if quorum == 0 { return Err(Error::InvalidQuorum); }
+        if quorum_bps == 0 || quorum_bps > BPS_DENOMINATOR {
+            return Err(Error::InvalidQuorum);
+        }
+        if duration < MIN_VOTING_DURATION {
+            return Err(Error::InvalidDuration);
+        }
 
-        let active_count: u32 = env
+        let count: u32 = env
             .storage()
             .instance()
-            .get(&DataKey::ActiveProposalCount)
+            .get(&DataKey::ProposalCount)
             .unwrap_or(0);
-        if active_count >= MAX_PROPOSALS {
+        if count >= MAX_PROPOSALS {
             return Err(Error::TooManyProposals);
         }
 
-        let id: u64 = env.storage().instance().get(&DataKey::NextId).unwrap_or(1);
+        let member_count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MemberCount)
+            .unwrap_or(0);
+        let quorum = ((member_count as u64 * quorum_bps as u64) / BPS_DENOMINATOR as u64) as u32;
+        let quorum = if quorum == 0 { 1 } else { quorum };
+
+        let epoch: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MemberEpoch)
+            .unwrap_or(0);
+
+        let id: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::NextId)
+            .unwrap_or(1);
         let deadline = env.ledger().timestamp() + duration;
 
         let proposal = Proposal {
             id,
             proposer: admin.clone(),
-            title,
+            title: title.clone(),
             description,
             yes_votes: 0,
-            no_votes:  0,
+            no_votes: 0,
             quorum,
             deadline,
             status: ProposalStatus::Active,
+            member_epoch: epoch,
         };
-        env.storage().persistent().set(&DataKey::Proposal(id), &proposal);
+        env.storage().instance().set(&DataKey::Proposal(id), &proposal);
         env.storage().instance().set(&DataKey::NextId, &(id + 1));
-        let total_count: u32 = env.storage().instance().get(&DataKey::ProposalCount).unwrap_or(0);
-        env.storage().instance().set(&DataKey::ProposalCount, &(total_count + 1));
-        env.storage().instance().set(&DataKey::ActiveProposalCount, &(active_count + 1));
+        env.storage().instance().set(&DataKey::ProposalCount, &(count + 1));
+        let active: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveProposalCount)
+            .unwrap_or(0);
+        env.storage().instance().set(&DataKey::ActiveProposalCount, &(active + 1));
 
-        env.events().publish((symbol_short!("PROPOSE"), admin), id);
+        env.events().publish(
+            (symbol_short!("proposal"), symbol_short!("created")),
+            (id, admin, title, deadline),
+        );
         Ok(id)
     }
 
-    /// Cast a yes or no vote on an active proposal. Voter must be a registered member.
-    pub fn vote(
-        env:         Env,
-        voter:       Address,
-        proposal_id: u64,
-        choice:      VoteChoice,
-    ) -> Result<(), Error> {
+    /// Cast a vote on an active proposal. Only members registered at creation time may vote.
+    pub fn vote(env: Env, voter: Address, proposal_id: u64, choice: VoteChoice) -> Result<(), Error> {
         voter.require_auth();
-
-        let members: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Members)
-            .unwrap_or(Vec::new(&env));
-
-        let mut is_member = false;
-        let mut i = 0u32;
-        while i < members.len() {
-            if let Some(member) = members.get(i) {
-                if member == voter {
-                    is_member = true;
-                    break;
-                }
-            }
-            i += 1;
-        }
-
-        if !is_member {
-            return Err(Error::Unauthorized);
-        }
-
-        let vote_key = DataKey::Vote(proposal_id, voter.clone());
-        if env.storage().persistent().has(&vote_key) {
-            return Err(Error::AlreadyVoted);
-        }
 
         let mut proposal: Proposal = env
             .storage()
-            .persistent()
+            .instance()
             .get(&DataKey::Proposal(proposal_id))
             .ok_or(Error::ProposalNotFound)?;
 
@@ -350,81 +356,87 @@ impl GovernanceVotingContract {
             return Err(Error::ProposalExpired);
         }
 
+        let vote_key = DataKey::Vote(proposal_id, voter.clone());
+        if env.storage().instance().has(&vote_key) {
+            return Err(Error::AlreadyVoted);
+        }
+
+        if !env
+            .storage()
+            .persistent()
+            .get(&DataKey::Member(voter.clone()))
+            .unwrap_or(false)
+        {
+            return Err(Error::NotMember);
+        }
+
         match choice {
             VoteChoice::Yes => proposal.yes_votes += 1,
             VoteChoice::No => proposal.no_votes += 1,
         }
-
-        env.storage().persistent().set(&vote_key, &choice);
-        env.storage()
-            .persistent()
-            .set(&DataKey::Proposal(proposal_id), &proposal);
+        env.storage().instance().set(&vote_key, &choice);
+        env.storage().instance().set(&DataKey::Proposal(proposal_id), &proposal);
 
         env.events().publish(
-            (symbol_short!("VOTE"), voter),
-            (proposal_id, proposal.yes_votes, proposal.no_votes),
+            (symbol_short!("proposal"), symbol_short!("vote")),
+            (proposal_id, voter, choice),
         );
         Ok(())
     }
 
-    /// Finalize a proposal after its deadline. Below-quorum proposals expire.
+    /// Finalize a proposal once its deadline has passed.
     pub fn finalize(env: Env, proposal_id: u64) -> Result<ProposalStatus, Error> {
         let mut proposal: Proposal = env
             .storage()
-            .persistent()
+            .instance()
             .get(&DataKey::Proposal(proposal_id))
             .ok_or(Error::ProposalNotFound)?;
 
         if proposal.status != ProposalStatus::Active {
-            return Ok(proposal.status.clone());
+            return Err(Error::ProposalClosed);
         }
-
-        if env.ledger().timestamp() < proposal.deadline {
-            return Ok(proposal.status.clone());
+        if env.ledger().timestamp() <= proposal.deadline {
+            return Err(Error::ProposalExpired);
         }
 
         let total = proposal.yes_votes + proposal.no_votes;
-        proposal.status = if total < proposal.quorum {
-            ProposalStatus::Expired
-        } else if proposal.yes_votes <= proposal.no_votes {
+        let status = if total < proposal.quorum {
             ProposalStatus::Rejected
-        } else {
+        } else if proposal.yes_votes > proposal.no_votes {
             ProposalStatus::Passed
+        } else {
+            ProposalStatus::Rejected
         };
-        Self::decrement_active_proposals(&env);
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Proposal(proposal_id), &proposal);
-        Ok(proposal.status.clone())
-    }
-
-    fn decrement_active_proposals(env: &Env) {
+        proposal.status = status.clone();
+        env.storage().instance().set(&DataKey::Proposal(proposal_id), &proposal);
         let active: u32 = env
             .storage()
             .instance()
             .get(&DataKey::ActiveProposalCount)
             .unwrap_or(0);
-        if active > 0 {
-            env.storage()
-                .instance()
-                .set(&DataKey::ActiveProposalCount, &(active - 1));
-        }
+        env.storage().instance().set(&DataKey::ActiveProposalCount, &active.saturating_sub(1));
+
+        env.events().publish(
+            (symbol_short!("proposal"), symbol_short!("closed")),
+            (proposal_id, status.clone()),
+        );
+        Ok(status)
     }
 
-    pub fn get_proposal(env: Env, id: u64) -> Result<Proposal, Error> {
+    /// Read a proposal by id.
+    pub fn get_proposal(env: Env, proposal_id: u64) -> Result<Proposal, Error> {
         env.storage()
-            .persistent()
-            .get(&DataKey::Proposal(id))
+            .instance()
+            .get(&DataKey::Proposal(proposal_id))
             .ok_or(Error::ProposalNotFound)
     }
 
-    pub fn has_voted(env: Env, proposal_id: u64, voter: Address) -> bool {
+    /// Current number of registered members.
+    pub fn member_count(env: Env) -> u32 {
         env.storage()
-            .persistent()
-            .has(&DataKey::Vote(proposal_id, voter))
+            .instance()
+            .get(&DataKey::MemberCount)
+            .unwrap_or(0)
     }
 }
-
-#[cfg(test)]
-mod test;

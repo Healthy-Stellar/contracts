@@ -255,10 +255,22 @@ deploy_contract() {
     [[ -f "$optimized_path" ]] && deploy_wasm="$optimized_path"
 
     log "deploying ${contract}"
+
+    # Contracts migrated to `__constructor` bind their configuration atomically
+    # as part of contract creation (they no longer expose `initialize`). Pass
+    # their constructor arguments after `--`, e.g.:
+    #   DEPLOY_CONSTRUCTOR_ARGS="--admin G..." ./scripts/deploy_all.sh
+    local -a ctor_args=()
+    if [[ -n "${DEPLOY_CONSTRUCTOR_ARGS:-}" ]]; then
+        # shellcheck disable=SC2206
+        ctor_args=(${DEPLOY_CONSTRUCTOR_ARGS})
+    fi
+
     "$CLI_BIN" contract deploy \
         --network "$NETWORK" \
         --source "$IDENTITY" \
-        --wasm "$deploy_wasm"
+        --wasm "$deploy_wasm" \
+        ${ctor_args:+-- "${ctor_args[@]}"}
 }
 
 cd "$REPO_ROOT"

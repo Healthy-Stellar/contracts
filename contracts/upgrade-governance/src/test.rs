@@ -38,39 +38,35 @@ fn metadata_hash(env: &Env, metadata: &ReleaseMetadata) -> BytesN<32> {
 fn setup(n: u32, threshold: u32) -> (Env, Vec<Address>, UpgradeGovernanceClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(UpgradeGovernance, ());
-    let client = UpgradeGovernanceClient::new(&env, &contract_id);
     let signers = make_signers(&env, n);
-    client.initialize(&signers, &threshold);
+    let contract_id = env.register(UpgradeGovernance, (&signers, &threshold));
+    let client = UpgradeGovernanceClient::new(&env, &contract_id);
     (env, signers, client)
 }
 
-// ── initialize ────────────────────────────────────────────────────────────────
+// ── constructor ───────────────────────────────────────────────────────────────
 
 #[test]
-fn test_double_initialize_returns_error() {
-    let (_env, signers, client) = setup(3, 2);
-    let err = client.try_initialize(&signers, &2u32).unwrap_err().unwrap();
-    assert_eq!(err, Error::AlreadyInitialized);
-}
-
-#[test]
-fn test_invalid_threshold_returns_error() {
+#[should_panic]
+fn test_invalid_threshold_panics() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(UpgradeGovernance, ());
-    let client = UpgradeGovernanceClient::new(&env, &contract_id);
     let signers = make_signers(&env, 2);
-    let err = client.try_initialize(&signers, &3u32).unwrap_err().unwrap();
-    assert_eq!(err, Error::InvalidThreshold);
+    // threshold (3) exceeds the number of signers, so the constructor rejects it.
+    env.register(UpgradeGovernance, (&signers, &3u32));
 }
 
 #[test]
 fn test_propose_before_init_returns_error() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(UpgradeGovernance, ());
+    let signers = make_signers(&env, 2);
+    let contract_id = env.register(UpgradeGovernance, (&signers, &2u32));
     let client = UpgradeGovernanceClient::new(&env, &contract_id);
+    // Simulate a contract deployed without running the constructor.
+    env.as_contract(&contract_id, || {
+        env.storage().persistent().remove(&DataKey::Initialized);
+    });
     let signer = Address::generate(&env);
     let err = client
         .try_propose_upgrade(

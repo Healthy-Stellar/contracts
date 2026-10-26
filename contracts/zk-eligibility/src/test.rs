@@ -22,10 +22,9 @@ fn setup() -> (Env, Address, ZkEligibilityClient<'static>) {
     env.ledger().with_mut(|l| {
         l.timestamp = BASE_TIMESTAMP;
     });
-    let contract_id = env.register(ZkEligibility, ());
-    let client = ZkEligibilityClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let contract_id = env.register(ZkEligibility, (&admin,));
+    let client = ZkEligibilityClient::new(&env, &contract_id);
     (env, admin, client)
 }
 
@@ -102,27 +101,38 @@ fn make_invalid_proof(env: &Env) -> Bytes {
 }
 
 /// Convenience: a complete, valid ProofBundle for `(vk_tag, schema_version)`.
+
+/// Build a valid migration proof for (new_vk_bytes, old_version, new_version).
+fn migration_proof(env: &Env, new_vk_bytes: &Bytes, old_version: u32, new_version: u32) -> Bytes {
+    let mut inputs = Vec::new(env);
+    inputs.push_back(ZkEligibility::encode_u32_public_input(
+        env,
+        u32::from_be_bytes(*b"MIGR"),
+    ));
+    inputs.push_back(ZkEligibility::encode_u32_public_input(env, old_version));
+    inputs.push_back(ZkEligibility::encode_u32_public_input(env, new_version));
+    make_proof(env, new_vk_bytes, &inputs)
+}
+
 fn valid_bundle(env: &Env, vk_bytes: &Bytes, schema_version: u32) -> ProofBundle {
     let inputs = inputs_with_expiry(env, FUTURE_EXPIRY);
     let proof = make_proof(env, vk_bytes, &inputs);
     ProofBundle { proof, public_inputs: inputs, schema_version }
 }
 
-// ── initialize ────────────────────────────────────────────────────────────────
-
-#[test]
-fn test_double_initialize_returns_error() {
-    let (_, admin, client) = setup();
-    let err = client.try_initialize(&admin).unwrap_err().unwrap();
-    assert_eq!(err, Error::AlreadyInitialized);
-}
+// ── constructor ───────────────────────────────────────────────────────────────
 
 #[test]
 fn test_call_before_init_returns_error() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(ZkEligibility, ());
+    let admin = Address::generate(&env);
+    let contract_id = env.register(ZkEligibility, (&admin,));
     let client = ZkEligibilityClient::new(&env, &contract_id);
+    // Simulate a contract deployed without running the constructor.
+    env.as_contract(&contract_id, || {
+        env.storage().persistent().remove(&DataKey::Initialized);
+    });
     let admin = Address::generate(&env);
     let err = client
         .try_register_verifier_key(&admin, &1u32, &vk(&env, 0xAA))
@@ -413,14 +423,36 @@ fn test_multiple_schema_versions_coexist() {
 #[test]
 fn test_migrate_schema_marks_old_schema_as_migrated() {
     let (env, admin, client) = setup();
-    client.register_verifier_key(&admin, &1u32, &vk(&env, 0xAA));
-    client.register_verifier_key(&admin, &2u32, &vk(&env, 0xBB));
+    let vk1 = vk(&env, 0xAA);
+    let vk2 = vk(&env, 0xBB);
+    client.register_verifier_key(&admin, &1u32, &vk1);
+    client.register_verifier_key(&admin, &2u32, &vk2);
     client.deprecate_verifier_key(&admin, &1u32);
 
-    client.migrate_schema(&admin, &1u32, &2u32, &proof(&env, 0xBB));
+    // Valid proof matching new schema verifier key vk2
+    let proof = migration_proof(&env, &vk2, 1, 2);
+    client.migrate_schema(&admin, &1u32, &2u32, &proof);
 
     let old_entry = client.get_verifier_key(&1u32);
     assert_eq!(old_entry.migrated_to, 2);
+}
+
+#[test]
+fn test_migrate_schema_rejects_mismatched_proof() {
+    let (env, admin, client) = setup();
+    let vk1 = vk(&env, 0xAA);
+    let vk2 = vk(&env, 0xBB);
+    client.register_verifier_key(&admin, &1u32, &vk1);
+    client.register_verifier_key(&admin, &2u32, &vk2);
+    client.deprecate_verifier_key(&admin, &1u32);
+
+    // Proof generated with wrong key vk1 instead of vk2
+    let invalid_proof = migration_proof(&env, &vk1, 1, 2);
+    let err = client
+        .try_migrate_schema(&admin, &1u32, &2u32, &invalid_proof)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::VerificationFailed);
 }
 
 // ── admin rotation ────────────────────────────────────────────────────────────

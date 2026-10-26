@@ -165,14 +165,11 @@ pub struct ClinicalTrialContract;
 
 #[contractimpl]
 impl ClinicalTrialContract {
-    /// Initialize the contract with an admin address
-    pub fn initialize(env: Env, admin: Address, patient_registry: Address) -> Result<(), Error> {
-        admin.require_auth();
-
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::AlreadyInitialized);
-        }
-
+    /// Initialize the contract with an admin address and the patient registry.
+    ///
+    /// Runs atomically as part of contract creation and cannot be called again,
+    /// so an attacker cannot front-run deployment and elect themselves admin.
+    pub fn __constructor(env: Env, admin: Address, patient_registry: Address) {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
@@ -182,8 +179,6 @@ impl ClinicalTrialContract {
             .instance()
             .set(&DataKey::EnrollmentCounter, &0u64);
         env.storage().instance().set(&DataKey::EventCounter, &0u64);
-
-        Ok(())
     }
 
     /// Register a new clinical trial

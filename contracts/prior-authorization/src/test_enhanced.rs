@@ -1,7 +1,9 @@
 #![cfg(test)]
 
 use super::*;
-use insurer_registry::{CoveragePlan, InsurerRegistry, InsurerRegistryClient};
+use insurer_registry::{
+    CoveragePlan, InsurerRegistry, InsurerRegistryClient, MAX_CREDENTIAL_LIFETIME,
+};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, BytesN, Env, String, Symbol, Vec,
@@ -11,10 +13,13 @@ fn dummy_hash(env: &Env, byte: u8) -> BytesN<32> {
     BytesN::from_array(env, &[byte; 32])
 }
 
-fn setup_insurer_registry(env: &Env, insurer: &Address) -> Address {
-    let ir_id = env.register_contract(None, InsurerRegistry);
+fn setup_insurer_registry(env: &Env, insurer: &Address) -> (Address, Address) {
+    env.mock_all_auths();
+    let admin = Address::generate(env);
+    let ir_id = env.register(InsurerRegistry, (admin.clone(),));
     let ir_client = InsurerRegistryClient::new(env, &ir_id);
     let issuer = Address::generate(env);
+    ir_client.set_trusted_issuer(&admin, &issuer, &true);
     ir_client.register_insurer(
         insurer,
         &String::from_str(env, "Test Insurer"),
@@ -23,7 +28,7 @@ fn setup_insurer_registry(env: &Env, insurer: &Address) -> Address {
         &dummy_hash(env, 1),
         &issuer,
         &dummy_hash(env, 2),
-        &4_100_000_000_u64,
+        &(env.ledger().timestamp() + MAX_CREDENTIAL_LIFETIME),
         &dummy_hash(env, 3),
     );
 
@@ -39,7 +44,7 @@ fn setup_insurer_registry(env: &Env, insurer: &Address) -> Address {
         effective_until: None,
     });
     ir_client.set_coverage_plans(insurer, &plans);
-    ir_id
+    (ir_id, admin)
 }
 
 fn setup() -> (Env, Address, Address, Address) {
@@ -52,11 +57,22 @@ fn setup() -> (Env, Address, Address, Address) {
 }
 
 fn make_contract<'a>(env: &'a Env, insurer: &Address) -> PriorAuthorizationContractClient<'a> {
-    let ir_id = setup_insurer_registry(env, insurer);
+    let (ir_id, _) = setup_insurer_registry(env, insurer);
     let contract_id = env.register(PriorAuthorizationContract, ());
     let client = PriorAuthorizationContractClient::new(env, &contract_id);
     client.initialize(&ir_id);
     client
+}
+
+fn make_contract_with_registry<'a>(
+    env: &'a Env,
+    insurer: &Address,
+) -> (PriorAuthorizationContractClient<'a>, Address, Address) {
+    let (ir_id, admin) = setup_insurer_registry(env, insurer);
+    let contract_id = env.register(PriorAuthorizationContract, ());
+    let client = PriorAuthorizationContractClient::new(env, &contract_id);
+    client.initialize(&ir_id);
+    (client, ir_id, admin)
 }
 
 fn register_reviewer(
@@ -208,13 +224,14 @@ fn test_configure_sla_rejects_non_insurer() {
 #[test]
 fn test_configure_sla_is_scoped_per_insurer() {
     let (env, insurer_a, provider, patient) = setup();
-    let ir_id = setup_insurer_registry(&env, &insurer_a);
+    let (ir_id, registry_admin) = setup_insurer_registry(&env, &insurer_a);
 
     // Register a second, independent insurer on the same insurer-registry
     // instance so it is also active.
     let insurer_b = Address::generate(&env);
     let ir_client = InsurerRegistryClient::new(&env, &ir_id);
     let issuer = Address::generate(&env);
+    ir_client.set_trusted_issuer(&registry_admin, &issuer, &true);
     ir_client.register_insurer(
         &insurer_b,
         &String::from_str(&env, "Second Insurer"),
@@ -223,7 +240,7 @@ fn test_configure_sla_is_scoped_per_insurer() {
         &dummy_hash(&env, 4),
         &issuer,
         &dummy_hash(&env, 5),
-        &4_100_000_000_u64,
+        &(env.ledger().timestamp() + MAX_CREDENTIAL_LIFETIME),
         &dummy_hash(&env, 6),
     );
 
@@ -435,9 +452,11 @@ fn test_escalate_does_not_hijack_other_insurers_requests() {
     let patient = Address::generate(&env);
 
     // One shared insurer registry with BOTH insurers registered as active.
-    let ir_id = env.register_contract(None, InsurerRegistry);
+    let registry_admin = Address::generate(&env);
+    let ir_id = env.register(InsurerRegistry, (registry_admin.clone(),));
     let ir_client = InsurerRegistryClient::new(&env, &ir_id);
     let issuer = Address::generate(&env);
+    ir_client.set_trusted_issuer(&registry_admin, &issuer, &true);
 
     ir_client.register_insurer(
         &insurer_a,
@@ -447,7 +466,7 @@ fn test_escalate_does_not_hijack_other_insurers_requests() {
         &dummy_hash(&env, 1),
         &issuer,
         &dummy_hash(&env, 2),
-        &4_100_000_000_u64,
+        &(env.ledger().timestamp() + MAX_CREDENTIAL_LIFETIME),
         &dummy_hash(&env, 3),
     );
     let mut svc_a = Vec::new(&env);
@@ -471,7 +490,7 @@ fn test_escalate_does_not_hijack_other_insurers_requests() {
         &dummy_hash(&env, 4),
         &issuer,
         &dummy_hash(&env, 5),
-        &4_100_000_000_u64,
+        &(env.ledger().timestamp() + MAX_CREDENTIAL_LIFETIME),
         &dummy_hash(&env, 6),
     );
     let mut svc_b = Vec::new(&env);
@@ -539,7 +558,7 @@ fn test_escalate_does_not_hijack_other_insurers_requests() {
 #[test]
 fn test_reviewer_from_wrong_insurer_rejected() {
     let (env, insurer, provider, patient) = setup();
-    let client = make_contract(&env, &insurer);
+    let (client, ir_id, registry_admin) = make_contract_with_registry(&env, &insurer);
 
     // Register a reviewer under the correct insurer
     let reviewer_a = Address::generate(&env);
@@ -547,10 +566,9 @@ fn test_reviewer_from_wrong_insurer_rejected() {
 
     // Create a second insurer that is also registered in the registry
     let insurer_b = Address::generate(&env);
-    let ir_id = setup_insurer_registry(&env, &insurer_b);
-    // Register insurer_b in the registry via the same registry contract
     let ir_client = InsurerRegistryClient::new(&env, &ir_id);
     let issuer_b = Address::generate(&env);
+    ir_client.set_trusted_issuer(&registry_admin, &issuer_b, &true);
     ir_client.register_insurer(
         &insurer_b,
         &String::from_str(&env, "Insurer B"),
@@ -559,7 +577,7 @@ fn test_reviewer_from_wrong_insurer_rejected() {
         &dummy_hash(&env, 10),
         &issuer_b,
         &dummy_hash(&env, 11),
-        &4_100_000_000_u64,
+        &(env.ledger().timestamp() + MAX_CREDENTIAL_LIFETIME),
         &dummy_hash(&env, 12),
     );
     let mut svc_b = Vec::new(&env);

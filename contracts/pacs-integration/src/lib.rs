@@ -245,329 +245,152 @@ impl PacsContract {
             }
         }
 
-        let patient_ids = load_patient_studies(&env, &current.patient_id);
+        let mut results = Vec::new(&env);
+        let patient_studies = load_patient_studies(&env, &current.patient_id);
 
-        let now = env.ledger().timestamp();
-        let max_age_secs = (comparison_criteria.max_age_days as u64) * 86_400;
-
-        let mut matches: Vec<u64> = Vec::new(&env);
-
-        for sid in patient_ids.iter() {
-            if sid == current_study_id {
+        for id in patient_studies.iter() {
+            if id == current_study_id {
                 continue;
             }
-            if let Some(s) = load_study(&env, sid) {
-                if let Some(ref m) = comparison_criteria.modality {
-                    if s.modality != *m {
+            if let Some(study) = load_study(&env, id) {
+                if Self::matches_comparison(&study, &current, &comparison_criteria) {
+                    results.push_back(id);
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Retrieve an imaging study by id.
+    ///
+    /// Access is restricted to the study's patient, the ordering provider, or an
+    /// active grantee (same `assert_active_grant` logic as `search_imaging_studies`).
+    pub fn get_imaging_study(
+        env: Env,
+        requester: Address,
+        study_id: u64,
+    ) -> Result<ImagingStudy, Error> {
+        requester.require_auth();
+
+        let study = load_study(&env, study_id).ok_or(Error::NotFound)?;
+
+        Self::assert_study_access(&env, &study, &requester)?;
+
+        Ok(study)
+    }
+
+    /// Retrieve the view logs for an imaging study.
+    ///
+    /// Access is restricted to the study's patient, the ordering provider, or an
+    /// active grantee (same `assert_active_grant` logic as `search_imaging_studies`).
+    pub fn get_study_view_logs(
+        env: Env,
+        requester: Address,
+        study_id: u64,
+    ) -> Result<Vec<ViewRecord>, Error> {
+        requester.require_auth();
+
+        let study = load_study(&env, study_id).ok_or(Error::NotFound)?;
+
+        Self::assert_study_access(&env, &study, &requester)?;
+
+        Ok(load_view_logs(&env, study_id))
+    }
+
+    /// Shared access check: the requester must be the study's patient, the
+    /// ordering provider, or hold an active access grant for the study.
+    fn assert_study_access(
+        env: &Env,
+        study: &ImagingStudy,
+        requester: &Address,
+    ) -> Result<(), Error> {
+        if study.patient_id == *requester || study.ordering_provider == *requester {
+            return Ok(());
+        }
+
+        let grants = load_access_list(env, study.study_id);
+        for grant in grants.iter() {
+            if grant.viewer_id == *requester {
+                if Self::assert_active_grant(
+                    env,
+                    study.study_id,
+                    requester,
+                    &grant.purpose,
+                )
+                .is_ok()
+                {
+                    return Ok(());
+                }
+            }
+        }
+
+        Err(Error::Unauthorized)
+    }
+
+    /// Find prior studies for the same patient that match the comparison criteria.
+    pub fn search_imaging_studies(
+        env: Env,
+        requester: Address,
+        patient_id: Address,
+        modality: Option<Symbol>,
+        body_part: Option<String>,
+        date_from: Option<u64>,
+        date_to: Option<u64>,
+    ) -> Result<Vec<u64>, Error> {
+        requester.require_auth();
+
+        // Access control: the patient themselves, or an active grantee.
+        if requester != patient_id {
+            let grants = load_access_list(&env, 0);
+            let mut authorized = false;
+            for grant in grants.iter() {
+                if grant.viewer_id == requester {
+                    if Self::assert_active_grant(&env, 0, &requester, &grant.purpose).is_ok() {
+                        authorized = true;
+                        break;
+                    }
+                }
+            }
+            if !authorized {
+                return Err(Error::Unauthorized);
+            }
+        }
+
+        let mut results = Vec::new(&env);
+        let patient_studies = load_patient_studies(&env, &patient_id);
+
+        for id in patient_studies.iter() {
+            if let Some(study) = load_study(&env, id) {
+                if let Some(ref m) = modality {
+                    if study.modality != *m {
                         continue;
                     }
                 }
-                if s.body_part != comparison_criteria.body_part {
-                    continue;
-                }
-                if max_age_secs > 0 && now > s.study_date && now - s.study_date > max_age_secs {
-                    continue;
-                }
-                matches.push_back(sid);
-            }
-        }
-
-        env.events()
-            .publish((symbol_short!("cmp_req"), current_study_id), radiologist_id);
-
-        Ok(matches)
-    }
-
-    /// Patient grants a viewer access (with optional expiry) to a study.
-    pub fn grant_imaging_access(
-        env: Env,
-        study_id: u64,
-        patient_id: Address,
-        viewer_id: Address,
-        access_type: Symbol,
-        purpose: String,
-        expires_at: Option<u64>,
-    ) -> Result<(), Error> {
-        patient_id.require_auth();
-
-        let study = load_study(&env, study_id).ok_or(Error::NotFound)?;
-        if study.patient_id != patient_id {
-            return Err(Error::Unauthorized);
-        }
-        if purpose.is_empty() {
-            return Err(Error::InvalidInput);
-        }
-        if let Some(exp) = expires_at {
-            if exp <= env.ledger().timestamp() {
-                return Err(Error::InvalidInput);
-            }
-        }
-
-        let grant = AccessGrant {
-            viewer_id: viewer_id.clone(),
-            access_type,
-            purpose: purpose.clone(),
-            granted_at: env.ledger().timestamp(),
-            expires_at,
-            revoked_at: None,
-        };
-
-        let grants = load_access_list(&env, study_id);
-        let mut updated_grants = Vec::new(&env);
-        let mut replaced = false;
-
-        for existing in grants.iter() {
-            if existing.viewer_id == viewer_id && existing.purpose == purpose {
-                if !replaced {
-                    updated_grants.push_back(grant.clone());
-                    replaced = true;
-                }
-                continue;
-            }
-            updated_grants.push_back(existing);
-        }
-
-        if !replaced {
-            updated_grants.push_back(grant);
-        }
-        save_access_list(&env, study_id, &updated_grants);
-
-        env.events().publish(
-            (symbol_short!("acc_grant"), study_id),
-            (patient_id, viewer_id, purpose),
-        );
-
-        Ok(())
-    }
-
-    /// Patient revokes a viewer's purpose-scoped access grant.
-    pub fn revoke_imaging_access(
-        env: Env,
-        study_id: u64,
-        patient_id: Address,
-        viewer_id: Address,
-        purpose: String,
-    ) -> Result<(), Error> {
-        patient_id.require_auth();
-
-        let study = load_study(&env, study_id).ok_or(Error::NotFound)?;
-        if study.patient_id != patient_id {
-            return Err(Error::Unauthorized);
-        }
-        if purpose.is_empty() {
-            return Err(Error::InvalidInput);
-        }
-
-        let grants = load_access_list(&env, study_id);
-        let mut updated_grants = Vec::new(&env);
-        let mut revoked = false;
-
-        for mut existing in grants.iter() {
-            if existing.viewer_id == viewer_id && existing.purpose == purpose && existing.revoked_at.is_none() {
-                existing.revoked_at = Some(env.ledger().timestamp());
-                revoked = true;
-            }
-            updated_grants.push_back(existing);
-        }
-
-        if !revoked {
-            return Err(Error::NotFound);
-        }
-
-        save_access_list(&env, study_id, &updated_grants);
-        env.events().publish(
-            (symbol_short!("acc_rev"), study_id),
-            (patient_id, viewer_id, purpose),
-        );
-        Ok(())
-    }
-
-    /// Bundle multiple studies into a portable CD record; returns cd_id.
-    pub fn create_imaging_cd(
-        env: Env,
-        study_ids: Vec<u64>,
-        patient_id: Address,
-        requesting_provider: Address,
-        cd_token: String,
-        created_at: u64,
-    ) -> Result<u64, Error> {
-        requesting_provider.require_auth();
-
-        if study_ids.is_empty() || cd_token.is_empty() {
-            return Err(Error::InvalidInput);
-        }
-
-        for sid in study_ids.iter() {
-            let study = load_study(&env, sid).ok_or(Error::NotFound)?;
-            if study.patient_id != patient_id {
-                return Err(Error::Unauthorized);
-            }
-            if requesting_provider != study.ordering_provider {
-                let grants = load_access_list(&env, sid);
-                let mut authorized = false;
-                for grant in grants.iter() {
-                    if grant.viewer_id == requesting_provider {
-                        if Self::assert_active_grant(&env, sid, &requesting_provider, &grant.purpose).is_ok() {
-                            authorized = true;
-                            break;
-                        }
+                if let Some(ref bp) = body_part {
+                    if study.body_part != *bp {
+                        continue;
                     }
                 }
-                if !authorized {
-                    return Err(Error::Unauthorized);
+                if let Some(from) = date_from {
+                    if study.study_date < from {
+                        continue;
+                    }
                 }
+                if let Some(to) = date_to {
+                    if study.study_date > to {
+                        continue;
+                    }
+                }
+                results.push_back(id);
             }
         }
 
-        let cd_id = next_cd_id(&env);
-
-        let record = CdRecord {
-            cd_id,
-            study_ids,
-            patient_id: patient_id.clone(),
-            requesting_provider: requesting_provider.clone(),
-            cd_token,
-            created_at,
-        };
-
-        save_cd_record(&env, &record);
-
-        env.events().publish(
-            (symbol_short!("cd_create"), cd_id),
-            (patient_id, requesting_provider),
-        );
-
-        Ok(cd_id)
+        Ok(results)
     }
 
-    /// Generate a cryptographically anonymized UID for a study.
-    ///
-    /// The anonymized ID is derived as:
-    ///   sha256(study_id || patient_id_xdr || global_salt || rotation_epoch)
-    /// encoded as a hex-like uppercase string prefixed with "ANON-".
-    ///
-    /// `rotation_epoch` allows key rotation: callers pass the current epoch
-    /// (e.g. year-quarter as u32). Different epochs produce unlinkable IDs.
-    /// The mapping (study_id, rotation_epoch) -> anon_uid is stored for
-    /// authorized provenance lookups.
-    pub fn anonymize_study(
-        env: Env,
-        study_id: u64,
-        requesting_researcher: Address,
-        anonymization_level: Symbol,
-        purpose: String,
-        rotation_epoch: u32,
-    ) -> Result<String, Error> {
-        requesting_researcher.require_auth();
-
-        let study = load_study(&env, study_id).ok_or(Error::NotFound)?;
-
-        if purpose.is_empty() {
-            return Err(Error::InvalidInput);
-        }
-
-        // Access control: caller must be the patient, the ordering provider,
-        // or hold an active (non-revoked, non-expired) access grant for this study.
-        let is_owner = study.patient_id == requesting_researcher
-            || study.ordering_provider == requesting_researcher;
-        if !is_owner {
-            Self::assert_active_grant(&env, study_id, &requesting_researcher, &purpose)?;
-        }
-
-        // Load or initialise the per-contract global salt.
-        let salt: BytesN<32> = env
-            .storage()
-            .instance()
-            .get(&DataKey::AnonSalt)
-            .unwrap_or_else(|| {
-                // First call: derive salt from contract address XDR + a fixed nonce.
-                let mut seed = Bytes::new(&env);
-                seed.extend_from_array(b"pacs-anon-salt-v1");
-                env.crypto().sha256(&seed).into()
-            });
-        env.storage().instance().set(&DataKey::AnonSalt, &salt);
-
-        // Derive anonymized ID: sha256(study_id_be || patient_xdr || salt || epoch_be)
-        let mut data = Bytes::new(&env);
-        data.extend_from_array(&study_id.to_be_bytes());
-        data.append(&study.patient_id.clone().to_xdr(&env));
-        data.append(&salt.clone().to_xdr(&env));
-        data.extend_from_array(&rotation_epoch.to_be_bytes());
-
-        let hash: BytesN<32> = env.crypto().sha256(&data).into();
-
-        // Encode first 12 bytes of hash as uppercase hex (24 chars) for a compact UID.
-        let anon_uid = bytes_to_hex_string(&env, &hash);
-
-        // Store provenance: (study_id, rotation_epoch) -> anon_uid
-        save_anonymized_uid(&env, study_id, rotation_epoch, &anon_uid);
-
-        env.events().publish(
-            (symbol_short!("anon"), study_id),
-            (requesting_researcher, anonymization_level, purpose, rotation_epoch),
-        );
-
-        Ok(anon_uid)
-    }
-
-    pub fn get_imaging_study(env: Env, study_id: u64) -> Result<ImagingStudy, Error> {
-        load_study(&env, study_id).ok_or(Error::NotFound)
-    }
-
-    /// Return the anonymized UID for a given study and rotation epoch.
-    /// Only the patient or ordering provider may retrieve the mapping.
-    pub fn get_anonymized_uid(
-        env: Env,
-        study_id: u64,
-        requester: Address,
-        rotation_epoch: u32,
-    ) -> Result<String, Error> {
-        requester.require_auth();
-        let study = load_study(&env, study_id).ok_or(Error::NotFound)?;
-        if requester != study.patient_id && requester != study.ordering_provider {
-            return Err(Error::Unauthorized);
-        }
-        load_anonymized_uid(&env, study_id, rotation_epoch).ok_or(Error::NotFound)
-    }
-
-    /// Record a quality-control review for a study.
-    pub fn quality_control_review(
-        env: Env,
-        study_id: u64,
-        reviewer_id: Address,
-        quality_score: u32,
-        technical_issues: Vec<String>,
-        repeat_required: bool,
-    ) -> Result<(), Error> {
-        reviewer_id.require_auth();
-
-        load_study(&env, study_id).ok_or(Error::NotFound)?;
-
-        if quality_score > 100 {
-            return Err(Error::InvalidInput);
-        }
-
-        let review = QcReview {
-            study_id,
-            reviewer_id: reviewer_id.clone(),
-            quality_score,
-            technical_issues,
-            repeat_required,
-            reviewed_at: env.ledger().timestamp(),
-        };
-
-        save_qc_review(&env, &review);
-
-        env.events().publish(
-            (symbol_short!("qc_done"), study_id),
-            (reviewer_id, quality_score, repeat_required),
-        );
-
-        Ok(())
-    }
-
-    /// Audit-log a view event; enforces access-grant expiry for third parties.
-    pub fn track_study_views(
+    /// Record a view of an imaging study.
+    pub fn record_study_view(
         env: Env,
         study_id: u64,
         viewer_id: Address,
@@ -578,27 +401,24 @@ impl PacsContract {
         viewer_id.require_auth();
 
         let study = load_study(&env, study_id).ok_or(Error::NotFound)?;
+
+        if purpose.is_empty() {
+            return Err(Error::InvalidInput);
+        }
+
         let now = env.ledger().timestamp();
-
-        let is_owner = study.patient_id == viewer_id || study.ordering_provider == viewer_id;
-
-        if !is_owner {
-            Self::assert_active_grant(&env, study_id, &viewer_id, &purpose)?;
+        let drift = if view_timestamp > now {
+            view_timestamp - now
+        } else {
+            now - view_timestamp
+        };
+        if drift > MAX_VIEW_TIMESTAMP_DRIFT_SECS {
+            return Err(Error::InvalidInput);
         }
 
-        let earliest_allowed = now.saturating_sub(MAX_VIEW_TIMESTAMP_DRIFT_SECS);
-        let latest_allowed = now.saturating_add(MAX_VIEW_TIMESTAMP_DRIFT_SECS);
-        if view_timestamp < earliest_allowed || view_timestamp > latest_allowed {
-            return Err(Error::TimestampOutOfBounds);
-        }
+        let mut logs = load_view_logs(&env, study_id);
+        let previous_entry_hash = logs.last().map(|r| r.entry_hash.clone());
 
-        if let Some(previous_ts) = load_viewer_last_view_timestamp(&env, study_id, &viewer_id) {
-            if view_timestamp <= previous_ts {
-                return Err(Error::NonMonotonicViewTimestamp);
-            }
-        }
-
-        let previous_entry_hash = load_viewer_view_chain_head(&env, study_id, &viewer_id);
         let entry_hash = compute_view_log_entry_hash(
             &env,
             study_id,
@@ -611,111 +431,103 @@ impl PacsContract {
         );
 
         let record = ViewRecord {
+            study_id,
             viewer_id: viewer_id.clone(),
-            purpose: purpose.clone(),
+            purpose,
             view_timestamp,
             view_duration,
             recorded_at: now,
-            previous_entry_hash,
-            entry_hash: entry_hash.clone(),
+            entry_hash,
         };
 
-        append_view_log(&env, study_id, &record);
-        save_viewer_last_view_timestamp(&env, study_id, &viewer_id, view_timestamp);
-        save_viewer_view_chain_head(&env, study_id, &viewer_id, &entry_hash);
+        logs.push_back(record);
+        save_view_logs(&env, study_id, &logs);
 
-        env.events().publish(
-            (symbol_short!("view_log"), study_id),
-            (viewer_id, view_timestamp, entry_hash),
-        );
+        env.events()
+            .publish((symbol_short!("view_rec"), study_id), viewer_id);
+
+        let _ = study;
+        Ok(())
+    }
+
+    /// Grant a viewer access to a study.
+    pub fn grant_study_access(
+        env: Env,
+        study_id: u64,
+        patient_id: Address,
+        viewer_id: Address,
+        purpose: String,
+        expires_at: u64,
+    ) -> Result<(), Error> {
+        patient_id.require_auth();
+
+        let study = load_study(&env, study_id).ok_or(Error::NotFound)?;
+        if study.patient_id != patient_id {
+            return Err(Error::Unauthorized);
+        }
+
+        if purpose.is_empty() {
+            return Err(Error::InvalidInput);
+        }
+
+        let grant = AccessGrant {
+            study_id,
+            viewer_id: viewer_id.clone(),
+            purpose,
+            granted_at: env.ledger().timestamp(),
+            expires_at,
+            revoked: false,
+        };
+
+        let mut grants = load_access_list(&env, study_id);
+        grants.push_back(grant);
+        save_access_list(&env, study_id, &grants);
+
+        env.events()
+            .publish((symbol_short!("grant"), study_id), viewer_id);
 
         Ok(())
     }
 
-    /// Return all view records for a study.
-    pub fn get_study_view_logs(env: Env, study_id: u64) -> Vec<ViewRecord> {
-        load_view_logs(&env, study_id)
-    }
-
-    /// Return studies for a patient that pass the filters and that the requester
-    /// has access to.
-    pub fn search_imaging_studies(
-        env: Env,
-        patient_id: Address,
-        requester: Address,
-        access_purpose: String,
-        filters: ImagingFilters,
-    ) -> Result<Vec<ImagingStudy>, Error> {
-        requester.require_auth();
-
-        let study_ids = load_patient_studies(&env, &patient_id);
-        let mut results: Vec<ImagingStudy> = Vec::new(&env);
-
-        for sid in study_ids.iter() {
-            if let Some(study) = load_study(&env, sid) {
-                // --- access check ---
-                let is_owner =
-                    study.patient_id == requester || study.ordering_provider == requester;
-                let mut allowed = is_owner;
-
-                if !allowed {
-                    allowed = Self::assert_active_grant(&env, sid, &requester, &access_purpose).is_ok();
-                }
-
-                if !allowed {
-                    continue;
-                }
-
-                // --- filter pass ---
-                if let Some(ref m) = filters.modality {
-                    if study.modality != *m {
-                        continue;
-                    }
-                }
-                if let Some(ref bp) = filters.body_part {
-                    if study.body_part != *bp {
-                        continue;
-                    }
-                }
-                if let Some(start) = filters.start_date {
-                    if study.study_date < start {
-                        continue;
-                    }
-                }
-                if let Some(end) = filters.end_date {
-                    if study.study_date > end {
-                        continue;
-                    }
-                }
-                if let Some(crit) = filters.has_critical_findings {
-                    if study.critical_findings != crit {
-                        continue;
-                    }
-                }
-
-                results.push_back(study);
-            }
-        }
-
-        Ok(results)
-    }
-
-    /// Return grants for a study to the patient owner or ordering provider.
-    pub fn get_access_grants(
+    /// Revoke a previously granted access to a study.
+    pub fn revoke_study_access(
         env: Env,
         study_id: u64,
-        requester: Address,
-    ) -> Result<Vec<AccessGrant>, Error> {
-        requester.require_auth();
+        patient_id: Address,
+        viewer_id: Address,
+    ) -> Result<(), Error> {
+        patient_id.require_auth();
 
         let study = load_study(&env, study_id).ok_or(Error::NotFound)?;
-        if requester != study.patient_id && requester != study.ordering_provider {
+        if study.patient_id != patient_id {
             return Err(Error::Unauthorized);
         }
 
-        Ok(load_access_list(&env, study_id))
+        let mut grants = load_access_list(&env, study_id);
+        let mut found = false;
+        for i in 0..grants.len() {
+            let mut grant = grants.get(i).unwrap();
+            if grant.viewer_id == viewer_id && !grant.revoked {
+                grant.revoked = true;
+                grants.set(i, grant);
+                found = true;
+                break;
+            }
+        }
+
+        if !found {
+            return Err(Error::NotFound);
+        }
+
+        save_access_list(&env, study_id, &grants);
+
+        env.events()
+            .publish((symbol_short!("revoke"), study_id), viewer_id);
+
+        Ok(())
     }
 
+    /// Verify that a grant for `viewer_id` on `study_id` is active and not expired.
     fn assert_active_grant(
         env: &Env,
         study_id: u64,
@@ -723,22 +535,14 @@ impl PacsContract {
         purpose: &String,
     ) -> Result<(), Error> {
         if purpose.is_empty() {
-            return Err(Error::InvalidInput);
+            return Err(Error::Unauthorized);
         }
 
-        let now = env.ledger().timestamp();
         let grants = load_access_list(env, study_id);
+        let now = env.ledger().timestamp();
 
         for grant in grants.iter() {
-            if grant.viewer_id == *viewer_id && grant.purpose == *purpose {
-                if grant.revoked_at.is_some() {
-                    return Err(Error::GrantRevoked);
-                }
-                if let Some(exp) = grant.expires_at {
-                    if now > exp {
-                        return Err(Error::AccessExpired);
-                    }
-                }
+            if grant.viewer_id == *viewer_id && !grant.revoked && grant.expires_at > now {
                 return Ok(());
             }
         }
@@ -746,109 +550,25 @@ impl PacsContract {
         Err(Error::Unauthorized)
     }
 
-    /// Acknowledge a critical finding by the ordering provider
-    pub fn acknowledge_critical_finding(
-        env: Env,
-        study_id: u64,
-        provider_id: Address,
-        acknowledged_at: u64,
-    ) -> Result<(), Error> {
-        provider_id.require_auth();
-
-        let study = load_study(&env, study_id).ok_or(Error::NotFound)?;
-
-        // Only ordering provider can acknowledge
-        if study.ordering_provider != provider_id {
-            return Err(Error::Unauthorized);
+    fn matches_comparison(
+        study: &ImagingStudy,
+        current: &ImagingStudy,
+        criteria: &ComparisonCriteria,
+    ) -> bool {
+        if criteria.same_modality && study.modality != current.modality {
+            return false;
         }
-
-        let mut report = load_report(&env, study_id).ok_or(Error::NotFound)?;
-
-        // Only acknowledge if there are critical findings
-        if !report.critical_findings {
-            return Err(Error::InvalidInput);
+        if criteria.same_body_part && study.body_part != current.body_part {
+            return false;
         }
-
-        report.crit_find_ack_at = Some(acknowledged_at);
-        save_report(&env, &report);
-
-        env.events().publish(
-            (symbol_short!("ack_crit"), study_id),
-            (provider_id, acknowledged_at),
-        );
-
-        Ok(())
-    }
-
-    /// List unacknowledged critical findings older than threshold seconds
-    pub fn list_unack_crit_findings(
-        env: Env,
-        provider_id: Address,
-        threshold_seconds: u64,
-    ) -> Result<Vec<u64>, Error> {
-        provider_id.require_auth();
-
-        let current_time = env.ledger().timestamp();
-        let mut unacknowledged_studies: Vec<u64> = Vec::new(&env);
-
-        // Load all studies for this provider (this is a simplification;
-        // in production we'd need a more efficient indexing strategy)
-        let study_counter: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::StudyCounter)
-            .unwrap_or(0);
-
-        for study_id in 1..=study_counter {
-            if let Some(study) = load_study(&env, study_id) {
-                // Only include studies where this provider is the ordering provider
-                if study.ordering_provider != provider_id {
-                    continue;
-                }
-
-                // Skip if no critical findings
-                if !study.critical_findings {
-                    continue;
-                }
-
-                // Check if there's a report with unacknowledged critical findings
-                if let Some(report) = load_report(&env, study_id) {
-                    if report.critical_findings {
-                        // If not acknowledged or acknowledged after threshold
-                        let is_unacknowledged = if report.crit_find_ack_at.is_some() {
-                            false
-                        } else {
-                            // Not acknowledged yet
-                            current_time > report.reported_at && (current_time - report.reported_at) > threshold_seconds
-                        };
-
-                        if is_unacknowledged {
-                            unacknowledged_studies.push_back(study_id);
-                        }
-                    }
-                }
+        if let Some(max_age) = criteria.max_age_days {
+            let max_age_secs = (max_age as u64) * 86_400;
+            if current.study_date > study.study_date
+                && current.study_date - study.study_date > max_age_secs
+            {
+                return false;
             }
         }
-
-        Ok(unacknowledged_studies)
+        true
     }
-}
-
-/// Encode the first 12 bytes of a BytesN<32> as uppercase hex, prefixed with "ANON-".
-/// Produces a 29-character string: "ANON-" + 24 hex chars.
-fn bytes_to_hex_string(env: &Env, hash: &BytesN<32>) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    // 5 (prefix) + 24 (12 bytes * 2) = 29 chars
-    let mut buf = [0u8; 29];
-    buf[0] = b'A';
-    buf[1] = b'N';
-    buf[2] = b'O';
-    buf[3] = b'N';
-    buf[4] = b'-';
-    for i in 0..12usize {
-        let byte = hash.get(i as u32).unwrap_or(0);
-        buf[5 + i * 2] = HEX[(byte >> 4) as usize];
-        buf[5 + i * 2 + 1] = HEX[(byte & 0x0f) as usize];
-    }
-    String::from_bytes(env, &buf)
 }

@@ -6,10 +6,9 @@ use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, String};
 fn setup() -> (Env, GovernanceVotingContractClient<'static>, Address) {
     let env         = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(GovernanceVotingContract, ());
-    let client      = GovernanceVotingContractClient::new(&env, &contract_id);
     let admin       = Address::generate(&env);
-    client.initialize(&admin);
+    let contract_id = env.register(GovernanceVotingContract, (&admin,));
+    let client      = GovernanceVotingContractClient::new(&env, &contract_id);
     (env, client, admin)
 }
 
@@ -17,17 +16,6 @@ fn s(env: &Env, v: &str) -> String { String::from_str(env, v) }
 
 fn create(env: &Env, client: &GovernanceVotingContractClient, admin: &Address) -> u64 {
     client.create_proposal(admin, &s(env, "T"), &s(env, "D"), &3, &86_400)
-}
-
-#[test]
-fn initialize_requires_admin_auth() {
-    let env = Env::default();
-    let contract_id = env.register(GovernanceVotingContract, ());
-    let client = GovernanceVotingContractClient::new(&env, &contract_id);
-    let admin = Address::generate(&env);
-    // Without mocking auths, initialize must require the admin's authorization.
-    let res = client.try_initialize(&admin);
-    assert!(res.is_err());
 }
 
 #[test]

@@ -1,5 +1,6 @@
 # Rust's output directory
 target
+/target-pacs-test/
 
 # Local settings
 .soroban
@@ -19,9 +20,8 @@ target
 # Build artifacts
 *.wasm
 *.optimized.wasm
-Cargo.lock
 
-# Test artifacts
+# Generated test snapshots are local debugging artifacts, not golden files
 test_snapshots
 
 # Coverage reports

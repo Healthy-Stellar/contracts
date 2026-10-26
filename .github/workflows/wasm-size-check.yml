@@ -7,17 +7,22 @@ on:
       - 'contracts/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'rust-toolchain.toml'
   push:
     branches: [main]
     paths:
       - 'contracts/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'rust-toolchain.toml'
 
 env:
   CARGO_TERM_COLOR: always
   # Size limit in KB
   SIZE_LIMIT_KB: 128
+  # Pinned stellar-cli release (renamed from soroban-cli)
+  STELLAR_CLI_VERSION: 22.0.1
+  WASM_TARGET: wasm32v1-none
 
 jobs:
   check-sizes:
@@ -30,7 +35,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32v1-none
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -63,23 +68,25 @@ jobs:
           sudo cp binaryen-version_116/bin/wasm-opt /usr/local/bin/
           wasm-opt --version
 
-      - name: Install soroban-cli
+      - name: Install stellar-cli
         run: |
-          cargo install --locked soroban-cli --features opt
+          curl -sSL "https://github.com/stellar/stellar-cli/releases/download/v${STELLAR_CLI_VERSION}/stellar-cli-${STELLAR_CLI_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C /usr/local/bin
+          stellar --version
 
       - name: Build WASM binaries
         run: |
-          cargo build --release --target wasm32-unknown-unknown --workspace
+          cargo build --release --target "$WASM_TARGET" --workspace
 
       - name: Optimize WASM binaries
         run: |
-          mkdir -p target/wasm32-unknown-unknown/release/optimized
-          for wasm in target/wasm32-unknown-unknown/release/*.wasm; do
+          mkdir -p "target/$WASM_TARGET/release/optimized"
+          for wasm in "target/$WASM_TARGET/release"/*.wasm; do
             if [ -f "$wasm" ] && [[ "$wasm" != *"_optimized.wasm" ]]; then
               filename=$(basename "$wasm")
               echo "Optimizing $filename..."
-              wasm-opt -O4 -o "target/wasm32-unknown-unknown/release/optimized/$filename" "$wasm" || \
-              soroban contract optimize --wasm "$wasm" --wasm-out "target/wasm32-unknown-unknown/release/optimized/$filename"
+              wasm-opt -O4 -o "target/$WASM_TARGET/release/optimized/$filename" "$wasm" || \
+              stellar contract optimize --wasm "$wasm" --wasm-out "target/$WASM_TARGET/release/optimized/$filename"
             fi
           done
 
@@ -87,7 +94,7 @@ jobs:
         id: size_check
         run: |
           SIZE_LIMIT=$((SIZE_LIMIT_KB * 1024))
-          WASM_DIR="target/wasm32-unknown-unknown/release/optimized"
+          WASM_DIR="target/$WASM_TARGET/release/optimized"
           
           OVER_LIMIT=0
           TOTAL_SIZE=0
@@ -152,7 +159,7 @@ jobs:
         with:
           name: wasm-size-report
           path: |
-            target/wasm32-unknown-unknown/release/optimized/*.wasm
+            target/wasm32v1-none/release/optimized/*.wasm
           retention-days: 30
 
       - name: Comment on PR

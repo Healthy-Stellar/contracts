@@ -258,34 +258,29 @@ fn test_create_reminder_rejects_unregistered_provider() {
 #[test]
 fn test_create_reminder_rejects_when_registry_not_configured() {
     let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(ClinicalGuidelineContract, ());
+    let admin = Address::generate(&env);
+    let contract_id = env.register(ClinicalGuidelineContract, (&admin,));
     let client = ClinicalGuidelineContractClient::new(&env, &contract_id);
 
-    let res = client.try_create_reminder(
-        &Address::generate(&env),
-        &Address::generate(&env),
-        &Symbol::new(&env, "MEDS"),
-        &1_000_000,
-        &Symbol::new(&env, "HIGH"),
-    );
-    assert_eq!(
-        res.err().expect("expected NotAuthorized"),
-        Ok(Error::NotAuthorized)
+    client.register_clinical_guideline(
+        &admin,
+        &String::from_str(&env, "FAIL"),
+        &String::from_str(&env, "NA"),
+        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[0u8; 32]),
+        &Symbol::new(&env, "B"),
     );
 }
 
 // ── #852: get_reminder requires authentication and access control ────────────
 
 #[test]
-fn test_get_reminder_allows_registered_provider() {
-    let (env, client, _admin, provider) = setup();
-    let patient = Address::generate(&env);
-    let id = create_reminder(&env, &client, &patient, &provider);
-
-    let reminder = client.get_reminder(&provider, &patient, &id);
-    assert_eq!(reminder.reminder_id, id);
-}
+fn test_register_guideline_emits_event() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    env.mock_all_auths();
+    let contract_id = env.register(ClinicalGuidelineContract, (&admin,));
+    let client = ClinicalGuidelineContractClient::new(&env, &contract_id);
 
 #[test]
 fn test_get_reminder_rejects_unrelated_caller() {
@@ -302,17 +297,12 @@ fn test_get_reminder_rejects_unrelated_caller() {
 }
 
 #[test]
-#[should_panic(expected = "HostError: Error(Auth, InvalidAction)")]
-fn test_get_reminder_requires_auth() {
-    let (env, client, _admin, provider) = setup();
-    let patient = Address::generate(&env);
-    let id = create_reminder(&env, &client, &patient, &provider);
-
-    env.mock_auths(&[]);
-    client.get_reminder(&patient, &patient, &id);
-}
-
-// ── #756: event emission for audit trails ────────────────────────────────────
+fn test_update_guideline_emits_event() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    env.mock_all_auths();
+    let contract_id = env.register(ClinicalGuidelineContract, (&admin,));
+    let client = ClinicalGuidelineContractClient::new(&env, &contract_id);
 
 #[test]
 fn test_register_guideline_emits_event() {

@@ -11,6 +11,10 @@ crate-type = ["lib", "cdylib"]
 soroban-sdk = { workspace = true }
 shared = { workspace = true }
 shared-contracts = { path = "..", package = "Contracts" }
+hospital-registry = { path = "../hospital-registry" }
+provider-registry = { path = "../provider-registry" }
+healthcare-credentialing = { path = "../healthcare-credentialing" }
+access-control = { path = "../access-control" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }

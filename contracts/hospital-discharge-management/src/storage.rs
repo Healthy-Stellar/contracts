@@ -106,6 +106,10 @@ pub fn save_readmission_risk(env: &Env, plan_id: u64, risk: &ReadmissionRisk) {
 }
 
 // Hospital Registry storage
+pub fn set_admin(env: &Env, admin: &Address) {
+    env.storage().instance().set(&DataKey::Admin, admin);
+}
+
 pub fn set_hospital_registry(env: &Env, registry: &Address) {
     env.storage().instance().set(&DataKey::HospitalRegistry, registry);
 }
@@ -114,6 +118,17 @@ pub fn get_hospital_registry(env: &Env) -> Result<Address, Error> {
     env.storage()
         .instance()
         .get(&DataKey::HospitalRegistry)
+        .ok_or(Error::Unauthorized)
+}
+
+pub fn set_provider_registry(env: &Env, registry: &Address) {
+    env.storage().instance().set(&DataKey::ProviderRegistry, registry);
+}
+
+pub fn get_provider_registry(env: &Env) -> Result<Address, Error> {
+    env.storage()
+        .instance()
+        .get(&DataKey::ProviderRegistry)
         .ok_or(Error::Unauthorized)
 }
 

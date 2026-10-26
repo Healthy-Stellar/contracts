@@ -7,13 +7,21 @@ fn dummy_hash(env: &Env, byte: u8) -> BytesN<32> {
     BytesN::from_array(env, &[byte; 32])
 }
 
+fn create_registry(env: &Env) -> (Address, Address) {
+    env.mock_all_auths();
+    let admin = Address::generate(env);
+    let contract_id = env.register(InsurerRegistry, (admin.clone(),));
+    (admin, contract_id)
+}
 
 fn register_insurer_with_anchor(
     env: &Env,
     client: &InsurerRegistryClient<'_>,
+    admin: &Address,
     insurer_wallet: &Address,
 ) {
     let issuer = Address::generate(env);
+    client.set_trusted_issuer(admin, &issuer, &true);
     client.register_insurer(
         insurer_wallet,
         &String::from_str(env, "HealthGuard Insurance"),
@@ -22,7 +30,7 @@ fn register_insurer_with_anchor(
         &dummy_hash(env, 1),
         &issuer,
         &dummy_hash(env, 2),
-        &4_100_000_000_u64,
+        &(env.ledger().timestamp() + MAX_CREDENTIAL_LIFETIME),
         &dummy_hash(env, 3),
     );
 }
@@ -30,13 +38,13 @@ fn register_insurer_with_anchor(
 #[test]
 fn test_register_insurer() {
     let env = Env::default();
-    let contract_id = env.register(InsurerRegistry, ());
+    let (admin, contract_id) = create_registry(&env);
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
     env.mock_all_auths();
 
-    register_insurer_with_anchor(&env, &client, &insurer_wallet);
+    register_insurer_with_anchor(&env, &client, &admin, &insurer_wallet);
 
     let insurer = client.get_insurer(&insurer_wallet);
     assert_eq!(insurer.name, String::from_str(&env, "HealthGuard Insurance"));
@@ -48,14 +56,15 @@ fn test_register_insurer() {
 #[test]
 fn test_duplicate_registration() {
     let env = Env::default();
-    let contract_id = env.register(InsurerRegistry, ());
+    let (admin, contract_id) = create_registry(&env);
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
     let issuer = Address::generate(&env);
     env.mock_all_auths();
 
-    register_insurer_with_anchor(&env, &client, &insurer_wallet);
+    register_insurer_with_anchor(&env, &client, &admin, &insurer_wallet);
+    client.set_trusted_issuer(&admin, &issuer, &true);
     let result = client.try_register_insurer(
         &insurer_wallet,
         &String::from_str(&env, "HealthGuard Insurance"),
@@ -64,7 +73,7 @@ fn test_duplicate_registration() {
         &dummy_hash(&env, 4),
         &issuer,
         &dummy_hash(&env, 5),
-        &4_100_000_000_u64,
+        &(env.ledger().timestamp() + MAX_CREDENTIAL_LIFETIME),
         &dummy_hash(&env, 6),
     );
     assert!(matches!(result, Err(Ok(Error::InsurerAlreadyRegistered))));
@@ -73,13 +82,13 @@ fn test_duplicate_registration() {
 #[test]
 fn test_update_insurer() {
     let env = Env::default();
-    let contract_id = env.register(InsurerRegistry, ());
+    let (admin, contract_id) = create_registry(&env);
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
     env.mock_all_auths();
 
-    register_insurer_with_anchor(&env, &client, &insurer_wallet);
+    register_insurer_with_anchor(&env, &client, &admin, &insurer_wallet);
 
     let new_metadata = String::from_str(&env, "Premium coverage with dental and vision");
     client.update_insurer(&insurer_wallet, &new_metadata);
@@ -92,7 +101,7 @@ fn test_update_insurer() {
 #[test]
 fn test_update_nonexistent_insurer() {
     let env = Env::default();
-    let contract_id = env.register(InsurerRegistry, ());
+    let (_admin, contract_id) = create_registry(&env);
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
@@ -106,7 +115,7 @@ fn test_update_nonexistent_insurer() {
 #[test]
 fn test_get_nonexistent_insurer() {
     let env = Env::default();
-    let contract_id = env.register(InsurerRegistry, ());
+    let (_admin, contract_id) = create_registry(&env);
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
@@ -117,13 +126,13 @@ fn test_get_nonexistent_insurer() {
 #[test]
 fn test_update_contact_details() {
     let env = Env::default();
-    let contract_id = env.register(InsurerRegistry, ());
+    let (admin, contract_id) = create_registry(&env);
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
     env.mock_all_auths();
 
-    register_insurer_with_anchor(&env, &client, &insurer_wallet);
+    register_insurer_with_anchor(&env, &client, &admin, &insurer_wallet);
 
     let contact_details = String::from_str(&env, "phone: 555-0123, email: contact@healthguard.com");
     client.update_contact_details(&insurer_wallet, &contact_details);
@@ -135,13 +144,13 @@ fn test_update_contact_details() {
 #[test]
 fn test_update_coverage_policies() {
     let env = Env::default();
-    let contract_id = env.register(InsurerRegistry, ());
+    let (admin, contract_id) = create_registry(&env);
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
     env.mock_all_auths();
 
-    register_insurer_with_anchor(&env, &client, &insurer_wallet);
+    register_insurer_with_anchor(&env, &client, &admin, &insurer_wallet);
 
     let coverage = String::from_str(&env, "Medical: 80%, Dental: 50%, Vision: 100%");
     client.update_coverage_policies(&insurer_wallet, &coverage);
@@ -153,14 +162,14 @@ fn test_update_coverage_policies() {
 #[test]
 fn test_add_claims_reviewer() {
     let env = Env::default();
-    let contract_id = env.register(InsurerRegistry, ());
+    let (admin, contract_id) = create_registry(&env);
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
     let reviewer_wallet = Address::generate(&env);
     env.mock_all_auths();
 
-    register_insurer_with_anchor(&env, &client, &insurer_wallet);
+    register_insurer_with_anchor(&env, &client, &admin, &insurer_wallet);
     client.add_claims_reviewer(&insurer_wallet, &reviewer_wallet);
 
     let reviewers = client.get_claims_reviewers(&insurer_wallet);
@@ -171,7 +180,7 @@ fn test_add_claims_reviewer() {
 #[test]
 fn test_add_multiple_claims_reviewers() {
     let env = Env::default();
-    let contract_id = env.register(InsurerRegistry, ());
+    let (admin, contract_id) = create_registry(&env);
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
@@ -180,7 +189,7 @@ fn test_add_multiple_claims_reviewers() {
     let reviewer3 = Address::generate(&env);
     env.mock_all_auths();
 
-    register_insurer_with_anchor(&env, &client, &insurer_wallet);
+    register_insurer_with_anchor(&env, &client, &admin, &insurer_wallet);
     client.add_claims_reviewer(&insurer_wallet, &reviewer1);
     client.add_claims_reviewer(&insurer_wallet, &reviewer2);
     client.add_claims_reviewer(&insurer_wallet, &reviewer3);
@@ -192,14 +201,14 @@ fn test_add_multiple_claims_reviewers() {
 #[test]
 fn test_add_duplicate_reviewer() {
     let env = Env::default();
-    let contract_id = env.register(InsurerRegistry, ());
+    let (admin, contract_id) = create_registry(&env);
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
     let reviewer_wallet = Address::generate(&env);
     env.mock_all_auths();
 
-    register_insurer_with_anchor(&env, &client, &insurer_wallet);
+    register_insurer_with_anchor(&env, &client, &admin, &insurer_wallet);
     client.add_claims_reviewer(&insurer_wallet, &reviewer_wallet);
     let result = client.try_add_claims_reviewer(&insurer_wallet, &reviewer_wallet);
     assert!(matches!(result, Err(Ok(Error::ReviewerAlreadyAuthorized))));
@@ -208,7 +217,7 @@ fn test_add_duplicate_reviewer() {
 #[test]
 fn test_add_reviewer_to_nonexistent_insurer() {
     let env = Env::default();
-    let contract_id = env.register(InsurerRegistry, ());
+    let (_admin, contract_id) = create_registry(&env);
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
@@ -222,14 +231,14 @@ fn test_add_reviewer_to_nonexistent_insurer() {
 #[test]
 fn test_remove_claims_reviewer() {
     let env = Env::default();
-    let contract_id = env.register(InsurerRegistry, ());
+    let (admin, contract_id) = create_registry(&env);
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
     let reviewer_wallet = Address::generate(&env);
     env.mock_all_auths();
 
-    register_insurer_with_anchor(&env, &client, &insurer_wallet);
+    register_insurer_with_anchor(&env, &client, &admin, &insurer_wallet);
     client.add_claims_reviewer(&insurer_wallet, &reviewer_wallet);
     client.remove_claims_reviewer(&insurer_wallet, &reviewer_wallet);
 
@@ -240,14 +249,14 @@ fn test_remove_claims_reviewer() {
 #[test]
 fn test_remove_nonexistent_reviewer() {
     let env = Env::default();
-    let contract_id = env.register(InsurerRegistry, ());
+    let (admin, contract_id) = create_registry(&env);
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
     let reviewer_wallet = Address::generate(&env);
     env.mock_all_auths();
 
-    register_insurer_with_anchor(&env, &client, &insurer_wallet);
+    register_insurer_with_anchor(&env, &client, &admin, &insurer_wallet);
 
     let result = client.try_remove_claims_reviewer(&insurer_wallet, &reviewer_wallet);
     assert!(matches!(result, Err(Ok(Error::ReviewerNotFound))));
@@ -256,7 +265,7 @@ fn test_remove_nonexistent_reviewer() {
 #[test]
 fn test_is_authorized_reviewer() {
     let env = Env::default();
-    let contract_id = env.register(InsurerRegistry, ());
+    let (admin, contract_id) = create_registry(&env);
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
@@ -264,7 +273,7 @@ fn test_is_authorized_reviewer() {
     let unauthorized_wallet = Address::generate(&env);
     env.mock_all_auths();
 
-    register_insurer_with_anchor(&env, &client, &insurer_wallet);
+    register_insurer_with_anchor(&env, &client, &admin, &insurer_wallet);
     client.add_claims_reviewer(&insurer_wallet, &reviewer_wallet);
 
     assert!(client.is_authorized_reviewer(&insurer_wallet, &reviewer_wallet));
@@ -274,13 +283,13 @@ fn test_is_authorized_reviewer() {
 #[test]
 fn test_get_claims_reviewers_empty() {
     let env = Env::default();
-    let contract_id = env.register(InsurerRegistry, ());
+    let (admin, contract_id) = create_registry(&env);
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
     env.mock_all_auths();
 
-    register_insurer_with_anchor(&env, &client, &insurer_wallet);
+    register_insurer_with_anchor(&env, &client, &admin, &insurer_wallet);
 
     let reviewers = client.get_claims_reviewers(&insurer_wallet);
     assert_eq!(reviewers.len(), 0);
@@ -289,13 +298,14 @@ fn test_get_claims_reviewers_empty() {
 #[test]
 fn test_expired_insurer_anchor_disables_membership() {
     let env = Env::default();
-    let contract_id = env.register(InsurerRegistry, ());
+    let (admin, contract_id) = create_registry(&env);
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
     let issuer = Address::generate(&env);
     env.mock_all_auths();
     env.ledger().with_mut(|li| li.timestamp = 100);
+    client.set_trusted_issuer(&admin, &issuer, &true);
 
     client.register_insurer(
         &insurer_wallet,
@@ -323,7 +333,7 @@ fn test_expired_insurer_anchor_disables_membership() {
 #[test]
 fn test_full_workflow() {
     let env = Env::default();
-    let contract_id = env.register(InsurerRegistry, ());
+    let (admin, contract_id) = create_registry(&env);
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
@@ -331,7 +341,7 @@ fn test_full_workflow() {
     let reviewer2 = Address::generate(&env);
     env.mock_all_auths();
 
-    register_insurer_with_anchor(&env, &client, &insurer_wallet);
+    register_insurer_with_anchor(&env, &client, &admin, &insurer_wallet);
 
     let contact = String::from_str(&env, "555-0123, contact@healthguard.com");
     client.update_contact_details(&insurer_wallet, &contact);
@@ -360,12 +370,12 @@ fn test_full_workflow() {
 #[test]
 fn test_coverage_plans_round_trip() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InsurerRegistry);
+    let (admin, contract_id) = create_registry(&env);
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
     env.mock_all_auths();
-    register_insurer_with_anchor(&env, &client, &insurer_wallet);
+    register_insurer_with_anchor(&env, &client, &admin, &insurer_wallet);
 
     let mut service_codes = soroban_sdk::Vec::new(&env);
     service_codes.push_back(String::from_str(&env, "CPT99213"));
@@ -388,12 +398,13 @@ fn test_coverage_plans_round_trip() {
 #[test]
 fn test_set_coverage_plans_rejects_revoked_insurer() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InsurerRegistry);
+    let (admin, contract_id) = create_registry(&env);
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
     let issuer = Address::generate(&env);
     env.mock_all_auths();
+    client.set_trusted_issuer(&admin, &issuer, &true);
 
     client.register_insurer(
         &insurer_wallet,
@@ -403,12 +414,12 @@ fn test_set_coverage_plans_rejects_revoked_insurer() {
         &dummy_hash(&env, 1),
         &issuer,
         &dummy_hash(&env, 2),
-        &4_100_000_000_u64,
+        &(env.ledger().timestamp() + MAX_CREDENTIAL_LIFETIME),
         &dummy_hash(&env, 3),
     );
 
     // Revoke the insurer's credential
-    client.revoke_credential(&issuer, &insurer_wallet, &symbol_short!("fraud"));
+    client.revoke_credential(&admin, &insurer_wallet, &symbol_short!("fraud"));
 
     // Attempt to set coverage plans should fail
     let mut plans = soroban_sdk::Vec::new(&env);
@@ -428,13 +439,14 @@ fn test_set_coverage_plans_rejects_revoked_insurer() {
 #[test]
 fn test_set_coverage_plans_rejects_expired_insurer() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InsurerRegistry);
+    let (admin, contract_id) = create_registry(&env);
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
     let issuer = Address::generate(&env);
     env.mock_all_auths();
     env.ledger().with_mut(|li| li.timestamp = 100);
+    client.set_trusted_issuer(&admin, &issuer, &true);
 
     client.register_insurer(
         &insurer_wallet,
@@ -469,12 +481,13 @@ fn test_set_coverage_plans_rejects_expired_insurer() {
 #[test]
 fn test_add_coverage_plan_rejects_revoked_insurer() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InsurerRegistry);
+    let (admin, contract_id) = create_registry(&env);
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
     let issuer = Address::generate(&env);
     env.mock_all_auths();
+    client.set_trusted_issuer(&admin, &issuer, &true);
 
     client.register_insurer(
         &insurer_wallet,
@@ -484,12 +497,12 @@ fn test_add_coverage_plan_rejects_revoked_insurer() {
         &dummy_hash(&env, 1),
         &issuer,
         &dummy_hash(&env, 2),
-        &4_100_000_000_u64,
+        &(env.ledger().timestamp() + MAX_CREDENTIAL_LIFETIME),
         &dummy_hash(&env, 3),
     );
 
     // Revoke the insurer's credential
-    client.revoke_credential(&issuer, &insurer_wallet, &symbol_short!("fraud"));
+    client.revoke_credential(&admin, &insurer_wallet, &symbol_short!("fraud"));
 
     // Attempt to add coverage plan should fail
     let mut service_codes = soroban_sdk::Vec::new(&env);
@@ -509,13 +522,14 @@ fn test_add_coverage_plan_rejects_revoked_insurer() {
 #[test]
 fn test_add_coverage_plan_rejects_expired_insurer() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InsurerRegistry);
+    let (admin, contract_id) = create_registry(&env);
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
     let issuer = Address::generate(&env);
     env.mock_all_auths();
     env.ledger().with_mut(|li| li.timestamp = 100);
+    client.set_trusted_issuer(&admin, &issuer, &true);
 
     client.register_insurer(
         &insurer_wallet,
@@ -550,7 +564,7 @@ fn test_add_coverage_plan_rejects_expired_insurer() {
 #[test]
 fn test_add_claims_reviewers_batch_rejects_revoked_insurer() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InsurerRegistry);
+    let (admin, contract_id) = create_registry(&env);
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
@@ -558,6 +572,7 @@ fn test_add_claims_reviewers_batch_rejects_revoked_insurer() {
     let reviewer1 = Address::generate(&env);
     let reviewer2 = Address::generate(&env);
     env.mock_all_auths();
+    client.set_trusted_issuer(&admin, &issuer, &true);
 
     client.register_insurer(
         &insurer_wallet,
@@ -567,12 +582,12 @@ fn test_add_claims_reviewers_batch_rejects_revoked_insurer() {
         &dummy_hash(&env, 1),
         &issuer,
         &dummy_hash(&env, 2),
-        &4_100_000_000_u64,
+        &(env.ledger().timestamp() + MAX_CREDENTIAL_LIFETIME),
         &dummy_hash(&env, 3),
     );
 
     // Revoke the insurer's credential
-    client.revoke_credential(&issuer, &insurer_wallet, &symbol_short!("fraud"));
+    client.revoke_credential(&admin, &insurer_wallet, &symbol_short!("fraud"));
 
     // Attempt to add batch of reviewers should fail
     let mut reviewers = soroban_sdk::Vec::new(&env);
@@ -586,7 +601,7 @@ fn test_add_claims_reviewers_batch_rejects_revoked_insurer() {
 #[test]
 fn test_add_claims_reviewers_batch_rejects_expired_insurer() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, InsurerRegistry);
+    let (admin, contract_id) = create_registry(&env);
     let client = InsurerRegistryClient::new(&env, &contract_id);
 
     let insurer_wallet = Address::generate(&env);
@@ -595,6 +610,7 @@ fn test_add_claims_reviewers_batch_rejects_expired_insurer() {
     let reviewer2 = Address::generate(&env);
     env.mock_all_auths();
     env.ledger().with_mut(|li| li.timestamp = 100);
+    client.set_trusted_issuer(&admin, &issuer, &true);
 
     client.register_insurer(
         &insurer_wallet,
@@ -618,4 +634,99 @@ fn test_add_claims_reviewers_batch_rejects_expired_insurer() {
 
     let result = client.try_add_claims_reviewers_batch(&insurer_wallet, &reviewers);
     assert!(matches!(result, Err(Ok(Error::NotAuthorized))));
+}
+
+#[test]
+fn test_untrusted_issuer_cannot_register_insurer() {
+    let env = Env::default();
+    let (_admin, contract_id) = create_registry(&env);
+    let client = InsurerRegistryClient::new(&env, &contract_id);
+    let insurer_wallet = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    assert!(matches!(
+        client.try_set_trusted_issuer(&attacker, &issuer, &true),
+        Err(Ok(Error::NotAuthorized))
+    ));
+
+    let result = client.try_register_insurer(
+        &insurer_wallet,
+        &String::from_str(&env, "Untrusted Insurer"),
+        &String::from_str(&env, "LIC-UNTRUSTED"),
+        &String::from_str(&env, "metadata"),
+        &dummy_hash(&env, 1),
+        &issuer,
+        &dummy_hash(&env, 2),
+        &(env.ledger().timestamp() + MAX_CREDENTIAL_LIFETIME),
+        &dummy_hash(&env, 3),
+    );
+
+    assert!(matches!(result, Err(Ok(Error::NotAuthorized))));
+    assert!(!client.is_insurer_active(&insurer_wallet));
+}
+
+#[test]
+fn test_credential_expiry_is_capped_at_two_years() {
+    let env = Env::default();
+    let (admin, contract_id) = create_registry(&env);
+    let client = InsurerRegistryClient::new(&env, &contract_id);
+    let insurer_wallet = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    client.set_trusted_issuer(&admin, &issuer, &true);
+
+    let result = client.try_register_insurer(
+        &insurer_wallet,
+        &String::from_str(&env, "Long-lived Insurer"),
+        &String::from_str(&env, "LIC-LONG"),
+        &String::from_str(&env, "metadata"),
+        &dummy_hash(&env, 1),
+        &issuer,
+        &dummy_hash(&env, 2),
+        &(env.ledger().timestamp() + MAX_CREDENTIAL_LIFETIME + 1),
+        &dummy_hash(&env, 3),
+    );
+
+    assert!(matches!(result, Err(Ok(Error::InvalidCredentialExpiry))));
+}
+
+#[test]
+fn test_only_admin_can_revoke_and_renewal_reactivates_credential() {
+    let env = Env::default();
+    let (admin, contract_id) = create_registry(&env);
+    let client = InsurerRegistryClient::new(&env, &contract_id);
+    let insurer_wallet = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    client.set_trusted_issuer(&admin, &issuer, &true);
+    env.ledger().with_mut(|li| li.timestamp = 100);
+
+    client.register_insurer(
+        &insurer_wallet,
+        &String::from_str(&env, "Renewable Insurer"),
+        &String::from_str(&env, "LIC-RENEW"),
+        &String::from_str(&env, "metadata"),
+        &dummy_hash(&env, 1),
+        &issuer,
+        &dummy_hash(&env, 2),
+        &150_u64,
+        &dummy_hash(&env, 3),
+    );
+
+    assert!(matches!(
+        client.try_revoke_credential(&issuer, &insurer_wallet, &symbol_short!("fraud")),
+        Err(Ok(Error::NotAuthorized))
+    ));
+    client.revoke_credential(&admin, &insurer_wallet, &symbol_short!("fraud"));
+    assert!(!client.is_insurer_active(&insurer_wallet));
+
+    env.ledger().with_mut(|li| li.timestamp = 151);
+    client.renew_credential(
+        &insurer_wallet,
+        &issuer,
+        &dummy_hash(&env, 4),
+        &dummy_hash(&env, 5),
+        &(env.ledger().timestamp() + MAX_CREDENTIAL_LIFETIME),
+        &dummy_hash(&env, 6),
+    );
+    assert!(client.is_insurer_active(&insurer_wallet));
 }

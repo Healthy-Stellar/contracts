@@ -17,11 +17,6 @@ fn register_hospital_with_anchor(
     client: &HospitalRegistryClient<'_>,
     hospital_wallet: &Address,
 ) {
-    let admin = Address::generate(env);
-    if client.get_admin().is_none() {
-        client.initialize_admin(&admin);
-    }
-
     let issuer = Address::generate(env);
     client.register_hospital(
         hospital_wallet,
@@ -39,30 +34,31 @@ fn register_hospital_with_anchor(
 #[test]
 fn test_set_admin_cannot_bootstrap_without_initialize() {
     let env = Env::default();
-    let contract_id = env.register(HospitalRegistry, ());
+    let admin = Address::generate(&env);
+    let contract_id = env.register(HospitalRegistry, (&admin,));
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let attacker = Address::generate(&env);
     env.mock_all_auths();
 
-    // set_admin must never be usable as a bootstrap path: with no admin
-    // initialized yet, an attacker cannot self-elect as admin.
+    // set_admin must never be usable as a bootstrap path: a caller that is not
+    // the admin configured at deploy time cannot self-elect as admin.
     let result = client.try_set_admin(&attacker, &attacker);
     assert_eq!(result, Err(Ok(ContractError::NotAuthorized)));
-    assert!(client.get_admin().is_none());
+    assert_eq!(client.get_admin(), Some(admin));
 }
 
 #[test]
 fn test_set_admin_requires_existing_admin() {
     let env = Env::default();
-    let contract_id = env.register(HospitalRegistry, ());
+    let contract_id = env.register(HospitalRegistry, (&Address::generate(&env),));
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
     let attacker = Address::generate(&env);
     env.mock_all_auths();
 
-    client.initialize_admin(&admin);
+    client.set_admin(&client.get_admin().unwrap(), &admin);
 
     // A non-admin caller cannot rotate the admin.
     let result = client.try_set_admin(&attacker, &attacker);
@@ -78,7 +74,7 @@ fn test_set_admin_requires_existing_admin() {
 #[test]
 fn test_register_hospital_requires_admin() {
     let env = Env::default();
-    let contract_id = env.register(HospitalRegistry, ());
+    let contract_id = env.register(HospitalRegistry, (&Address::generate(&env),));
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let hospital_wallet = Address::generate(&env);
@@ -103,14 +99,12 @@ fn test_register_hospital_requires_admin() {
 #[test]
 fn test_register_hospital() {
     let env = Env::default();
-    let contract_id = env.register(HospitalRegistry, ());
+    let contract_id = env.register(HospitalRegistry, (&Address::generate(&env),));
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let hospital_wallet = Address::generate(&env);
-    let admin = Address::generate(&env);
     env.mock_all_auths();
 
-    client.initialize_admin(&admin);
     register_hospital_with_anchor(&env, &client, &hospital_wallet);
 
     let hospital = client.get_hospital(&hospital_wallet);
@@ -129,7 +123,7 @@ fn test_register_hospital() {
 #[test]
 fn test_update_hospital() {
     let env = Env::default();
-    let contract_id = env.register(HospitalRegistry, ());
+    let contract_id = env.register(HospitalRegistry, (&Address::generate(&env),));
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let hospital_wallet = Address::generate(&env);
@@ -153,7 +147,7 @@ fn test_update_hospital() {
 #[test]
 fn test_duplicate_registration() {
     let env = Env::default();
-    let contract_id = env.register(HospitalRegistry, ());
+    let contract_id = env.register(HospitalRegistry, (&Address::generate(&env),));
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let hospital_wallet = Address::generate(&env);
@@ -180,7 +174,7 @@ fn test_duplicate_registration() {
 #[test]
 fn test_get_nonexistent_hospital() {
     let env = Env::default();
-    let contract_id = env.register(HospitalRegistry, ());
+    let contract_id = env.register(HospitalRegistry, (&Address::generate(&env),));
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let hospital_wallet = Address::generate(&env);
@@ -192,7 +186,7 @@ fn test_get_nonexistent_hospital() {
 #[test]
 fn test_update_nonexistent_hospital() {
     let env = Env::default();
-    let contract_id = env.register(HospitalRegistry, ());
+    let contract_id = env.register(HospitalRegistry, (&Address::generate(&env),));
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let hospital_wallet = Address::generate(&env);
@@ -208,7 +202,7 @@ fn test_update_nonexistent_hospital() {
 #[test]
 fn test_expired_hospital_credential_disables_membership() {
     let env = Env::default();
-    let contract_id = env.register(HospitalRegistry, ());
+    let contract_id = env.register(HospitalRegistry, (&Address::generate(&env),));
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let hospital_wallet = Address::generate(&env);
@@ -320,7 +314,7 @@ fn sample_config(env: &Env) -> HospitalConfig {
 #[test]
 fn test_hospital_config_flow() {
     let env = Env::default();
-    let contract_id = env.register(HospitalRegistry, ());
+    let contract_id = env.register(HospitalRegistry, (&Address::generate(&env),));
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let hospital_wallet = Address::generate(&env);

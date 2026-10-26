@@ -1,4 +1,4 @@
-use soroban_sdk::{contracterror, contracttype, Address, String, Symbol};
+use soroban_sdk::{contracterror, contracttype, Address, BytesN, Symbol};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -31,7 +31,7 @@ pub struct Referral {
     pub receiving_provider: Address,
     pub patient_id: Address,
     pub specialty: Symbol,
-    pub reason: String,
+    pub reason_hash: BytesN<32>,
     pub priority: Symbol,
     pub status: ReferralStatus,
     pub created_at: u64,

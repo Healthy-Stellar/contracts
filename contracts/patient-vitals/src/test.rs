@@ -30,9 +30,6 @@ fn test_record_vital_signs() {
         weight: Some(70000), // 70 kg
     };
 
-    let result = client.record_vital_signs(&patient_id, &provider_id, &1672531200, &vitals);
-    assert_eq!(result, 1);
-
     // Provider must be authorized for the patient to read trends.
     // Set monitoring params so provider_id is recognized as authorized.
     client.set_monitoring_parameters(
@@ -43,6 +40,9 @@ fn test_record_vital_signs() {
         &AlertThresholds { critical_low: None, low: None, high: None, critical_high: None },
         &3600,
     );
+
+    let result = client.record_vital_signs(&patient_id, &provider_id, &1672531200, &vitals);
+    assert_eq!(result, 1);
 
     // Patient reads their own trends.
     let trends = client.get_vital_trends(
@@ -310,13 +310,13 @@ fn test_calculate_vital_statistics() {
         blood_glucose: None,
         weight: None,
     };
-    client.record_vital_signs(&patient_id, &provider_id, &1000, &vitals);
+    client.record_vital_signs(&patient_id, &patient_id, &1000, &vitals);
 
     vitals.heart_rate = Some(80);
-    client.record_vital_signs(&patient_id, &provider_id, &2000, &vitals);
+    client.record_vital_signs(&patient_id, &patient_id, &2000, &vitals);
 
     vitals.heart_rate = Some(90);
-    client.record_vital_signs(&patient_id, &provider_id, &3000, &vitals);
+    client.record_vital_signs(&patient_id, &patient_id, &3000, &vitals);
 
     // Test stats calculating heart rate from time 1500
     let stats =
@@ -368,7 +368,7 @@ fn test_threshold_breach_creates_alert() {
         blood_glucose: None,
         weight: None,
     };
-    client.record_vital_signs(&patient_id, &Address::generate(&env), &1_000_000, &vitals);
+    client.record_vital_signs(&patient_id, &patient_id, &1_000_000, &vitals);
 
     let alerts = client.get_alerts(&patient_id, &patient_id, &Symbol::new(&env, "heart_rate"));
     assert_eq!(alerts.len(), 1);
@@ -398,7 +398,7 @@ fn test_critical_threshold_severity() {
         blood_glucose: None,
         weight: None,
     };
-    client.record_vital_signs(&patient_id, &Address::generate(&env), &2_000_000, &vitals);
+    client.record_vital_signs(&patient_id, &patient_id, &2_000_000, &vitals);
 
     let alerts = client.get_alerts(&patient_id, &patient_id, &Symbol::new(&env, "heart_rate"));
     assert_eq!(alerts.len(), 1);
@@ -426,7 +426,7 @@ fn test_normal_reading_no_alert() {
         blood_glucose: None,
         weight: None,
     };
-    client.record_vital_signs(&patient_id, &Address::generate(&env), &3_000_000, &vitals);
+    client.record_vital_signs(&patient_id, &patient_id, &3_000_000, &vitals);
 
     let alerts = client.get_alerts(&patient_id, &patient_id, &Symbol::new(&env, "heart_rate"));
     assert_eq!(alerts.len(), 0);
@@ -456,10 +456,10 @@ fn test_cooldown_suppresses_duplicate_alert() {
     };
     let t0: u64 = 5_000_000;
     // First breach — alert created.
-    client.record_vital_signs(&patient_id, &Address::generate(&env), &t0, &vitals);
+    client.record_vital_signs(&patient_id, &patient_id, &t0, &vitals);
     // Second breach within cooldown window — must be suppressed.
     let t1 = t0 + ALERT_COOLDOWN_SECONDS - 1;
-    client.record_vital_signs(&patient_id, &Address::generate(&env), &t1, &vitals);
+    client.record_vital_signs(&patient_id, &patient_id, &t1, &vitals);
 
     let alerts = client.get_alerts(&patient_id, &patient_id, &Symbol::new(&env, "heart_rate"));
     assert_eq!(alerts.len(), 1, "duplicate alert within cooldown must be suppressed");
@@ -487,10 +487,10 @@ fn test_alert_after_cooldown_expires() {
         weight: None,
     };
     let t0: u64 = 6_000_000;
-    client.record_vital_signs(&patient_id, &Address::generate(&env), &t0, &vitals);
+    client.record_vital_signs(&patient_id, &patient_id, &t0, &vitals);
     // After cooldown expires a new alert must be created.
     let t1 = t0 + ALERT_COOLDOWN_SECONDS;
-    client.record_vital_signs(&patient_id, &Address::generate(&env), &t1, &vitals);
+    client.record_vital_signs(&patient_id, &patient_id, &t1, &vitals);
 
     let alerts = client.get_alerts(&patient_id, &patient_id, &Symbol::new(&env, "heart_rate"));
     assert_eq!(alerts.len(), 2, "new alert must be created after cooldown expires");
@@ -511,7 +511,7 @@ fn test_deregister_purges_raw_and_agg_windows() {
     let client = PatientVitalsContractClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);
-    let recorder = Address::generate(&env);
+    let recorder = patient_id.clone();
 
     let vitals = VitalSigns {
         blood_pressure_systolic: Some(120),
@@ -598,7 +598,7 @@ fn test_deregister_patient_clears_vitals_history() {
     let client = PatientVitalsContractClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);
-    let recorder = Address::generate(&env);
+    let recorder = patient_id.clone();
 
     let vitals = VitalSigns {
         blood_pressure_systolic: Some(120),
@@ -689,7 +689,7 @@ fn test_unauthorized_address_cannot_read_vital_trends() {
         blood_glucose: None,
         weight: None,
     };
-    client.record_vital_signs(&patient_id, &provider_id, &1_000_000, &vitals);
+    client.record_vital_signs(&patient_id, &patient_id, &1_000_000, &vitals);
 
     // Stranger is not the patient and has no MonitoringParameters entry → Unauthorized.
     let result = client.try_get_vital_trends(
@@ -725,7 +725,7 @@ fn test_unauthorized_address_cannot_read_vital_statistics() {
         blood_glucose: None,
         weight: None,
     };
-    client.record_vital_signs(&patient_id, &provider_id, &1_000_000, &vitals);
+    client.record_vital_signs(&patient_id, &patient_id, &1_000_000, &vitals);
 
     let result = client.try_calculate_vital_statistics(
         &stranger,
@@ -760,7 +760,7 @@ fn test_unauthorized_address_cannot_read_alerts() {
         blood_glucose: None,
         weight: None,
     };
-    client.record_vital_signs(&patient_id, &Address::generate(&env), &1_000_000, &vitals);
+    client.record_vital_signs(&patient_id, &patient_id, &1_000_000, &vitals);
 
     let result = client.try_get_alerts(
         &stranger,
@@ -1054,4 +1054,79 @@ fn test_patient_can_trigger_own_vital_alert() {
 
     let alerts = client.get_alerts(&patient_id, &patient_id, &vital_type);
     assert_eq!(alerts.len(), 1, "patient must be able to trigger their own alert");
+}
+
+#[test]
+fn test_issue_1005_record_vital_signs_authorization() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PatientVitalsContract, ());
+    let client = PatientVitalsContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+    let device_address = Address::generate(&env);
+
+    let vitals = VitalSigns {
+        blood_pressure_systolic: Some(120),
+        blood_pressure_diastolic: Some(80),
+        heart_rate: Some(72),
+        temperature: None,
+        respiratory_rate: None,
+        oxygen_saturation: None,
+        blood_glucose: None,
+        weight: None,
+    };
+
+    // 1. Unregistered stranger must fail with Unauthorized
+    let stranger_res = client.try_record_vital_signs(&patient_id, &stranger, &1_000_000, &vitals);
+    assert!(stranger_res.is_err(), "unauthorized recorder must be rejected");
+
+    // 2. Patient recording their own vitals succeeds
+    let id1 = client.record_vital_signs(&patient_id, &patient_id, &1_000_000, &vitals);
+    assert_eq!(id1, 1, "first reading id must be 1");
+
+    // 3. Provider with MonitoringParameters succeeds
+    client.set_monitoring_parameters(
+        &patient_id,
+        &provider_id,
+        &Symbol::new(&env, "heart_rate"),
+        &Range { min: 60, max: 100 },
+        &AlertThresholds { critical_low: None, low: None, high: None, critical_high: None },
+        &3600,
+    );
+    let id2 = client.record_vital_signs(&patient_id, &provider_id, &1_001_000, &vitals);
+    assert_eq!(id2, 2, "second reading id must be 2");
+
+    // 4. Registered monitoring device succeeds
+    client.register_monitoring_device(
+        &patient_id,
+        &String::from_str(&env, "PULSE_01"),
+        &device_address,
+        &Symbol::new(&env, "pulse_ox"),
+        &String::from_str(&env, "SN-POX-01"),
+        &1_000_000,
+    );
+    let id3 = client.record_vital_signs(&patient_id, &device_address, &1_002_000, &vitals);
+    assert_eq!(id3, 3, "third reading id must be 3");
+
+    // 5. submit_device_reading populates windowed buckets
+    let mut dev_readings = Vec::new(&env);
+    dev_readings.push_back(DeviceReading {
+        reading_time: 1_003_000,
+        values: vitals.clone(),
+    });
+    client.submit_device_reading(
+        &String::from_str(&env, "PULSE_01"),
+        &patient_id,
+        &device_address,
+        &1_003_000,
+        &dev_readings,
+    );
+
+    // Reading appears in raw window page (1_003_000 / 3600 = window index 278)
+    let raw_window = client.get_raw_window_page(&patient_id, &(1_003_000 / 3600), &0u32);
+    assert!(!raw_window.readings.is_empty(), "device reading must appear in raw window page");
 }

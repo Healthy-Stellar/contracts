@@ -223,7 +223,7 @@ impl HospitalRegistry {
     ///
     /// Authorized if:
     /// - `caller` is the hospital wallet that owns `hospital_address`, **or**
-    /// - `caller` is the registered admin (set via `initialize_admin`).
+    /// - `caller` is the registered admin (set at deploy time).
     ///
     /// This makes the admin-override branch reachable: callers that pass a
     /// distinct `caller` address (not equal to `hospital_address`) will take
@@ -256,29 +256,13 @@ impl HospitalRegistry {
         Err(ContractError::HospitalNotFound) // reuse closest available error
     }
 
-    /// Store the admin address once.  Subsequent calls are no-ops if the same
-    /// admin calls again; a different caller will be rejected by require_auth.
+    /// Store the initial admin address.
     ///
-    /// In practice, the very first call after contract deployment should set
-    /// the admin, before any hospital is registered.
-    pub fn initialize_admin(env: Env, admin: Address) -> Result<(), ContractError> {
-        validate_nonzero_address(&admin).map_err(|_| ContractError::InvalidAddress)?;
-        admin.require_auth();
-        // Idempotent: allow the same admin to re-confirm, but do not let a
-        // different address overwrite the existing admin.
-        if let Some(existing) = env
-            .storage()
-            .persistent()
-            .get::<_, Address>(&DataKey::Admin)
-        {
-            if existing != admin {
-                // Already initialized with a different admin.
-                return Err(ContractError::HospitalAlreadyRegistered);
-            }
-            return Ok(()); // same admin — idempotent
-        }
+    /// Runs atomically as part of contract creation and cannot be called again,
+    /// so an attacker cannot front-run deployment and elect themselves admin.
+    pub fn __constructor(env: Env, admin: Address) {
+        validate_nonzero_address(&admin).expect("admin address must not be zero");
         env.storage().persistent().set(&DataKey::Admin, &admin);
-        Ok(())
     }
 
     /// Return the registered admin address, if any.
@@ -322,19 +306,20 @@ impl HospitalRegistry {
             .publish((symbol_short!("audit"), caller.clone()), event);
     }
 
-    /// Set the admin address. Only callable by the current admin (if set) or initially.
+    /// Set the admin address. Only callable by the current admin.
     pub fn set_admin(env: Env, caller: Address, admin: Address) -> Result<(), ContractError> {
         validate_nonzero_address(&admin).map_err(|_| ContractError::InvalidAddress)?;
         caller.require_auth();
 
-        // Check if admin is already set
-        if let Some(current_admin) = env.storage().persistent().get::<_, Address>(&DataKey::Admin) {
-            // Only the current admin can change the admin
-            if caller != current_admin {
-                return Err(ContractError::NotAuthorized);
-            }
+        // Only the admin configured at deploy time can change the admin.
+        let current_admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .ok_or(ContractError::NotAuthorized)?;
+        if caller != current_admin {
+            return Err(ContractError::NotAuthorized);
         }
-        // If no admin is set yet, the caller can set themselves as admin (first-time init)
 
         env.storage().persistent().set(&DataKey::Admin, &admin);
         Ok(())

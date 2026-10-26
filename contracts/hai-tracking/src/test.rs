@@ -441,10 +441,11 @@ fn test_calculate_infection_rate() {
     let (env, client) = setup();
     let facility = Address::generate(&env);
     let reporter = Address::generate(&env);
+    let unit = String::from_str(&env, "ICU");
 
     for _ in 0..2 {
         let patient = Address::generate(&env);
-        let infection_id = report_case(
+        report_case(
             &env,
             &client,
             &patient,
@@ -454,19 +455,100 @@ fn test_calculate_infection_rate() {
             "ICU",
             &reporter,
         );
-        assert!(infection_id > 0);
-        client.record_patient_days(&infection_id, &100, &reporter);
     }
 
-    let rate = client.calculate_infection_rate(
+    client.record_census(
+        &facility,
+        &unit,
+        &1_799_900_000,
+        &10_000,
+        &500,
+        &200,
+        &100,
+        &facility,
+    );
+    client.record_census(
+        &facility,
+        &String::from_str(&env, "Ward B"),
+        &1_799_900_000,
+        &5_000,
+        &100,
+        &50,
+        &25,
+        &facility,
+    );
+    client.configure_ward_rate(
+        &facility,
+        &unit,
+        &Symbol::new(&env, "clabsi"),
+        &30,
+        &200,
+        &500,
+    );
+
+    let ward_rate = client.calculate_infection_rate(
+        &facility,
+        &Symbol::new(&env, "clabsi"),
+        &1_799_000_000,
+        &1_800_000_000,
+        &Some(unit.clone()),
+    );
+    assert_eq!(ward_rate.numerator, 2);
+    assert_eq!(ward_rate.denominator, 500);
+    assert_eq!(ward_rate.rate_per_1000_days_x100, 400);
+    assert_eq!(ward_rate.sir_x100, Some(80));
+
+    let facility_rate = client.calculate_infection_rate(
         &facility,
         &Symbol::new(&env, "clabsi"),
         &1_799_000_000,
         &1_800_000_000,
         &None,
     );
+    assert_eq!(facility_rate.numerator, 2);
+    assert_eq!(facility_rate.denominator, 600);
+    assert_eq!(facility_rate.sir_x100, None);
+}
 
-    assert_eq!(rate.numerator, 2);
-    assert_eq!(rate.denominator, 200);
-    assert!(rate.rate_per_1000_days_x100 > 0);
+#[test]
+fn test_record_patient_days_only_facility_can_update_case() {
+    let (env, client) = setup();
+    let patient = Address::generate(&env);
+    let facility = Address::generate(&env);
+    let reporter = Address::generate(&env);
+    let infection_id = report_case(
+        &env,
+        &client,
+        &patient,
+        &facility,
+        "mrsa",
+        1_799_900_000,
+        "Ward A",
+        &reporter,
+    );
+
+    let result = client.try_record_patient_days(&infection_id, &100, &reporter);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+
+    client.record_patient_days(&infection_id, &100, &facility);
+    assert_eq!(client.get_infection_case(&infection_id).patient_days, Some(100));
+}
+
+#[test]
+fn test_record_census_rejects_non_facility_reporter() {
+    let (env, client) = setup();
+    let facility = Address::generate(&env);
+    let reporter = Address::generate(&env);
+
+    let result = client.try_record_census(
+        &facility,
+        &String::from_str(&env, "ICU"),
+        &1_799_900_000,
+        &100,
+        &50,
+        &20,
+        &10,
+        &reporter,
+    );
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
 }

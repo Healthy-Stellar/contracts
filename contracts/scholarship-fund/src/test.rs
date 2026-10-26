@@ -6,9 +6,9 @@ fn setup()->Fund{
     let env=Env::default();env.mock_all_auths();
     let token_admin=Address::generate(&env);
     let token_id=env.register_stellar_asset_contract_v2(token_admin).address();
-    let id=env.register(ScholarshipFundContract,());
+    let admin=Address::generate(&env);
+    let id=env.register(ScholarshipFundContract,(&admin,&token_id));
     let c=ScholarshipFundContractClient::new(&env,&id);
-    let admin=Address::generate(&env);c.initialize(&admin,&token_id);
     let token=TokenClient::new(&env,&token_id);let sac=StellarAssetClient::new(&env,&token_id);
     Fund{env,c,admin,token,sac}
 }
@@ -106,32 +106,6 @@ fn non_admin_set_eligibility_panics() {
     let attacker = Address::generate(&f.env);
     let student = Address::generate(&f.env);
     f.c.set_recipient_eligibility(&attacker, &student, &true);
-}
-
-// ── #922 initialize requires admin auth ──────────────────────────────────────
-
-#[test]
-fn initialize_without_admin_auth_fails() {
-    // No mock_all_auths: a front-runner cannot initialize with an admin they don't control.
-    let env = Env::default();
-    let token_id = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
-    let id = env.register(ScholarshipFundContract, ());
-    let c = ScholarshipFundContractClient::new(&env, &id);
-    let attacker_chosen_admin = Address::generate(&env);
-
-    assert!(c.try_initialize(&attacker_chosen_admin, &token_id).is_err());
-
-    // Nothing was stored: the real admin can still initialize.
-    let admin = Address::generate(&env);
-    env.mock_all_auths();
-    c.initialize(&admin, &token_id);
-    assert_eq!(env.auths()[0].0, admin);
-}
-#[test]
-fn initialize_twice_is_rejected() {
-    let f = setup();
-    let other = Address::generate(&f.env);
-    assert_eq!(f.c.try_initialize(&other, &f.token.address), Err(Ok(Error::AlreadyInitialized)));
 }
 
 // ── #923 awards are shared pro-rata by all donors ────────────────────────────

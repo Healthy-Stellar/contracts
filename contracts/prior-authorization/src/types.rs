@@ -27,6 +27,10 @@ pub enum Error {
     NotInitialized = 21,
     AlreadyInitialized = 22,
     ArithmeticOverflow = 23,
+    ExtensionNotFound = 24,
+    ExtensionAlreadyReviewed = 25,
+    MissingApprovedUnits = 26,
+    ServiceDateOutOfWindow = 27,
 }
 
 /// Lifecycle status of a prior authorization request.
@@ -165,6 +169,16 @@ pub struct ExtensionRequest {
     pub extension_reason: String,
     pub requested_additional_units: u32,
     pub requested_at: u64,
+    /// Whether the insurer has acted on this request.
+    pub reviewed: bool,
+    /// Additional units granted by the reviewer (set on approval).
+    pub approved_additional_units: Option<u32>,
+    /// New validity end granted by the reviewer (set on approval).
+    pub new_valid_until: Option<u64>,
+    /// Reviewer who acted on the request.
+    pub reviewer_id: Option<Address>,
+    /// Timestamp the request was reviewed.
+    pub reviewed_at: Option<u64>,
 }
 
 /// A usage record for tracking units consumed.

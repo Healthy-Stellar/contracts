@@ -103,21 +103,19 @@ pub struct AllergyManagement;
 
 #[contractimpl]
 impl AllergyManagement {
-    /// Initialize the contract with an admin address
-    pub fn initialize(
+    /// Configure the contract with an admin address and the registry addresses
+    /// it depends on.
+    ///
+    /// Runs atomically as part of contract creation and cannot be called again,
+    /// so an attacker cannot front-run deployment and elect themselves admin.
+    pub fn __constructor(
         env: Env,
         admin: Address,
         patient_registry: Address,
         provider_registry: Address,
         hospital_registry: Address,
         insurer_registry: Address,
-    ) -> Result<(), Error> {
-        admin.require_auth();
-
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::AlreadyInitialized);
-        }
-
+    ) {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::PatientRegistry, &patient_registry);
         env.storage().instance().set(&DataKey::ProviderRegistry, &provider_registry);
@@ -126,7 +124,6 @@ impl AllergyManagement {
         env.storage()
             .instance()
             .set(&DataKey::AllergyCounter, &0u64);
-        Ok(())
     }
 
     /// Record a new allergy for a patient

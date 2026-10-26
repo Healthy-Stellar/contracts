@@ -21,6 +21,8 @@ pub enum DataKey {
     DeviceRecalls(u64),
     DeviceWarranties(u64),
     PerformanceReports(u64),
+    ManufacturerAllowlist(Address),
+    DeviceByUdi(String),
 }
 
 #[contracterror]
@@ -35,6 +37,9 @@ pub enum Error {
     WarrantyExpired = 6,
     MaintenanceOverdue = 7,
     OutOfWarranty = 8,
+    ManufacturerNotAuthorized = 9,
+    DuplicateUdi = 10,
+    ArithmeticOverflow = 11,
 }
 
 #[contracttype]

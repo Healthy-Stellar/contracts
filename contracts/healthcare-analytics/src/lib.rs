@@ -103,13 +103,49 @@ pub struct Statistics {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MetricRecord {
-    pub id: u64,
-    pub metric_type: Symbol,
-    pub value: i128,
-    pub category: Symbol,
-    pub timestamp: u64,
-    pub metadata_hash: Option<BytesN<32>>,
+pub struct MetricAggregate {
+    pub count: u64,
+    pub sum: i128,
+    pub min: i128,
+    pub max: i128,
+}
+
+const DAY_SECONDS: u64 = 86_400;
+const DEFAULT_MINIMUM_COHORT_SIZE: u64 = 11;
+const MAX_STATISTICS_DAYS: u64 = 366;
+const METRIC_FUTURE_TOLERANCE: u64 = 30 * DAY_SECONDS;
+
+fn add_metric_value(
+    env: &Env,
+    metric_type: &Symbol,
+    category: Option<Symbol>,
+    day: u64,
+    value: i128,
+) -> Result<(), Error> {
+    let key = DataKey::MetricAggregate(metric_type.clone(), category, day);
+    let mut aggregate: MetricAggregate = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(MetricAggregate {
+            count: 0,
+            sum: 0,
+            min: i128::MAX,
+            max: i128::MIN,
+        });
+
+    aggregate.count = aggregate
+        .count
+        .checked_add(1)
+        .ok_or(Error::ArithmeticOverflow)?;
+    aggregate.sum = aggregate
+        .sum
+        .checked_add(value)
+        .ok_or(Error::ArithmeticOverflow)?;
+    aggregate.min = aggregate.min.min(value);
+    aggregate.max = aggregate.max.max(value);
+    env.storage().persistent().set(&key, &aggregate);
+    Ok(())
 }
 
 #[contracttype]
@@ -129,8 +165,8 @@ pub struct QualityMetricRecord {
 #[contracttype]
 pub enum DataKey {
     MetricCounter,
-    Metric(u64),
-    MetricsByType(Symbol),
+    MetricAggregate(Symbol, Option<Symbol>, u64),
+    MinimumCohortSize,
     QualityMetricCounter,
     QualityMetric(u64),
     QualityMetricsByProvider(Address),
@@ -175,6 +211,7 @@ pub enum Error {
     RequesterThrottled = 15,
     InvalidThreshold = 16,
     JobAlreadyExecuting = 17,
+    InsufficientCohort = 18,
 }
 
 #[contract]
@@ -182,14 +219,12 @@ pub struct HealthcareAnalytics;
 
 #[contractimpl]
 impl HealthcareAnalytics {
-    /// Initialize the analytics contract with admin and resource limits
-    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
-        admin.require_auth();
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::Unauthorized);
-        }
+    /// Bind the contract to an admin address.
+    ///
+    /// Runs atomically as part of contract creation and cannot be called again,
+    /// so an attacker cannot front-run deployment and elect themselves admin.
+    pub fn __constructor(env: Env, admin: Address) {
         env.storage().instance().set(&DataKey::Admin, &admin);
-        Ok(())
     }
 
     /// Configure the executor/oracle address allowed to report job completion
@@ -807,6 +842,31 @@ impl HealthcareAnalytics {
         Ok(())
     }
 
+    /// Set the minimum cohort size required to return metric statistics.
+    /// A value of zero is invalid; the default is 11.
+    pub fn set_minimum_cohort_size(
+        env: Env,
+        admin: Address,
+        minimum_cohort_size: u64,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+        if minimum_cohort_size == 0 {
+            return Err(Error::InvalidValue);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::MinimumCohortSize, &minimum_cohort_size);
+        Ok(())
+    }
+
     /// Privacy is preserved by accepting only pre-anonymized, aggregate-ready
     /// values with an optional metadata hash instead of raw patient data.
     ///
@@ -819,7 +879,7 @@ impl HealthcareAnalytics {
         value: i128,
         category: Symbol,
         timestamp: u64,
-        metadata_hash: Option<BytesN<32>>,
+        _metadata_hash: Option<BytesN<32>>,
     ) -> Result<(), Error> {
         recorder.require_auth();
         let authorized: bool = env
@@ -831,6 +891,11 @@ impl HealthcareAnalytics {
             return Err(Error::Unauthorized);
         }
 
+        let now = env.ledger().timestamp();
+        if timestamp < now || timestamp - now > METRIC_FUTURE_TOLERANCE {
+            return Err(Error::InvalidValue);
+        }
+
         let id = env
             .storage()
             .instance()
@@ -840,28 +905,9 @@ impl HealthcareAnalytics {
             .instance()
             .set(&DataKey::MetricCounter, &(id + 1));
 
-        let record = MetricRecord {
-            id,
-            metric_type: metric_type.clone(),
-            value,
-            category,
-            timestamp,
-            metadata_hash,
-        };
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::Metric(id), &record);
-
-        let mut ids: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::MetricsByType(metric_type.clone()))
-            .unwrap_or(Vec::new(&env));
-        ids.push_back(id);
-        env.storage()
-            .persistent()
-            .set(&DataKey::MetricsByType(metric_type.clone()), &ids);
+        let day = timestamp / DAY_SECONDS * DAY_SECONDS;
+        add_metric_value(&env, &metric_type, None, day, value)?;
+        add_metric_value(&env, &metric_type, Some(category), day, value)?;
 
         env.events()
             .publish((symbol_short!("rec_met"), metric_type), id);
@@ -869,8 +915,8 @@ impl HealthcareAnalytics {
         Ok(())
     }
 
-    /// Get aggregate statistics for a metric type within a time range.
-    /// Optionally filter by category. Returns count, sum, average, min, and max.
+    /// Get aggregate statistics over complete UTC-day buckets.
+    /// Optionally filter by category. Results below the configured cohort size are withheld.
     pub fn get_statistics(
         env: Env,
         metric_type: Symbol,
@@ -882,46 +928,50 @@ impl HealthcareAnalytics {
             return Err(Error::InvalidTimeRange);
         }
 
-        let ids: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::MetricsByType(metric_type.clone()))
-            .unwrap_or(Vec::new(&env));
-
         let mut count: u64 = 0;
         let mut sum: i128 = 0;
         let mut min: i128 = i128::MAX;
         let mut max: i128 = i128::MIN;
+        let first_day = start_time / DAY_SECONDS * DAY_SECONDS;
+        let last_day = end_time / DAY_SECONDS * DAY_SECONDS;
+        let day_count = (last_day - first_day) / DAY_SECONDS + 1;
+        if day_count > MAX_STATISTICS_DAYS {
+            return Err(Error::InvalidTimeRange);
+        }
 
-        for id in ids.iter() {
-            if let Some(record) = env
+        let mut day = first_day;
+        loop {
+            let key = DataKey::MetricAggregate(metric_type.clone(), category.clone(), day);
+            if let Some(aggregate) = env
                 .storage()
                 .persistent()
-                .get::<DataKey, MetricRecord>(&DataKey::Metric(id))
+                .get::<DataKey, MetricAggregate>(&key)
             {
-                if record.timestamp < start_time || record.timestamp > end_time {
-                    continue;
-                }
-
-                if let Some(ref cat) = category {
-                    if record.category != *cat {
-                        continue;
-                    }
-                }
-
-                count += 1;
-                sum = sum.checked_add(record.value).ok_or(Error::ArithmeticOverflow)?;
-                if record.value < min {
-                    min = record.value;
-                }
-                if record.value > max {
-                    max = record.value;
-                }
+                count = count
+                    .checked_add(aggregate.count)
+                    .ok_or(Error::ArithmeticOverflow)?;
+                sum = sum
+                    .checked_add(aggregate.sum)
+                    .ok_or(Error::ArithmeticOverflow)?;
+                min = min.min(aggregate.min);
+                max = max.max(aggregate.max);
             }
+            if day == last_day {
+                break;
+            }
+            day = day.checked_add(DAY_SECONDS).ok_or(Error::InvalidTimeRange)?;
         }
 
         if count == 0 {
             return Err(Error::NoDataFound);
+        }
+        let minimum_cohort_size: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinimumCohortSize)
+            .unwrap_or(DEFAULT_MINIMUM_COHORT_SIZE);
+        if count < minimum_cohort_size {
+            return Err(Error::InsufficientCohort);
         }
 
         let average = sum / count as i128;
@@ -933,8 +983,10 @@ impl HealthcareAnalytics {
             average,
             min,
             max,
-            period_start: start_time,
-            period_end: end_time,
+            period_start: first_day,
+            period_end: last_day
+                .checked_add(DAY_SECONDS - 1)
+                .ok_or(Error::InvalidTimeRange)?,
         })
     }
 

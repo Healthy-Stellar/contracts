@@ -15,10 +15,10 @@ fn create_test_env() -> (Env, Address, Address, Address, Address) {
         li.timestamp = 10000; // Set to 10000 so test timestamps work
     });
 
-    let contract_id = env.register(AllergyTrackingContract, ());
+    let admin = Address::generate(&env);
+    let contract_id = env.register(AllergyTrackingContract, (&admin,));
     let patient = Address::generate(&env);
     let provider = Address::generate(&env);
-    let admin = Address::generate(&env);
 
     (env, contract_id, patient, provider, admin)
 }
@@ -300,9 +300,6 @@ fn test_cross_sensitivity_checking() {
     let (env, contract_id, patient, provider, admin) = create_test_env();
     let client = AllergyTrackingContractClient::new(&env, &contract_id);
 
-    // Initialize the contract admin (required by register_cross_sensitivity)
-    client.initialize(&admin);
-
     // Register cross-sensitivity between Penicillin and Amoxicillin
     client.register_cross_sensitivity(
         &admin,
@@ -490,9 +487,6 @@ fn test_allergy_not_found() {
 fn test_comprehensive_workflow() {
     let (env, contract_id, patient, provider, admin) = create_test_env();
     let client = AllergyTrackingContractClient::new(&env, &contract_id);
-
-    // Initialize the contract admin (required by register_cross_sensitivity)
-    client.initialize(&admin);
 
     // Setup cross-sensitivities
     client.register_cross_sensitivity(
@@ -813,8 +807,6 @@ fn test_get_all_records_excludes_deleted_by_default() {
 fn test_include_deleted_requires_admin() {
     let (env, contract_id, patient, provider, admin) = create_test_env();
     let client = AllergyTrackingContractClient::new(&env, &contract_id);
-
-    client.initialize(&admin);
 
     let mut reactions = Vec::new(&env);
     reactions.push_back(String::from_str(&env, "reaction"));

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### workspace — `initialize` replaced by `__constructor` (#949)
+
+#### Changed
+- **BREAKING:** Contracts no longer expose a public `initialize`/`init` entry point.
+  Initial configuration is now bound atomically at contract creation through
+  `pub fn __constructor(env: Env, …)`, which runs once as part of `deploy` and
+  cannot be called again. This closes the front-running hijack where an
+  attacker watched a deploy transaction and called `initialize` first with an
+  admin address they controlled — `admin.require_auth()` could not prevent that
+  because the attacker simply signed for the address they supplied.
+- Deployment commands must now pass constructor arguments after `--`, e.g.
+  `stellar contract deploy --wasm … -- --admin G…`.
+  `scripts/deploy_all.sh` forwards `DEPLOY_CONSTRUCTOR_ARGS` for this purpose.
+- Deleted the `AlreadyInitialized` guard and the double-initialize tests that
+  are now unreachable; `NotInitialized` guards remain as defensive checks.
+
+#### Migrated in this change
+`nft-badges`, `zk-eligibility-verifier`, `zk-eligibility`, `liquidity-pool`,
+`governance-voting`, `scholarship-fund`, `lab-management`, `health-records`,
+`mental-health`, `multisig-governance`, `upgrade-governance`,
+`hospital-registry`, `healthcare-analytics`, `clinical-guideline`,
+`clinical-trial`, `allergy-management`, `allergy-tracking`,
+`medical-device-tracking`, `medical-claims`, `prior-authorization`,
+`immunization-registry`, `prenatal-pediatric`, and the root `HealthcareRegistry`.
+
 ### prior-authorization
 
 #### Added

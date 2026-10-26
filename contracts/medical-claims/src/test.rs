@@ -2,7 +2,7 @@
 #![allow(deprecated)]
 
 use super::*;
-use insurer_registry::{InsurerRegistry, InsurerRegistryClient};
+use insurer_registry::{InsurerRegistry, InsurerRegistryClient, MAX_CREDENTIAL_LIFETIME};
 use shared::privacy::PolicyMetadata;
 use soroban_sdk::{contract, contractimpl, testutils::{Address as _, Ledger}, BytesN, Env, String, Symbol, Vec};
 
@@ -55,9 +55,12 @@ fn dummy_hash(env: &Env, byte: u8) -> BytesN<32> {
 }
 
 fn register_active_insurer(env: &Env, insurer: &Address) -> Address {
-    let ir_id = env.register_contract(None, InsurerRegistry);
+    env.mock_all_auths();
+    let registry_admin = Address::generate(env);
+    let ir_id = env.register(InsurerRegistry, (registry_admin.clone(),));
     let ir_client = InsurerRegistryClient::new(env, &ir_id);
     let issuer = Address::generate(env);
+    ir_client.set_trusted_issuer(&registry_admin, &issuer, &true);
     ir_client.register_insurer(
         insurer,
         &String::from_str(env, "Claims Insurer"),
@@ -66,7 +69,7 @@ fn register_active_insurer(env: &Env, insurer: &Address) -> Address {
         &dummy_hash(env, 1),
         &issuer,
         &dummy_hash(env, 2),
-        &4_100_000_000_u64,
+        &(env.ledger().timestamp() + MAX_CREDENTIAL_LIFETIME),
         &dummy_hash(env, 3),
     );
     ir_id
@@ -86,14 +89,17 @@ fn setup(
     // Mock financial records contract (not needed for these tests)
     let fr_id = Address::generate(env);
 
-    let contract_id = env.register(MedicalClaimsSystem, ());
-    let client = MedicalClaimsSystemClient::new(env, &contract_id);
     let admin = Address::generate(env);
     let provider = Address::generate(env);
     let patient = Address::generate(env);
     let insurer = Address::generate(env);
     let ir_id = register_active_insurer(env, &insurer);
-    client.initialize(&admin, &ac_id, &fr_id, &86400, &ir_id);
+
+    let contract_id = env.register(
+        MedicalClaimsSystem,
+        (&admin, &ac_id, &fr_id, &86400u64, &ir_id),
+    );
+    let client = MedicalClaimsSystemClient::new(env, &contract_id);
     client.register_insurer(&admin, &insurer);
     (client, admin, provider, patient, insurer)
 }
@@ -487,7 +493,7 @@ fn test_reconcile_insurer_payment() {
     let result = client.try_reconcile_claim(&claim_id, &0, &true, &fr_owner, &0, &insurer);
     assert!(result.is_ok());
 
-    let payments = client.get_insurer_payments(&claim_id);
+    let payments = client.get_insurer_payments(&insurer, &claim_id);
     assert_eq!(payments.len(), 1);
     assert!(payments.get(0).unwrap().reconciled);
 }
@@ -534,7 +540,7 @@ fn test_reconcile_patient_payment() {
     let result = client.try_reconcile_claim(&claim_id, &0, &false, &fr_owner, &0, &patient);
     assert!(result.is_ok());
 
-    let payments = client.get_patient_payments(&claim_id);
+    let payments = client.get_patient_payments(&patient, &claim_id);
     assert_eq!(payments.len(), 1);
     assert!(payments.get(0).unwrap().reconciled);
 }
@@ -613,8 +619,42 @@ fn test_mark_claim_disputed() {
 
     client.mark_claim_disputed(&claim_id, &insurer);
 
-    let claim = client.get_claim(&claim_id);
+    let claim = client.get_claim(&insurer, &claim_id);
     assert_eq!(claim.reconciliation_status, ReconciliationStatus::Disputed);
+}
+
+#[test]
+fn test_claim_and_payment_getters_reject_unrelated_requester() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, provider, patient, insurer) = setup(&env);
+
+    let claim_id = client.submit_claim(
+        &provider,
+        &patient,
+        &insurer,
+        &1,
+        &1000,
+        &make_services(&env),
+        &Vec::new(&env),
+        &BytesN::from_array(&env, &[0; 32]),
+        &policy(&env),
+        &15000,
+    );
+    let unrelated = Address::generate(&env);
+
+    assert_eq!(
+        client.try_get_claim(&unrelated, &claim_id),
+        Err(Ok(Error::NotAuthorized))
+    );
+    assert_eq!(
+        client.try_get_insurer_payments(&unrelated, &claim_id),
+        Err(Ok(Error::NotAuthorized))
+    );
+    assert_eq!(
+        client.try_get_patient_payments(&unrelated, &claim_id),
+        Err(Ok(Error::NotAuthorized))
+    );
 }
 
 #[test]
@@ -720,17 +760,17 @@ fn test_integration_expired_insurer_returns_insurer_not_active() {
 
     let ac_id = env.register(MockAccessControl, ());
     let fr_id = Address::generate(&env);
-    let contract_id = env.register_contract(None, MedicalClaimsSystem);
-    let client = MedicalClaimsSystemClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
     let provider = Address::generate(&env);
     let patient = Address::generate(&env);
     let insurer = Address::generate(&env);
 
-    let ir_id = env.register_contract(None, InsurerRegistry);
+    let registry_admin = Address::generate(&env);
+    let ir_id = env.register(InsurerRegistry, (registry_admin.clone(),));
     let ir_client = InsurerRegistryClient::new(&env, &ir_id);
     let issuer = Address::generate(&env);
     env.ledger().with_mut(|li| li.timestamp = 100);
+    ir_client.set_trusted_issuer(&registry_admin, &issuer, &true);
     ir_client.register_insurer(
         &insurer,
         &String::from_str(&env, "Expired Insurer"),
@@ -743,7 +783,12 @@ fn test_integration_expired_insurer_returns_insurer_not_active() {
         &dummy_hash(&env, 3),
     );
 
-    client.initialize(&admin, &ac_id, &fr_id, &86400, &ir_id);
+    let contract_id = env.register(
+        MedicalClaimsSystem,
+        (&admin, &ac_id, &fr_id, &86400u64, &ir_id),
+    );
+    let client = MedicalClaimsSystemClient::new(&env, &contract_id);
+
     client.register_insurer(&admin, &insurer);
     env.ledger().with_mut(|li| li.timestamp = 200);
 

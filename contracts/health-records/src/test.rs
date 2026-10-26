@@ -45,10 +45,9 @@ mod tests {
 
     fn setup(env: &Env) -> (HealthRecordsClient<'static>, Address, Address) {
         let mock_pr_id = env.register(crate::test::MockProviderRegistry, ());
-        let contract_id = env.register(HealthRecords, ());
-        let client = HealthRecordsClient::new(env, &contract_id);
         let admin = Address::generate(env);
-        client.initialize(&admin, &mock_pr_id);
+        let contract_id = env.register(HealthRecords, (&admin, &mock_pr_id));
+        let client = HealthRecordsClient::new(env, &contract_id);
         let patient = Address::generate(env);
         let provider = Address::generate(env);
         (client, patient, provider)
@@ -61,63 +60,6 @@ mod tests {
             can_share: true,
             expires_at: 0,
         }
-    }
-
-    #[test]
-    fn test_initialize_fails_without_admin_auth() {
-        // Regression test for #722: `initialize` must not be front-runnable.
-        // Here `attacker` signs the invocation instead of `admin`, so the
-        // contract's `admin.require_auth()` has no matching authorization
-        // and the call must fail rather than silently wiring up the
-        // attacker-controlled provider registry.
-        let env = Env::default();
-        let mock_pr_id = env.register(crate::test::MockProviderRegistry, ());
-        let contract_id = env.register(HealthRecords, ());
-        let client = HealthRecordsClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        let attacker = Address::generate(&env);
-
-        let result = client
-            .mock_auths(&[MockAuth {
-                address: &attacker,
-                invoke: &MockAuthInvoke {
-                    contract: &contract_id,
-                    fn_name: "initialize",
-                    args: (&admin, &mock_pr_id).into_val(&env),
-                    sub_invokes: &[],
-                },
-            }])
-            .try_initialize(&admin, &mock_pr_id);
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_initialize_succeeds_with_admin_auth() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let mock_pr_id = env.register(crate::test::MockProviderRegistry, ());
-        let contract_id = env.register(HealthRecords, ());
-        let client = HealthRecordsClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        client.initialize(&admin, &mock_pr_id);
-    }
-
-    #[test]
-    fn test_double_initialize_fails() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let mock_pr_id = env.register(crate::test::MockProviderRegistry, ());
-        let contract_id = env.register(HealthRecords, ());
-        let client = HealthRecordsClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        client.initialize(&admin, &mock_pr_id);
-
-        let result = client.try_initialize(&admin, &mock_pr_id);
-        assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
     }
 
     #[test]
@@ -318,10 +260,9 @@ mod tests {
         let mock_pr_client = crate::test::MockProviderRegistryClient::new(&env, &mock_pr_id);
         mock_pr_client.set_is_provider(&false);
         
-        let contract_id = env.register(HealthRecords, ());
-        let client = HealthRecordsClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        client.initialize(&admin, &mock_pr_id);
+        let contract_id = env.register(HealthRecords, (&admin, &mock_pr_id));
+        let client = HealthRecordsClient::new(&env, &contract_id);
 
         let patient = Address::generate(&env);
         let provider = Address::generate(&env);
@@ -344,10 +285,9 @@ mod tests {
         let mock_pr_client = crate::test::MockProviderRegistryClient::new(&env, &mock_pr_id);
         mock_pr_client.set_is_provider(&false);
         
-        let contract_id = env.register(HealthRecords, ());
-        let client = HealthRecordsClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        client.initialize(&admin, &mock_pr_id);
+        let contract_id = env.register(HealthRecords, (&admin, &mock_pr_id));
+        let client = HealthRecordsClient::new(&env, &contract_id);
 
         let patient = Address::generate(&env);
         let provider = Address::generate(&env);
@@ -383,17 +323,16 @@ mod tests {
 
             let provider_registry_id = env.register(ProviderRegistry, ());
             let patient_registry_id = env.register(MedicalRegistry, ());
-            let hr_contract_id = env.register(HealthRecords, ());
+            let admin = Address::generate(&env);
+            let hr_contract_id = env.register(HealthRecords, (&admin, &provider_registry_id));
 
             let provider_client = ProviderRegistryClient::new(&env, &provider_registry_id);
             let patient_client = MedicalRegistryClient::new(&env, &patient_registry_id);
             let hr_client = HealthRecordsClient::new(&env, &hr_contract_id);
 
-            let admin = Address::generate(&env);
             let provider = Address::generate(&env);
             let patient = Address::generate(&env);
 
-            hr_client.initialize(&admin, &provider_registry_id);
             provider_client.initialize(&admin);
             provider_client.register_provider(
                 &admin,
@@ -460,7 +399,8 @@ mod tests {
 
             let provider_registry_id = env.register(ProviderRegistry, ());
             let patient_registry_id = env.register(MedicalRegistry, ());
-            let hr_contract_id = env.register(HealthRecords, ());
+            let admin = Address::generate(&env);
+            let hr_contract_id = env.register(HealthRecords, (&admin, &provider_registry_id));
 
             let provider_client = ProviderRegistryClient::new(&env, &provider_registry_id);
             let patient_client = MedicalRegistryClient::new(&env, &patient_registry_id);
@@ -468,9 +408,7 @@ mod tests {
 
             let provider = Address::generate(&env);
             let patient = Address::generate(&env);
-            let admin = Address::generate(&env);
 
-            hr_client.initialize(&admin, &provider_registry_id);
             provider_client.initialize(&admin);
             provider_client.register_provider(
                 &admin,
@@ -559,11 +497,10 @@ mod cross_contract_correlation_tests {
         MedicalRegistryClient<'static>,
     ) {
         let mock_pr_id = env.register(crate::test::MockProviderRegistry, ());
-        let hr_id = env.register(HealthRecords, ());
+        let admin = Address::generate(env);
+        let hr_id = env.register(HealthRecords, (&admin, &mock_pr_id));
         let pr_id = env.register(MedicalRegistry, ());
         let hr_client = HealthRecordsClient::new(env, &hr_id);
-        let admin = Address::generate(env);
-        hr_client.initialize(&admin, &mock_pr_id);
         (
             hr_client,
             MedicalRegistryClient::new(env, &pr_id),
@@ -701,10 +638,9 @@ mod batch_creation_tests {
 
     fn setup(env: &Env) -> (HealthRecordsClient<'static>, Address, Address) {
         let mock_pr_id = env.register(crate::test::MockProviderRegistry, ());
-        let contract_id = env.register(HealthRecords, ());
-        let client = HealthRecordsClient::new(env, &contract_id);
         let admin = Address::generate(env);
-        client.initialize(&admin, &mock_pr_id);
+        let contract_id = env.register(HealthRecords, (&admin, &mock_pr_id));
+        let client = HealthRecordsClient::new(env, &contract_id);
         let patient = Address::generate(env);
         let provider = Address::generate(env);
         (client, patient, provider)
@@ -972,10 +908,9 @@ mod consent_scope_tests {
 
     fn setup(env: &Env) -> (HealthRecordsClient<'static>, Address, Address) {
         let mock_pr_id = env.register(crate::test::MockProviderRegistry, ());
-        let contract_id = env.register(HealthRecords, ());
-        let client = HealthRecordsClient::new(env, &contract_id);
         let admin = Address::generate(env);
-        client.initialize(&admin, &mock_pr_id);
+        let contract_id = env.register(HealthRecords, (&admin, &mock_pr_id));
+        let client = HealthRecordsClient::new(env, &contract_id);
         let patient = Address::generate(env);
         let provider = Address::generate(env);
         (client, patient, provider)
@@ -1406,7 +1341,8 @@ mod consent_scope_tests {
 
         let record_id = client.create_record(&patient, &provider, &reference, &initial_category, &rdesc, &policy(&env));
 
-        let initial_records = client.get_records_by_category(&initial_category);
+        let admin = client.get_admin();
+        let initial_records = client.get_records_by_category(&admin, &initial_category, &0u32);
         assert_eq!(initial_records.len(), 1);
         assert_eq!(initial_records.get(0).unwrap(), record_id);
 
@@ -1421,10 +1357,10 @@ mod consent_scope_tests {
             &policy(&env),
         );
 
-        let old_category_records = client.get_records_by_category(&initial_category);
+        let old_category_records = client.get_records_by_category(&admin, &initial_category, &0u32);
         assert_eq!(old_category_records.len(), 0, "old category should not contain the record after category change");
 
-        let new_category_records = client.get_records_by_category(&new_category);
+        let new_category_records = client.get_records_by_category(&admin, &new_category, &0u32);
         assert_eq!(new_category_records.len(), 1);
         assert_eq!(new_category_records.get(0).unwrap(), record_id);
     }
@@ -1477,5 +1413,108 @@ mod consent_scope_tests {
             &new_nonce,
         );
         assert_eq!(updated_version, 2);
+    }
+
+    #[test]
+    fn test_issue_1003_write_authorization_consistency() {
+        let env = Env::default();
+        let (client, patient, provider) = setup(&env);
+        let reference = encrypted_ref(&env, 10);
+        let category = RecordCategory::Lab;
+        let rdesc = Some(String::from_str(&env, "Blood Test"));
+        let pol = policy(&env);
+
+        // Grant consent with can_write = true
+        env.mock_all_auths();
+        client.grant_consent(&patient, &provider, &full_scope(), &1u64);
+
+        // 1. Both create_record and create_records_batch succeed with only provider auth
+        let single_id = client.create_record(
+            &patient,
+            &provider,
+            &reference,
+            &category,
+            &rdesc,
+            &pol,
+            &1u64,
+        );
+        assert!(single_id > 0);
+
+        let mut batch_entries = Vec::new(&env);
+        batch_entries.push_back(crate::RecordInput {
+            patient: patient.clone(),
+            encrypted_ref: reference.clone(),
+            record_category: category.clone(),
+            record_description: rdesc.clone(),
+            policy: pol.clone(),
+        });
+        let batch_ids = client.create_records_batch(&provider, &batch_entries, &2u64);
+        assert_eq!(batch_ids.len(), 1);
+
+        // 2. Provider with read-only consent cannot write to either path
+        let other_provider = Address::generate(&env);
+        let read_only_scope = ConsentScope {
+            can_read: true,
+            can_write: false,
+            can_share: false,
+            expires_at: 0,
+        };
+        client.grant_consent(&patient, &other_provider, &read_only_scope, &2u64);
+
+        let single_err = client.try_create_record(
+            &patient,
+            &other_provider,
+            &reference,
+            &category,
+            &rdesc,
+            &pol,
+            &1u64,
+        );
+        assert_eq!(single_err.unwrap_err().unwrap(), Error::Unauthorized);
+
+        let mut unauthorized_batch = Vec::new(&env);
+        unauthorized_batch.push_back(crate::RecordInput {
+            patient: patient.clone(),
+            encrypted_ref: reference.clone(),
+            record_category: category.clone(),
+            record_description: rdesc.clone(),
+            policy: pol.clone(),
+        });
+        let batch_err = client.try_create_records_batch(&other_provider, &unauthorized_batch, &1u64);
+        assert_eq!(batch_err.unwrap_err().unwrap(), Error::Unauthorized);
+    }
+
+    #[test]
+    fn test_issue_1002_category_index_paged_buckets_and_auth() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, patient, provider) = setup(&env);
+        let admin = client.get_admin();
+        let unauthorized = Address::generate(&env);
+
+        client.grant_consent(&patient, &provider, &full_scope(), &1u64);
+
+        let category = RecordCategory::Consultation;
+        let reference = encrypted_ref(&env, 20);
+        let rdesc = Some(String::from_str(&env, "Consultation Note"));
+        let pol = policy(&env);
+
+        let id1 = client.create_record(&patient, &provider, &reference, &category, &rdesc, &pol, &1u64);
+
+        // Admin can fetch page 0
+        let page0 = client.get_records_by_category(&admin, &category, &0u32);
+        assert_eq!(page0.len(), 1);
+        assert_eq!(page0.get(0).unwrap(), id1);
+
+        // Unauthorized caller is rejected
+        let unauth_res = client.try_get_records_by_category(&unauthorized, &category, &0u32);
+        assert_eq!(unauth_res.unwrap_err().unwrap(), Error::Unauthorized);
+
+        // Analytics address can also fetch
+        let analytics = Address::generate(&env);
+        client.set_analytics_address(&admin, &analytics);
+        let analytics_res = client.get_records_by_category(&analytics, &category, &0u32);
+        assert_eq!(analytics_res.len(), 1);
+        assert_eq!(analytics_res.get(0).unwrap(), id1);
     }
 }

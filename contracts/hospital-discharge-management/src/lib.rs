@@ -24,7 +24,7 @@
 //! Follow-up care provider identity validated. Discharge timestamp immutable once recorded.
 //! Temporal validation prevents backdated discharge records.
 
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, contractclient, Address, BytesN, Env, String, Symbol, Vec};
 
 mod storage;
 mod types;
@@ -37,15 +37,35 @@ use storage::*;
 use types::*;
 use validation::*;
 
+#[contractclient(name = "HospitalRegistryClient")]
+pub trait HospitalRegistryInterface {
+    fn is_hospital_active(env: Env, wallet: Address) -> bool;
+}
+
+#[contractclient(name = "ProviderRegistryClient")]
+pub trait ProviderRegistryInterface {
+    fn is_provider_affiliated(env: Env, provider: Address, hospital: Address) -> bool;
+}
+
 #[contract]
 pub struct HospitalDischargeContract;
 
 #[contractimpl]
 impl HospitalDischargeContract {
-    /// Initialize the contract with a hospital registry address
-    pub fn initialize(env: Env, hospital_registry: Address) -> Result<(), Error> {
-        hospital_registry.require_auth();
+    /// Initialize the contract with its administrator and registries.
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        hospital_registry: Address,
+        provider_registry: Address,
+    ) -> Result<(), Error> {
+        if is_initialized(&env) {
+            return Err(Error::AlreadyInitialized);
+        }
+        admin.require_auth();
+        set_admin(&env, &admin);
         set_hospital_registry(&env, &hospital_registry);
+        set_provider_registry(&env, &provider_registry);
         Ok(())
     }
 
@@ -54,11 +74,21 @@ impl HospitalDischargeContract {
         env: Env,
         caller: Address,
         patient_id: BytesN<32>,
-        hospital_id: BytesN<32>,
+        hospital_id: Address,
         admission_date: u64,
         expected_discharge_date: u64,
     ) -> Result<u64, Error> {
         caller.require_auth();
+
+        let hospital_registry = get_hospital_registry(&env)?;
+        let provider_registry = get_provider_registry(&env)?;
+        if !HospitalRegistryClient::new(&env, &hospital_registry)
+            .is_hospital_active(&hospital_id)
+            || !ProviderRegistryClient::new(&env, &provider_registry)
+                .is_provider_affiliated(&caller, &hospital_id)
+        {
+            return Err(Error::Unauthorized);
+        }
 
         // Validate inputs
         validate_dates(&env, admission_date, expected_discharge_date)?;

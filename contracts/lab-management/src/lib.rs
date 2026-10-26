@@ -38,8 +38,6 @@ pub enum Error {
     /// The lab order counter has reached u64::MAX and cannot be incremented.
     OrderIdOverflow = 4,
     ProviderNotRegistered = 5,
-    /// initialize() has already been called; the provider registry is immutable.
-    AlreadyInitialized = 6,
 }
 
 #[contracttype]
@@ -95,25 +93,17 @@ pub struct LabManagementContract;
 
 #[contractimpl]
 impl LabManagementContract {
-    /// One-time initialization. Requires authorization from the designated
-    /// admin/deployer address and can only be called once; subsequent calls
-    /// return `Error::AlreadyInitialized` so the provider registry cannot be
-    /// overwritten by an attacker.
-    pub fn initialize(env: Env, admin: Address, provider_registry: Address) -> Result<(), Error> {
-        admin.require_auth();
-
-        if env
-            .storage()
-            .instance()
-            .has(&DataKey::ProviderRegistry)
-        {
-            return Err(Error::AlreadyInitialized);
-        }
+    /// Runs atomically as part of contract creation, so the deployer binds the
+    /// provider registry address and no front-running `initialize` call is possible.
+    /// `admin` is accepted so the deployer address is recorded in the deploy
+    /// arguments and visible to operators, but the binding is enforced by the
+    /// atomic constructor rather than by an authorization check.
+    pub fn __constructor(env: Env, admin: Address, provider_registry: Address) {
+        let _ = admin;
 
         env.storage()
             .instance()
             .set(&DataKey::ProviderRegistry, &provider_registry);
-        Ok(())
     }
 
     fn is_provider_registered(env: &Env, provider: &Address) -> bool {

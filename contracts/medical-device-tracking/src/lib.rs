@@ -40,17 +40,102 @@ pub struct MedicalDeviceRegistry;
 #[contractimpl]
 impl MedicalDeviceRegistry {
     /// Configure the regulator address allowed to issue emergency recalls.
-    pub fn initialize(env: Env, regulator: Address) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Regulator) {
-            return Err(Error::AlreadyInitialized);
-        }
-
-        regulator.require_auth();
+    ///
+    /// Runs atomically as part of contract creation and cannot be called again,
+    /// so an attacker cannot front-run deployment and choose the regulator.
+    pub fn __constructor(env: Env, regulator: Address) {
         env.storage().instance().set(&DataKey::Regulator, &regulator);
+    }
+
+    /// Return the configured regulator address.
+    pub fn get_regulator(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Regulator)
+            .ok_or(Error::RecordNotFound)
+    }
+
+    /// Add a manufacturer to the regulator-managed allowlist.
+    pub fn allowlist_manufacturer(
+        env: Env,
+        regulator: Address,
+        manufacturer: Address,
+    ) -> Result<(), Error> {
+        regulator.require_auth();
+        let stored_regulator: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Regulator)
+            .ok_or(Error::NotAuthorized)?;
+        if regulator != stored_regulator {
+            return Err(Error::NotAuthorized);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::ManufacturerAllowlist(manufacturer), &true);
         Ok(())
     }
 
+    /// Revoke a manufacturer from the regulator-managed allowlist.
+    pub fn revoke_manufacturer(
+        env: Env,
+        regulator: Address,
+        manufacturer: Address,
+    ) -> Result<(), Error> {
+        regulator.require_auth();
+        let stored_regulator: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Regulator)
+            .ok_or(Error::NotAuthorized)?;
+        if regulator != stored_regulator {
+            return Err(Error::NotAuthorized);
+        }
+        env.storage()
+            .persistent()
+            .remove(&DataKey::ManufacturerAllowlist(manufacturer));
+        Ok(())
+    }
+
+    /// Check if a manufacturer address is allowlisted by the regulator.
+    pub fn is_manufacturer_allowlisted(env: Env, manufacturer: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ManufacturerAllowlist(manufacturer))
+            .unwrap_or(false)
+    }
+
+    /// Retrieve a device record by its Unique Device Identifier (UDI).
+    pub fn get_device_by_udi(env: Env, device_udi: String) -> Result<DeviceRecord, Error> {
+        let device_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DeviceByUdi(device_udi))
+            .ok_or(Error::RecordNotFound)?;
+        env.storage()
+            .persistent()
+            .get(&DataKey::DeviceRecord(device_id))
+            .ok_or(Error::RecordNotFound)
+    }
+
+    /// Retrieve a device record by its device ID.
+    pub fn get_device_record(env: Env, device_id: u64) -> Result<DeviceRecord, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::DeviceRecord(device_id))
+            .ok_or(Error::RecordNotFound)
+    }
+
+    /// Retrieve the total number of registered devices.
+    pub fn get_device_count(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::DeviceCounter)
+            .unwrap_or(0)
+    }
+
     /// Register a medical device with its Unique Device Identifier (UDI).
+    /// Requires caller to be an allowlisted manufacturer and enforces UDI uniqueness.
     pub fn register_device(
         env: Env,
         manufacturer_id: Address,
@@ -66,6 +151,15 @@ impl MedicalDeviceRegistry {
     ) -> Result<u64, Error> {
         manufacturer_id.require_auth();
 
+        if !Self::is_manufacturer_allowlisted(env.clone(), manufacturer_id.clone()) {
+            return Err(Error::ManufacturerNotAuthorized);
+        }
+
+        let udi_key = DataKey::DeviceByUdi(device_udi.clone());
+        if env.storage().persistent().has(&udi_key) {
+            return Err(Error::DuplicateUdi);
+        }
+
         let count: u64 = env
             .storage()
             .instance()
@@ -76,12 +170,18 @@ impl MedicalDeviceRegistry {
             .instance()
             .set(&DataKey::DeviceCounter, &new_id);
 
-        let next_scheduled_maintenance =
-            if let Some(interval) = extras.maintenance_interval_days {
-                Some(manufacturing_date + interval * 86400)
-            } else {
-                None
-            };
+        let next_scheduled_maintenance = match extras.maintenance_interval_days {
+            Some(interval) => {
+                let interval_secs = interval
+                    .checked_mul(86400)
+                    .ok_or(Error::ArithmeticOverflow)?;
+                let next_m = manufacturing_date
+                    .checked_add(interval_secs)
+                    .ok_or(Error::ArithmeticOverflow)?;
+                Some(next_m)
+            }
+            None => None,
+        };
 
         let device = DeviceRecord {
             device_id: new_id,
@@ -101,6 +201,9 @@ impl MedicalDeviceRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::DeviceRecord(new_id), &device);
+        env.storage()
+            .persistent()
+            .set(&udi_key, &new_id);
 
         env.events().publish(
             (Symbol::new(&env, "device_registered"),),
@@ -110,17 +213,23 @@ impl MedicalDeviceRegistry {
         Ok(new_id)
     }
 
-    /// Record a device implantation procedure for a patient.
+    /// Record a device implantation procedure for a patient using the device UDI.
     pub fn implant_device(
         env: Env,
         patient_id: Address,
-        device_id: u64,
+        device_udi: String,
         provider_id: Address,
         implant_date: u64,
         implant_location: String,
         surgical_notes_hash: BytesN<32>,
     ) -> Result<u64, Error> {
         provider_id.require_auth();
+
+        let device_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DeviceByUdi(device_udi))
+            .ok_or(Error::RecordNotFound)?;
 
         if !env
             .storage()
@@ -166,7 +275,7 @@ impl MedicalDeviceRegistry {
         patient_implants.push_back(new_id);
         env.storage()
             .persistent()
-            .set(&DataKey::PatientImplants(patient_id), &patient_implants);
+            .set(&DataKey::PatientImplants(patient_id.clone()), &patient_implants);
 
         let mut device_implants: Vec<u64> = env
             .storage()
@@ -255,7 +364,7 @@ impl MedicalDeviceRegistry {
             maintenance_id: new_m_id,
             implant_record_id,
             maintenance_date,
-            maintenance_type,
+            maintenance_type: maintenance_type.clone(),
             performed_by,
             notes_hash,
         };
@@ -309,7 +418,7 @@ impl MedicalDeviceRegistry {
             issuer: manufacturer,
             issuer_role: Symbol::new(&env, "maker"),
             recall_reason,
-            severity,
+            severity: severity.clone(),
             recall_date,
             action_required,
             resolution_deadline: None,
@@ -389,7 +498,7 @@ impl MedicalDeviceRegistry {
             issuer: regulator,
             issuer_role: Symbol::new(&env, "reg"),
             recall_reason,
-            severity,
+            severity: severity.clone(),
             recall_date,
             action_required,
             resolution_deadline: None,
@@ -770,8 +879,13 @@ impl MedicalDeviceRegistry {
         Self::assert_authorized_for_device_maintenance(&env, &performed_by, &device)?;
 
         if let Some(interval) = device.maintenance_interval_days {
-            device.next_scheduled_maintenance =
-                Some(maintenance_completed_date + interval * 86400);
+            let interval_secs = interval
+                .checked_mul(86400)
+                .ok_or(Error::ArithmeticOverflow)?;
+            let next_m = maintenance_completed_date
+                .checked_add(interval_secs)
+                .ok_or(Error::ArithmeticOverflow)?;
+            device.next_scheduled_maintenance = Some(next_m);
             env.storage()
                 .persistent()
                 .set(&DataKey::DeviceRecord(device_id), &device);

@@ -47,10 +47,9 @@ fn setup() -> (
     let registry = ProviderRegistryClient::new(&env, &registry_id);
     registry.initialize(&admin);
 
-    let contract_id = env.register(ImmunizationRegistry, ());
-    let client = ImmunizationRegistryClient::new(&env, &contract_id);
     let regulator = Address::generate(&env);
-    client.initialize(&regulator, &registry_id);
+    let contract_id = env.register(ImmunizationRegistry, (&regulator, &registry_id));
+    let client = ImmunizationRegistryClient::new(&env, &contract_id);
 
     (env, client, registry, admin, regulator)
 }

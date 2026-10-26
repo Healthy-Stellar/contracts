@@ -39,16 +39,14 @@ pub struct ImmunizationRegistry;
 
 #[contractimpl]
 impl ImmunizationRegistry {
-    /// Configure the regulator/public-health authority and provider-registry contract address.
-    pub fn initialize(env: Env, regulator: Address, provider_registry: Address) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Regulator) {
-            return Err(Error::AlreadyInitialized);
-        }
-
-        regulator.require_auth();
+    /// Configure the regulator/public-health authority and provider-registry
+    /// contract address.
+    ///
+    /// Runs atomically as part of contract creation and cannot be called again,
+    /// so an attacker cannot front-run deployment and choose the regulator.
+    pub fn __constructor(env: Env, regulator: Address, provider_registry: Address) {
         env.storage().instance().set(&DataKey::Regulator, &regulator);
         env.storage().instance().set(&DataKey::ProviderRegistry, &provider_registry);
-        Ok(())
     }
 
     pub fn record_immunization(env: Env, record: VaccineRecord) -> Result<u64, Error> {

@@ -3,23 +3,51 @@
 use super::*;
 use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String, Vec};
 
-fn create_test_env() -> (Env, Address, Address, BytesN<32>, BytesN<32>) {
+fn create_test_env() -> (Env, Address, Address, BytesN<32>, Address) {
     let env = Env::default();
     env.mock_all_auths();
 
     let admin = Address::generate(&env);
     let patient = Address::generate(&env);
     let patient_id = BytesN::from_array(&env, &[1u8; 32]);
-    let hospital_id = BytesN::from_array(&env, &[2u8; 32]);
+    let hospital_id = Address::generate(&env);
 
     (env, admin, patient, patient_id, hospital_id)
+}
+
+#[contract]
+pub struct MockHospitalRegistry;
+
+#[contractimpl]
+impl MockHospitalRegistry {
+    pub fn is_hospital_active(_env: Env, _wallet: Address) -> bool {
+        true
+    }
+}
+
+#[contract]
+pub struct MockProviderRegistry;
+
+#[contractimpl]
+impl MockProviderRegistry {
+    pub fn is_provider_affiliated(_env: Env, _provider: Address, _hospital: Address) -> bool {
+        true
+    }
+}
+
+fn create_client<'a>(env: &'a Env, admin: &Address) -> HospitalDischargeContractClient<'a> {
+    let hospital_registry = env.register(MockHospitalRegistry, ());
+    let provider_registry = env.register(MockProviderRegistry, ());
+    let contract_id = env.register(HospitalDischargeContract, ());
+    let client = HospitalDischargeContractClient::new(env, &contract_id);
+    client.initialize(admin, &hospital_registry, &provider_registry);
+    client
 }
 
 #[test]
 fn test_initiate_discharge_planning() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     let admission_date = 1000u64;
     let expected_discharge_date = 2000u64;
@@ -45,8 +73,7 @@ fn test_initiate_discharge_planning() {
 #[test]
 fn test_initiate_discharge_planning_invalid_dates() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     let admission_date = 2000u64;
     let expected_discharge_date = 1000u64; // Before admission
@@ -64,8 +91,7 @@ fn test_initiate_discharge_planning_invalid_dates() {
 #[test]
 fn test_assess_discharge_readiness() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     // First create a discharge plan
     let plan_id =
@@ -87,8 +113,7 @@ fn test_assess_discharge_readiness() {
 #[test]
 fn test_assess_discharge_readiness_needs_preparation() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     let plan_id =
         client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
@@ -104,8 +129,7 @@ fn test_assess_discharge_readiness_needs_preparation() {
 #[test]
 fn test_assess_discharge_readiness_not_ready() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     let plan_id =
         client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
@@ -121,8 +145,7 @@ fn test_assess_discharge_readiness_not_ready() {
 #[test]
 fn test_create_discharge_orders() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     let plan_id =
         client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
@@ -148,8 +171,7 @@ fn test_create_discharge_orders() {
 #[test]
 fn test_arrange_home_health() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     let plan_id =
         client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
@@ -172,8 +194,7 @@ fn test_arrange_home_health() {
 #[test]
 fn test_order_dme_for_discharge() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     let plan_id =
         client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
@@ -197,8 +218,7 @@ fn test_order_dme_for_discharge() {
 #[test]
 fn test_schedule_followup_appointments() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     let plan_id =
         client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
@@ -219,8 +239,7 @@ fn test_schedule_followup_appointments() {
 #[test]
 fn test_provide_discharge_education() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     let plan_id =
         client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
@@ -239,8 +258,7 @@ fn test_provide_discharge_education() {
 #[test]
 fn test_coordinate_with_snf() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     let plan_id =
         client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
@@ -261,8 +279,7 @@ fn test_coordinate_with_snf() {
 #[test]
 fn test_complete_discharge() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     let plan_id =
         client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
@@ -289,8 +306,7 @@ fn test_complete_discharge() {
 #[test]
 fn test_track_readmission_risk_high() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     let plan_id =
         client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
@@ -307,8 +323,7 @@ fn test_track_readmission_risk_high() {
 #[test]
 fn test_track_readmission_risk_medium() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     let plan_id =
         client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
@@ -324,8 +339,7 @@ fn test_track_readmission_risk_medium() {
 #[test]
 fn test_track_readmission_risk_low() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     let plan_id =
         client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
@@ -341,8 +355,7 @@ fn test_track_readmission_risk_low() {
 #[test]
 fn test_assess_readiness_nonexistent_plan() {
     let (env, admin, _patient, _patient_id, _hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     let notes = String::from_str(&env, "Test");
     let result =
@@ -353,8 +366,7 @@ fn test_assess_readiness_nonexistent_plan() {
 #[test]
 fn test_multiple_discharge_plans() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     // Create first plan
     let plan_id_1 =
@@ -379,8 +391,7 @@ fn test_multiple_discharge_plans() {
 #[test]
 fn test_full_discharge_workflow() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     // 1. Initiate discharge planning
     let plan_id =
@@ -458,13 +469,15 @@ fn test_full_discharge_workflow() {
 #[test]
 fn test_initialize_then_discharge_planning() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
-    // Initialize the contract with the hospital registry
-    client.initialize(&admin);
+    let error = client
+        .try_initialize(&admin, &Address::generate(&env), &Address::generate(&env))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(error, Error::AlreadyInitialized);
 
-    // Verify initialize succeeded by running a state-mutating call
+    // Verify the initial setup remains usable after a rejected second initialization.
     let plan_id = client.initiate_discharge_planning(
         &admin,
         &patient_id,
@@ -481,8 +494,7 @@ fn test_initialize_then_discharge_planning() {
 #[test]
 fn test_complete_discharge_unauthorized() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     // Create discharge plan with admin
     let plan_id =
@@ -514,8 +526,7 @@ fn test_complete_discharge_unauthorized() {
 #[test]
 fn test_complete_discharge_missing_readiness_or_orders_fails() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     let plan_id =
         client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
@@ -544,8 +555,7 @@ fn test_complete_discharge_missing_readiness_or_orders_fails() {
 #[test]
 fn test_complete_discharge_twice_fails() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     let plan_id =
         client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
@@ -574,8 +584,7 @@ fn test_complete_discharge_twice_fails() {
 #[test]
 fn test_cancel_discharge_success() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     let plan_id =
         client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
@@ -590,8 +599,7 @@ fn test_cancel_discharge_success() {
 #[test]
 fn test_cancel_completed_or_cancelled_fails() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     let plan_id =
         client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
@@ -624,8 +632,7 @@ fn test_cancel_completed_or_cancelled_fails() {
 #[test]
 fn test_modify_completed_or_cancelled_plan_fails() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     let plan_id =
         client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
@@ -652,8 +659,7 @@ fn test_modify_completed_or_cancelled_plan_fails() {
 #[test]
 fn test_assess_discharge_readiness_unauthorized() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     let plan_id = client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
 
@@ -666,8 +672,7 @@ fn test_assess_discharge_readiness_unauthorized() {
 #[test]
 fn test_schedule_followup_appointments_unauthorized() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     let plan_id = client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
 
@@ -680,8 +685,7 @@ fn test_schedule_followup_appointments_unauthorized() {
 #[test]
 fn test_provide_discharge_education_unauthorized() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let contract_id = env.register(HospitalDischargeContract, ());
-    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+    let client = create_client(&env, &admin);
 
     let plan_id = client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
 

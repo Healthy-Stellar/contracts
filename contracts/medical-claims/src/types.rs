@@ -39,6 +39,12 @@ pub enum Error {
     DisputeNotFound = 17,
     /// #520: Dispute is not in the Open state and cannot be resolved again.
     DisputeAlreadyResolved = 18,
+    /// #981: Dispute is not in a state that permits the requested transition.
+    InvalidDisputeTransition = 19,
+    /// #981: Claim is not in a status that permits opening a dispute.
+    ClaimNotDisputable = 20,
+    /// #981: Claim already has an open (Open/Escalated) dispute.
+    DisputeAlreadyOpen = 21,
 }
 
 #[contracttype]
@@ -81,6 +87,33 @@ pub struct DisputeRecord {
     pub resolved_by: Option<Address>,
     pub resolution_hash: Option<BytesN<32>>,
     pub resolved_at: Option<u64>,
+    pub escalation_level: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeOpenedEvent {
+    pub dispute_id: u64,
+    pub claim_id: u64,
+    pub opened_by: Address,
+    pub reason_hash: BytesN<32>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeResolvedEvent {
+    pub dispute_id: u64,
+    pub claim_id: u64,
+    pub resolved_by: Address,
+    pub resolution_hash: BytesN<32>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeEscalatedEvent {
+    pub dispute_id: u64,
+    pub claim_id: u64,
+    pub escalated_by: Address,
     pub escalation_level: u32,
 }
 

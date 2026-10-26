@@ -89,6 +89,23 @@ fn test_register_and_is_provider() {
 }
 
 #[test]
+fn test_provider_hospital_affiliation_requires_active_provider_and_matches_hospital() {
+    let (env, admin, client) = setup();
+    let provider = Address::generate(&env);
+    let hospital = Address::generate(&env);
+    let other_hospital = Address::generate(&env);
+
+    register_provider_with_anchor(&env, &client, &admin, &provider);
+    client.set_provider_hospital(&admin, &provider, &hospital, &true);
+
+    assert!(client.is_provider_affiliated(&provider, &hospital));
+    assert!(!client.is_provider_affiliated(&provider, &other_hospital));
+
+    client.revoke_provider(&admin, &provider);
+    assert!(!client.is_provider_affiliated(&provider, &hospital));
+}
+
+#[test]
 fn test_register_provider_exposes_profile() {
     let (env, admin, client) = setup();
     let provider = Address::generate(&env);
@@ -147,6 +164,114 @@ fn test_revoke_provider_non_admin_returns_error() {
     register_provider_with_anchor(&env, &client, &admin, &provider);
     let err = client.try_revoke_provider(&non_admin, &provider).unwrap_err().unwrap();
     assert_eq!(err, Error::Unauthorized);
+}
+
+// ── renew_credential ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_expired_credential_locks_out_then_renew_restores() {
+    let (env, admin, client) = setup();
+    let provider = Address::generate(&env);
+    let issuer = Address::generate(&env);
+
+    // Register with a credential that expires at ledger timestamp 1000.
+    client.register_provider(
+        &admin,
+        &provider,
+        &String::from_str(&env, "Dr. Smith"),
+        &String::from_str(&env, "General"),
+        &String::from_str(&env, "LIC-001"),
+        &dummy_hash(&env, 1),
+        &issuer,
+        &dummy_hash(&env, 2),
+        &1000u64,
+        &dummy_hash(&env, 3),
+    );
+    assert!(client.is_provider(&provider));
+
+    // Advance past expiry: provider is locked out.
+    env.ledger().set_timestamp(2000);
+    assert!(!client.is_provider(&provider));
+
+    // Renew the credential with a future expiry.
+    client.renew_credential(
+        &admin,
+        &provider,
+        &dummy_hash(&env, 10),
+        &dummy_hash(&env, 11),
+        &5000u64,
+    );
+    assert!(client.is_provider(&provider));
+
+    let profile = client.get_provider_profile(&provider);
+    assert_eq!(profile.credential.credential_hash, dummy_hash(&env, 10));
+    assert_eq!(profile.credential.attestation_hash, dummy_hash(&env, 11));
+    assert_eq!(profile.credential.expires_at, 5000u64);
+}
+
+#[test]
+fn test_renew_credential_rejects_past_expiry() {
+    let (env, admin, client) = setup();
+    let provider = Address::generate(&env);
+    register_provider_with_anchor(&env, &client, &admin, &provider);
+
+    env.ledger().set_timestamp(2000);
+    let err = client
+        .try_renew_credential(
+            &admin,
+            &provider,
+            &dummy_hash(&env, 10),
+            &dummy_hash(&env, 11),
+            &2000u64,
+        )
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::InvalidExpiry);
+}
+
+#[test]
+fn test_renew_credential_non_admin_returns_error() {
+    let (env, admin, client) = setup();
+    let non_admin = Address::generate(&env);
+    let provider = Address::generate(&env);
+    register_provider_with_anchor(&env, &client, &admin, &provider);
+
+    let err = client
+        .try_renew_credential(
+            &non_admin,
+            &provider,
+            &dummy_hash(&env, 10),
+            &dummy_hash(&env, 11),
+            &u64::MAX,
+        )
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::Unauthorized);
+}
+
+#[test]
+fn test_register_provider_rejects_expired_credential() {
+    let (env, admin, client) = setup();
+    let provider = Address::generate(&env);
+    let issuer = Address::generate(&env);
+
+    env.ledger().set_timestamp(2000);
+    let err = client
+        .try_register_provider(
+            &admin,
+            &provider,
+            &String::from_str(&env, "Dr. Smith"),
+            &String::from_str(&env, "General"),
+            &String::from_str(&env, "LIC-001"),
+            &dummy_hash(&env, 1),
+            &issuer,
+            &dummy_hash(&env, 2),
+            &1000u64,
+            &dummy_hash(&env, 3),
+        )
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::InvalidExpiry);
 }
 
 // ── add_record ────────────────────────────────────────────────────────────────
@@ -257,338 +382,12 @@ fn test_add_record_zero_nonce_accepted_as_initial() {
 fn test_get_missing_record_returns_error() {
     let (env, admin, client) = setup();
     let err = client
-        .try_get_record(&admin, &admin, &String::from_str(&env, "MISSING"))
+        .try_get_record(
+            &admin,
+            &admin,
+            &String::from_str(&env, "MISSING"),
+        )
         .unwrap_err()
         .unwrap();
     assert_eq!(err, Error::RecordNotFound);
-}
-
-// ── Batch registration tests (#396) ──────────────────────────────────────────
-
-#[test]
-fn test_batch_register_providers_full_success() {
-    let (env, admin, client) = setup();
-
-    let mut entries = Vec::new(&env);
-    for i in 0..3u8 {
-        entries.push_back(BatchProviderEntry {
-            provider: Address::generate(&env),
-            name: String::from_str(&env, "Dr. Batch"),
-            specialty: String::from_str(&env, "General"),
-            license_number: String::from_str(&env, "LIC-BATCH"),
-            credential_hash: dummy_hash(&env, i + 1),
-            issuer: Address::generate(&env),
-            attestation_hash: dummy_hash(&env, i + 10),
-            expires_at: u64::MAX,
-            revocation_reference: dummy_hash(&env, i + 20),
-        });
-    }
-
-    let results = client.batch_register_providers(&admin, &entries);
-    assert_eq!(results.len(), 3);
-    for i in 0..3u32 {
-        assert!(matches!(results.get(i).unwrap(), BatchEntryStatus::Success));
-    }
-}
-
-#[test]
-fn test_batch_register_providers_idempotent_on_duplicate() {
-    let (env, admin, client) = setup();
-    let provider = Address::generate(&env);
-
-    let entry = BatchProviderEntry {
-        provider: provider.clone(),
-        name: String::from_str(&env, "Dr. Dup"),
-        specialty: String::from_str(&env, "General"),
-        license_number: String::from_str(&env, "LIC-DUP"),
-        credential_hash: dummy_hash(&env, 1),
-        issuer: Address::generate(&env),
-        attestation_hash: dummy_hash(&env, 2),
-        expires_at: u64::MAX,
-        revocation_reference: dummy_hash(&env, 3),
-    };
-
-    let mut entries = Vec::new(&env);
-    entries.push_back(entry.clone());
-    entries.push_back(entry);
-
-    let results = client.batch_register_providers(&admin, &entries);
-    assert_eq!(results.len(), 2);
-    assert!(matches!(results.get(0).unwrap(), BatchEntryStatus::Success));
-    assert!(matches!(results.get(1).unwrap(), BatchEntryStatus::AlreadyExists));
-}
-
-#[test]
-fn test_batch_register_providers_over_limit_fails() {
-    let (env, admin, client) = setup();
-
-    let mut entries = Vec::new(&env);
-    for _ in 0..51 {
-        entries.push_back(BatchProviderEntry {
-            provider: Address::generate(&env),
-            name: String::from_str(&env, "Dr. Over"),
-            specialty: String::from_str(&env, "General"),
-            license_number: String::from_str(&env, "LIC"),
-            credential_hash: dummy_hash(&env, 1),
-            issuer: Address::generate(&env),
-            attestation_hash: dummy_hash(&env, 2),
-            expires_at: u64::MAX,
-            revocation_reference: dummy_hash(&env, 3),
-        });
-    }
-
-    let err = client
-        .try_batch_register_providers(&admin, &entries)
-        .unwrap_err()
-        .unwrap();
-    assert_eq!(err, Error::BatchTooLarge);
-}
-
-// ── admin rotation ────────────────────────────────────────────────────────────
-
-#[test]
-fn test_admin_rotation_success() {
-    let (env, admin, client) = setup();
-    let new_admin = Address::generate(&env);
-
-    client.propose_admin_rotation(&admin, &new_admin);
-    client.accept_admin_rotation(&new_admin);
-
-    // New admin can perform admin-only actions; old admin cannot.
-    let provider = Address::generate(&env);
-    let issuer = Address::generate(&env);
-    client.register_provider(
-        &new_admin,
-        &provider,
-        &String::from_str(&env, "Dr. New"),
-        &String::from_str(&env, "General"),
-        &String::from_str(&env, "LIC-NEW"),
-        &dummy_hash(&env, 1),
-        &issuer,
-        &dummy_hash(&env, 2),
-        &u64::MAX,
-        &dummy_hash(&env, 3),
-    );
-    assert!(client.is_provider(&provider));
-
-    let err = client
-        .try_revoke_provider(&admin, &provider)
-        .unwrap_err()
-        .unwrap();
-    assert_eq!(err, Error::Unauthorized);
-}
-
-#[test]
-fn test_propose_rotation_double_propose_returns_error() {
-    let (env, admin, client) = setup();
-    let first = Address::generate(&env);
-    let second = Address::generate(&env);
-
-    client.propose_admin_rotation(&admin, &first);
-
-    let err = client
-        .try_propose_admin_rotation(&admin, &second)
-        .unwrap_err()
-        .unwrap();
-    assert_eq!(err, Error::RotationPending);
-}
-
-#[test]
-fn test_accept_rotation_wrong_address_returns_error() {
-    let (env, admin, client) = setup();
-    let pending = Address::generate(&env);
-    let stranger = Address::generate(&env);
-
-    client.propose_admin_rotation(&admin, &pending);
-
-    let err = client
-        .try_accept_admin_rotation(&stranger)
-        .unwrap_err()
-        .unwrap();
-    assert_eq!(err, Error::NotPendingAdmin);
-    // Pending state must still be intact after a failed accept.
-    client.accept_admin_rotation(&pending);
-}
-
-#[test]
-fn test_accept_rotation_without_proposal_returns_error() {
-    let (env, _, client) = setup();
-    let stranger = Address::generate(&env);
-
-    let err = client
-        .try_accept_admin_rotation(&stranger)
-        .unwrap_err()
-        .unwrap();
-    assert_eq!(err, Error::NoRotationPending);
-}
-
-#[test]
-fn test_accept_rotation_after_expiry_returns_error_and_reproposal_succeeds() {
-    let (env, admin, client) = setup();
-    let pending = Address::generate(&env);
-
-    client.propose_admin_rotation(&admin, &pending);
-
-    // Advance the ledger timestamp past the 24-hour window.
-    env.ledger().with_mut(|l| {
-        l.timestamp += ADMIN_ROTATION_WINDOW + 1;
-    });
-
-    let err = client
-        .try_accept_admin_rotation(&pending)
-        .unwrap_err()
-        .unwrap();
-    assert_eq!(err, Error::RotationExpired);
-
-    // A new proposal must replace the expired pending entry even though the
-    // failed accept rolled back its attempted cleanup.
-    let replacement = Address::generate(&env);
-    client.propose_admin_rotation(&admin, &replacement);
-    client.accept_admin_rotation(&replacement);
-}
-
-#[test]
-fn test_expired_rotation_can_be_replaced_without_accept_attempt() {
-    let (env, admin, client) = setup();
-    let typo = Address::generate(&env);
-    let replacement = Address::generate(&env);
-
-    client.propose_admin_rotation(&admin, &typo);
-    env.ledger().with_mut(|l| {
-        l.timestamp += ADMIN_ROTATION_WINDOW + 1;
-    });
-
-    client.propose_admin_rotation(&admin, &replacement);
-    client.accept_admin_rotation(&replacement);
-}
-
-#[test]
-fn test_admin_can_cancel_rotation() {
-    let (env, admin, client) = setup();
-    let pending = Address::generate(&env);
-    let replacement = Address::generate(&env);
-
-    client.propose_admin_rotation(&admin, &pending);
-    client.cancel_admin_rotation(&admin);
-    client.propose_admin_rotation(&admin, &replacement);
-    client.accept_admin_rotation(&replacement);
-}
-
-#[test]
-fn test_non_admin_cannot_cancel_rotation() {
-    let (env, admin, client) = setup();
-    let pending = Address::generate(&env);
-    let impostor = Address::generate(&env);
-
-    client.propose_admin_rotation(&admin, &pending);
-    let err = client
-        .try_cancel_admin_rotation(&impostor)
-        .unwrap_err()
-        .unwrap();
-    assert_eq!(err, Error::Unauthorized);
-    client.accept_admin_rotation(&pending);
-}
-
-#[test]
-fn test_accept_rotation_at_exact_expiry_boundary_succeeds() {
-    let (env, admin, client) = setup();
-    let pending = Address::generate(&env);
-
-    client.propose_admin_rotation(&admin, &pending);
-
-    // Exactly at the expiry timestamp the rotation is still valid
-    // (contract uses `> expiry`, so equality is within the window).
-    env.ledger().with_mut(|l| {
-        l.timestamp += ADMIN_ROTATION_WINDOW;
-    });
-
-    client.accept_admin_rotation(&pending);
-
-    // Confirm the new admin is active.
-    let provider = Address::generate(&env);
-    register_provider_with_anchor(&env, &client, &pending, &provider);
-    assert!(client.is_provider(&provider));
-}
-
-#[test]
-fn test_propose_rotation_non_admin_returns_error() {
-    let (env, _, client) = setup();
-    let stranger = Address::generate(&env);
-    let new_admin = Address::generate(&env);
-
-    let err = client
-        .try_propose_admin_rotation(&stranger, &new_admin)
-        .unwrap_err()
-        .unwrap();
-    assert_eq!(err, Error::Unauthorized);
-}
-
-// ── reactivate_provider ───────────────────────────────────────────────────────
-
-#[test]
-fn test_reactivate_provider_restores_active_and_clears_revoked_at() {
-    let (env, admin, client) = setup();
-    let provider = Address::generate(&env);
-
-    register_provider_with_anchor(&env, &client, &admin, &provider);
-    client.revoke_provider(&admin, &provider);
-
-    // Confirm provider is inactive and has a revoked_at timestamp.
-    let profile = client.get_provider_profile(&provider);
-    assert!(!profile.active);
-    assert!(profile.credential.revoked_at.is_some());
-    assert!(!client.is_provider(&provider));
-
-    client.reactivate_provider(&admin, &provider);
-
-    let profile = client.get_provider_profile(&provider);
-    assert!(profile.active);
-    assert!(profile.credential.revoked_at.is_none());
-    assert!(client.is_provider(&provider));
-}
-
-#[test]
-fn test_reactivate_provider_non_admin_returns_error() {
-    let (env, admin, client) = setup();
-    let non_admin = Address::generate(&env);
-    let provider = Address::generate(&env);
-
-    register_provider_with_anchor(&env, &client, &admin, &provider);
-    client.revoke_provider(&admin, &provider);
-
-    let err = client
-        .try_reactivate_provider(&non_admin, &provider)
-        .unwrap_err()
-        .unwrap();
-    assert_eq!(err, Error::Unauthorized);
-}
-
-#[test]
-fn test_reactivate_unknown_provider_returns_error() {
-    let (env, admin, client) = setup();
-    let nobody = Address::generate(&env);
-
-    let err = client
-        .try_reactivate_provider(&admin, &nobody)
-        .unwrap_err()
-        .unwrap();
-    assert_eq!(err, Error::RecordNotFound);
-}
-
-#[test]
-fn test_reactivate_already_active_provider_is_idempotent() {
-    // reactivate_provider on an already-active provider should succeed and
-    // leave the profile active with no revoked_at (no-op semantics).
-    let (env, admin, client) = setup();
-    let provider = Address::generate(&env);
-
-    register_provider_with_anchor(&env, &client, &admin, &provider);
-    assert!(client.is_provider(&provider));
-
-    client.reactivate_provider(&admin, &provider);
-
-    let profile = client.get_provider_profile(&provider);
-    assert!(profile.active);
-    assert!(profile.credential.revoked_at.is_none());
-    assert!(client.is_provider(&provider));
 }

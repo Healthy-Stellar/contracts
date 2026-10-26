@@ -34,6 +34,16 @@ pub struct EligibilityResult {
     pub evaluation_artifacts: Vec<RuleEvaluationArtifact>,
 }
 
+/// Stored, time-bounded eligibility attestation keyed by (trial, patient).
+/// Enrollment paths must require a valid, unexpired, passing attestation.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct EligibilityAttestation {
+    pub result: EligibilityResult,
+    pub evaluated_at: u64,
+    pub expires_at: u64,
+}
+
 /// Type of evidence used for eligibility checks.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -205,6 +215,22 @@ pub struct DataFilters {
     pub date_range_end: Option<u64>,
 }
 
+/// Recorded de-identified data export with provenance (#997).
+///
+/// `dataset_hash` is the PI-submitted off-chain dataset hash; `enrollment_ids_root`
+/// is a Merkle root over the included enrollment IDs and retention flags computed
+/// on-chain, so the record commits to the actual exported data set.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct Export {
+    pub trial_record_id: u64,
+    pub pi: Address,
+    pub filters: DataFilters,
+    pub dataset_hash: BytesN<32>,
+    pub enrollment_ids_root: BytesN<32>,
+    pub timestamp: u64,
+}
+
 /// Status of a DSMB safety-halt proposal
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -280,4 +306,12 @@ pub enum DataKey {
     AmendmentLog(u64),
     /// Current informed-consent document hash for a trial, set by the PI.
     ConsentVersion(u64),
+    /// Stored eligibility attestation keyed by (trial_record_id, patient).
+    EligibilityAttestation(u64, Address),
+    /// Per-trial study-arm allocation ratio (arm -> weight), set by the PI.
+    ArmAllocation(u64),
+    /// Counter for recorded exports within a trial, keyed by trial_record_id.
+    ExportCounter(u64),
+    /// A single recorded export, keyed by (trial_record_id, export_id).
+    Export(u64, u64),
 }

@@ -10,10 +10,8 @@ fn create_test_env() -> (Env, Address, Address, Address, ClinicalTrialContractCl
     let pi = Address::generate(&env);
     let patient = Address::generate(&env);
 
-    let contract_id = env.register(crate::ClinicalTrialContract, ());
+    let contract_id = env.register(crate::ClinicalTrialContract, (&admin, &pi));
     let client = ClinicalTrialContractClient::new(&env, &contract_id);
-
-    client.initialize(&admin, &pi);
 
     (env, admin, pi, patient, client)
 }
@@ -51,7 +49,7 @@ fn expected_claim_hash(
 }
 
 #[test]
-fn test_initialize() {
+fn test_constructor_binds_admin() {
     let (env, admin, _, _, client) = create_test_env();
 
     // Successful registration confirms contract is initialized
@@ -68,23 +66,6 @@ fn test_initialize() {
     );
 
     assert_eq!(trial_record_id, 0u64);
-}
-
-#[test]
-fn test_double_initialize() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let admin = Address::generate(&env);
-    let pi = Address::generate(&env);
-    let contract_id = env.register(crate::ClinicalTrialContract, ());
-    let client = ClinicalTrialContractClient::new(&env, &contract_id);
-
-    client.initialize(&admin, &pi);
-
-    // Second initialization must return AlreadyInitialized typed error
-    let result = client.try_initialize(&admin, &pi);
-    assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
 }
 
 #[test]

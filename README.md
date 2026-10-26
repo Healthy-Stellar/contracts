@@ -118,10 +118,12 @@ git clone git@github.com:Healthy-Stellar/contracts.git
 cd contracts
 ```
 
-2. Install dependencies:
+2. Build and install the Rust dependencies with Cargo. This repository has no npm package:
 ```bash
-cargo build
+cargo build --locked
 ```
+
+Keep `Cargo.lock` committed so builds use the same dependency versions.
 
 3. Configure your environment:
 ```bash
@@ -350,6 +352,8 @@ soroban contract invoke \
 
 ## Testing
 
+Soroban writes generated snapshots under `test_snapshots/` during tests. These are local debugging artifacts, not golden files: keep them ignored and do not commit them. The `target/` and `target-pacs-test/` build directories are also ignored.
+
 Run the complete test suite:
 
 ```bash
@@ -391,3 +395,6 @@ cargo test --test integration_tests
 
 <!-- handsoff-issue-941 -->
 - #941: [patient-registry] Test suite does not compile — 95 errors from nonce parameters added in #776
+
+<!-- handsoff-issue-988 -->
+- #988: [healthcare-credentialing] verify_credential counts repeated verifications of one credential type — a single verifier can push a case to committee review

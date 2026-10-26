@@ -1,13 +1,17 @@
 [package]
-lints = { workspace = true }
 name = "clinical-guideline"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+
+[lib]
+crate-type = ["lib", "cdylib"]
+doctest = false
+
+[lints]
+workspace = true
 
 [dependencies]
 soroban-sdk = { workspace = true }
-shared = { workspace = true }
 
 [dev-dependencies]
-provider-registry = { path = "../provider-registry" }
 soroban-sdk = { workspace = true, features = ["testutils"] }

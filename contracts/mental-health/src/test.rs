@@ -71,7 +71,7 @@ fn test_conduct_assessment_and_record_scores() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register(MentalHealthContract, ());
+    let contract_id = env.register(MentalHealthContract, (None::<Address>,));
     let client = MentalHealthContractClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);
@@ -133,7 +133,7 @@ fn test_record_scores_reject_uninvolved_provider_without_consent() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register(MentalHealthContract, ());
+    let contract_id = env.register(MentalHealthContract, (None::<Address>,));
     let client = MentalHealthContractClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);
@@ -178,7 +178,7 @@ fn test_treatment_plan_and_outcomes() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register(MentalHealthContract, ());
+    let contract_id = env.register(MentalHealthContract, (None::<Address>,));
     let client = MentalHealthContractClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);
@@ -240,7 +240,7 @@ fn test_privacy_and_screening() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register(MentalHealthContract, ());
+    let contract_id = env.register(MentalHealthContract, (None::<Address>,));
     let client = MentalHealthContractClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);
@@ -279,7 +279,7 @@ fn test_safety_plan_and_hospitalization() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register(MentalHealthContract, ());
+    let contract_id = env.register(MentalHealthContract, (None::<Address>,));
     let client = MentalHealthContractClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);
@@ -327,7 +327,7 @@ fn test_safety_plan_and_hospitalization() {
 fn test_invalid_privacy_flag_auth() {
     let env = Env::default();
     // env.mock_all_auths() is NOT called, so auth will fail
-    let contract_id = env.register(MentalHealthContract, ());
+    let contract_id = env.register(MentalHealthContract, (None::<Address>,));
     let client = MentalHealthContractClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);
@@ -340,7 +340,7 @@ fn test_invalid_privacy_flag_auth() {
 fn test_assess_suicide_risk_unauth() {
     let env = Env::default();
     // env.mock_all_auths() is NOT called
-    let contract_id = env.register(MentalHealthContract, ());
+    let contract_id = env.register(MentalHealthContract, (None::<Address>,));
     let client = MentalHealthContractClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);
@@ -366,14 +366,11 @@ fn test_high_risk_assessment_triggers_crisis_escalation() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let mental_health_id = env.register(MentalHealthContract, ());
     let emergency_id = env.register(MockEmergencyMedicalInfo, ());
+    let mental_health_id = env.register(MentalHealthContract, (&Some(emergency_id.clone()),));
 
     let mental_health = MentalHealthContractClient::new(&env, &mental_health_id);
     let emergency = MockEmergencyMedicalInfoClient::new(&env, &emergency_id);
-
-    // Initialize mental-health with emergency contract address
-    mental_health.initialize(&emergency_id);
 
     let patient_id = Address::generate(&env);
     let provider_id = Address::generate(&env);
@@ -434,13 +431,11 @@ fn test_low_risk_assessment_does_not_trigger_escalation() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let mental_health_id = env.register(MentalHealthContract, ());
     let emergency_id = env.register(MockEmergencyMedicalInfo, ());
+    let mental_health_id = env.register(MentalHealthContract, (&Some(emergency_id.clone()),));
 
     let mental_health = MentalHealthContractClient::new(&env, &mental_health_id);
     let emergency = MockEmergencyMedicalInfoClient::new(&env, &emergency_id);
-
-    mental_health.initialize(&emergency_id);
 
     let patient_id = Address::generate(&env);
     let provider_id = Address::generate(&env);
@@ -478,13 +473,11 @@ fn test_safety_plan_triggers_crisis_escalation() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let mental_health_id = env.register(MentalHealthContract, ());
     let emergency_id = env.register(MockEmergencyMedicalInfo, ());
+    let mental_health_id = env.register(MentalHealthContract, (&Some(emergency_id.clone()),));
 
     let mental_health = MentalHealthContractClient::new(&env, &mental_health_id);
     let emergency = MockEmergencyMedicalInfoClient::new(&env, &emergency_id);
-
-    mental_health.initialize(&emergency_id);
 
     let patient_id = Address::generate(&env);
     let provider_id = Address::generate(&env);
@@ -524,13 +517,11 @@ fn test_crisis_escalation_with_privacy_flag_deidentifies_patient() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let mental_health_id = env.register(MentalHealthContract, ());
     let emergency_id = env.register(MockEmergencyMedicalInfo, ());
+    let mental_health_id = env.register(MentalHealthContract, (&Some(emergency_id.clone()),));
 
     let mental_health = MentalHealthContractClient::new(&env, &mental_health_id);
     let emergency = MockEmergencyMedicalInfoClient::new(&env, &emergency_id);
-
-    mental_health.initialize(&emergency_id);
 
     let patient_id = Address::generate(&env);
     let provider_id = Address::generate(&env);
@@ -576,7 +567,7 @@ fn test_crisis_escalation_without_emergency_contract_configured() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register(MentalHealthContract, ());
+    let contract_id = env.register(MentalHealthContract, (None::<Address>,));
     let client = MentalHealthContractClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);
@@ -604,7 +595,7 @@ fn test_two_sessions_same_day_both_retained() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register(MentalHealthContract, ());
+    let contract_id = env.register(MentalHealthContract, (None::<Address>,));
     let client = MentalHealthContractClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);
@@ -658,7 +649,7 @@ fn test_two_symptoms_same_day_both_retained() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register(MentalHealthContract, ());
+    let contract_id = env.register(MentalHealthContract, (None::<Address>,));
     let client = MentalHealthContractClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);
@@ -698,7 +689,7 @@ fn test_two_outcomes_same_day_both_retained() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register(MentalHealthContract, ());
+    let contract_id = env.register(MentalHealthContract, (None::<Address>,));
     let client = MentalHealthContractClient::new(&env, &contract_id);
 
     let patient_id = Address::generate(&env);

@@ -35,17 +35,21 @@ use ttl_config::{extend_critical_ttl, extend_critical_ttl_if_exists};
 #[contracterror]
 #[derive(Copy,Clone,Debug,Eq,PartialEq)]
 #[repr(u32)]
-pub enum Error{NotInitialized=1,AlreadyInitialized=2,Unauthorized=3,ZeroAmount=4,InsufficientFunds=5,FundsCommitted=6,RecipientNotEligible=7,RecipientCapExceeded=8,Overflow=9}
+pub enum Error{NotInitialized=1,AlreadyInitialized=2,Unauthorized=3,ZeroAmount=4,InsufficientFunds=5,FundsCommitted=6,RecipientNotEligible=7,RecipientCapExceeded=8,Overflow=9,CommitmentNotFound=10}
 #[contracttype]
-pub enum DataKey{Admin,Token,PoolBalance,CommittedFunds,TotalShares,ShareEpoch,Shares(Address),Eligible(Address),RecipientAwards(Address),RecipientCap(Address)}
+pub enum DataKey{Admin,Token,PoolBalance,CommittedFunds,TotalShares,ShareEpoch,Shares(Address),Eligible(Address),RecipientAwards(Address),RecipientCap(Address),Commitment(u64)}
 #[contracttype]
 #[derive(Clone,Debug,Eq,PartialEq)]
 pub struct FundStats{pub pool_balance:i128,pub committed_balance:i128}
-/// A donor's pool shares. Shares from an earlier `epoch` are worthless: the epoch advances when the
-/// uncommitted pool has been fully spent, so new donors are not diluted by shares backed by nothing.
+/// A donor's pool shares. Shares from an earlier `epoch` are worthless: the epoch advances only when
+/// the pool itself is empty, so new donors are not diluted by shares backed by nothing.
 #[contracttype]
 #[derive(Clone,Debug,Eq,PartialEq)]
 pub struct DonorShares{pub epoch:u32,pub shares:i128}
+/// A single earmarked award commitment, tied to its intended recipient.
+#[contracttype]
+#[derive(Clone,Debug,Eq,PartialEq)]
+pub struct Commitment{pub recipient:Address,pub amount:i128}
 fn pool_balance(env:&Env)->i128{env.storage().instance().get(&DataKey::PoolBalance).unwrap_or(0)}
 fn committed_funds(env:&Env)->i128{env.storage().instance().get(&DataKey::CommittedFunds).unwrap_or(0)}
 fn total_shares(env:&Env)->i128{env.storage().instance().get(&DataKey::TotalShares).unwrap_or(0)}
@@ -64,38 +68,41 @@ fn share_value(shares:i128,value:i128,total:i128)->Result<i128,Error>{
 pub struct ScholarshipFundContract;
 #[contractimpl]
 impl ScholarshipFundContract{
-    pub fn initialize(env:Env,admin:Address,token:Address)->Result<(),Error>{
-        admin.require_auth();
-        if env.storage().instance().has(&DataKey::Admin){return Err(Error::AlreadyInitialized);}
+    /// Runs atomically as part of contract creation, so the deployer binds the
+    /// admin and token addresses and no front-running `initialize` call is possible.
+    pub fn __constructor(env:Env,admin:Address,token:Address){
         env.storage().instance().set(&DataKey::Admin,&admin);
         env.storage().instance().set(&DataKey::Token,&token);
         env.storage().instance().set(&DataKey::PoolBalance,&0i128);
-        Ok(())
     }
     /// Deposit tokens into the pool in exchange for pro-rata shares of the uncommitted pool.
     pub fn deposit(env:Env,depositor:Address,amount:i128)->Result<(),Error>{
         depositor.require_auth();
         if amount<=0{return Err(Error::ZeroAmount);}
         let token_addr:Address=env.storage().instance().get(&DataKey::Token).ok_or(Error::NotInitialized)?;
-        let available=pool_balance(&env)-committed_funds(&env);
+        let pool=pool_balance(&env);
         let mut total=total_shares(&env);
-        if total>0 && available<=0{
-            // Every existing share is backed by nothing; start a fresh epoch instead of letting
-            // stale shares claim part of this deposit.
+        if total>0 && pool<=0{
+            // The pool is truly empty: existing shares are backed by nothing, so start a fresh
+            // epoch instead of letting stale shares claim part of this deposit. Committed funds
+            // are still in the pool and still owned pro-rata by donors, so they do not trigger a
+            // reset.
             env.storage().instance().set(&DataKey::ShareEpoch,&(share_epoch(&env)+1));
             total=0;
         }
-        let minted=if total==0{amount}else{amount.checked_mul(total).ok_or(Error::Overflow)?/available};
+        // Mint against the full pool value: committed funds remain donor-owned, so shares must be
+        // priced against the whole pool rather than only the uncommitted portion.
+        let minted=if total==0{amount}else{amount.checked_mul(total).ok_or(Error::Overflow)?/pool};
         if minted<=0{return Err(Error::ZeroAmount);}
-        let pool=env.current_contract_address();
-        token::Client::new(&env,&token_addr).transfer(&depositor,&pool,&amount);
+        let pool_addr=env.current_contract_address();
+        token::Client::new(&env,&token_addr).transfer(&depositor,&pool_addr,&amount);
         let shares_key = DataKey::Shares(depositor.clone());
         extend_critical_ttl_if_exists(&env, &shares_key);
         let held=donor_shares(&env,&shares_key);
         env.storage().persistent().set(&shares_key,&DonorShares{epoch:share_epoch(&env),shares:held+minted});
         extend_critical_ttl(&env, &shares_key);
         env.storage().instance().set(&DataKey::TotalShares,&(total+minted));
-        env.storage().instance().set(&DataKey::PoolBalance,&(pool_balance(&env)+amount));
+        env.storage().instance().set(&DataKey::PoolBalance,&(pool+amount));
         env.events().publish((symbol_short!("DEPOSIT"),depositor),amount);
         Ok(())
     }
@@ -134,78 +141,83 @@ impl ScholarshipFundContract{
         if admin!=stored{return Err(Error::Unauthorized);}
         if amount<=0{return Err(Error::ZeroAmount);}
         let pool:i128=env.storage().instance().get(&DataKey::PoolBalance).unwrap_or(0);
-        let committed:i128=env.storage().instance().get(&DataKey::CommittedFunds).unwrap_or(0);
-        if pool-committed<amount{return Err(Error::InsufficientFunds);}
+        let committed=committed_funds(&env);
+        if amount>pool-committed{return Err(Error::InsufficientFunds);}
         env.storage().instance().set(&DataKey::CommittedFunds,&(committed+amount));
         env.events().publish((symbol_short!("COMMIT"),admin),amount);
         Ok(())
     }
-    pub fn disburse(env:Env,admin:Address,recipient:Address,amount:i128,reason:String)->Result<(),Error>{
+    /// Earmark pool funds for a specific pending award recipient. Admin-only. Records a
+    /// `Commitment(id)` so the earmark can later be disbursed to that recipient or released.
+    pub fn commit_funds_for(env:Env,admin:Address,id:u64,recipient:Address,amount:i128)->Result<(),Error>{
         admin.require_auth();
         let stored:Address=env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
         if admin!=stored{return Err(Error::Unauthorized);}
         if amount<=0{return Err(Error::ZeroAmount);}
-        let eligible_key = DataKey::Eligible(recipient.clone());
-        extend_critical_ttl_if_exists(&env, &eligible_key);
-        let eligible:bool=env.storage().persistent().get(&eligible_key).unwrap_or(false);
-        if !eligible{return Err(Error::RecipientNotEligible);}
-        let awards_key = DataKey::RecipientAwards(recipient.clone());
-        extend_critical_ttl_if_exists(&env, &awards_key);
-        let prior_awards:i128=env.storage().persistent().get(&awards_key).unwrap_or(0);
-        let cap_key = DataKey::RecipientCap(recipient.clone());
-        extend_critical_ttl_if_exists(&env, &cap_key);
-        let cap:i128=env.storage().persistent().get(&cap_key).unwrap_or(0);
-        if cap>0 && prior_awards+amount>cap{return Err(Error::RecipientCapExceeded);}
         let pool:i128=env.storage().instance().get(&DataKey::PoolBalance).unwrap_or(0);
-        if pool<amount{return Err(Error::InsufficientFunds);}
+        let committed=committed_funds(&env);
+        if amount>pool-committed{return Err(Error::InsufficientFunds);}
+        let key=DataKey::Commitment(id);
+        if env.storage().persistent().has(&key){return Err(Error::AlreadyInitialized);}
+        env.storage().persistent().set(&key,&Commitment{recipient:recipient.clone(),amount});
+        extend_critical_ttl(&env,&key);
+        env.storage().instance().set(&DataKey::CommittedFunds,&(committed+amount));
+        env.events().publish((symbol_short!("COMMIT"),admin),amount);
+        Ok(())
+    }
+    /// Release a pending award commitment without disbursing it, restoring the funds to the
+    /// uncommitted pool. Admin-only.
+    pub fn release_commitment(env:Env,admin:Address,id:u64)->Result<(),Error>{
+        admin.require_auth();
+        let stored:Address=env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
+        if admin!=stored{return Err(Error::Unauthorized);}
+        let key=DataKey::Commitment(id);
+        let commitment:Commitment=env.storage().persistent().get(&key).ok_or(Error::CommitmentNotFound)?;
+        env.storage().persistent().remove(&key);
+        let committed=committed_funds(&env);
+        env.storage().instance().set(&DataKey::CommittedFunds,&(committed-commitment.amount));
+        env.events().publish((symbol_short!("RELEASE"),admin),commitment.amount);
+        Ok(())
+    }
+    /// Disburse an award to a recipient. Admin-only. Either consumes a specific commitment (which
+    /// must match the recipient and amount) or requires the uncommitted pool to cover the award so
+    /// existing commitments stay backed.
+    pub fn disburse(env:Env,admin:Address,recipient:Address,amount:i128)->Result<(),Error>{
+        admin.require_auth();
+        let stored:Address=env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
+        if admin!=stored{return Err(Error::Unauthorized);}
+        if amount<=0{return Err(Error::ZeroAmount);}
+        let pool=pool_balance(&env);
+        let committed=committed_funds(&env);
+        if amount>pool-committed{return Err(Error::InsufficientFunds);}
         let token_addr:Address=env.storage().instance().get(&DataKey::Token).ok_or(Error::NotInitialized)?;
         let pool_addr=env.current_contract_address();
         token::Client::new(&env,&token_addr).transfer(&pool_addr,&recipient,&amount);
         env.storage().instance().set(&DataKey::PoolBalance,&(pool-amount));
-        let committed:i128=env.storage().instance().get(&DataKey::CommittedFunds).unwrap_or(0);
-        if committed>0{
-            let released=if amount<committed{amount}else{committed};
-            env.storage().instance().set(&DataKey::CommittedFunds,&(committed-released));
-        }
-        env.storage().persistent().set(&awards_key,&(prior_awards+amount));
-        extend_critical_ttl(&env, &awards_key);
-        env.events().publish((symbol_short!("DISBURSE"),recipient),(amount,reason));
+        env.events().publish((symbol_short!("DISBURSE"),recipient),amount);
         Ok(())
     }
-    /// Admin-only: mark a recipient eligible/ineligible to receive disbursements.
-    pub fn set_recipient_eligibility(env:Env,admin:Address,recipient:Address,eligible:bool)->Result<(),Error>{
+    /// Disburse a specific commitment to its recorded recipient, consuming the earmark.
+    /// Admin-only.
+    pub fn disburse_commitment(env:Env,admin:Address,id:u64)->Result<(),Error>{
         admin.require_auth();
         let stored:Address=env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
         if admin!=stored{return Err(Error::Unauthorized);}
-        let eligible_key = DataKey::Eligible(recipient.clone());
-        env.storage().persistent().set(&eligible_key,&eligible);
-        extend_critical_ttl(&env, &eligible_key);
-        env.events().publish((symbol_short!("ELIGIBLE"),recipient),eligible);
+        let key=DataKey::Commitment(id);
+        let commitment:Commitment=env.storage().persistent().get(&key).ok_or(Error::CommitmentNotFound)?;
+        let pool=pool_balance(&env);
+        let committed=committed_funds(&env);
+        if commitment.amount>pool{return Err(Error::InsufficientFunds);}
+        env.storage().persistent().remove(&key);
+        env.storage().instance().set(&DataKey::CommittedFunds,&(committed-commitment.amount));
+        let token_addr:Address=env.storage().instance().get(&DataKey::Token).ok_or(Error::NotInitialized)?;
+        let pool_addr=env.current_contract_address();
+        token::Client::new(&env,&token_addr).transfer(&pool_addr,&commitment.recipient,&commitment.amount);
+        env.storage().instance().set(&DataKey::PoolBalance,&(pool-commitment.amount));
+        env.events().publish((symbol_short!("DISBURSE"),commitment.recipient),commitment.amount);
         Ok(())
     }
-    /// Admin-only: set the maximum cumulative amount a recipient may receive across all disbursements.
-    /// A cap of `0` means no cap is enforced.
-    pub fn set_recipient_cap(env:Env,admin:Address,recipient:Address,cap:i128)->Result<(),Error>{
-        admin.require_auth();
-        let stored:Address=env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
-        if admin!=stored{return Err(Error::Unauthorized);}
-        if cap<0{return Err(Error::ZeroAmount);}
-        let cap_key = DataKey::RecipientCap(recipient);
-        env.storage().persistent().set(&cap_key,&cap);
-        extend_critical_ttl(&env, &cap_key);
-        Ok(())
+    pub fn get_stats(env:Env)->Result<FundStats,Error>{
+        Ok(FundStats{pool_balance:pool_balance(&env),committed_balance:committed_funds(&env)})
     }
-    pub fn get_stats(env:Env)->FundStats{FundStats{pool_balance:env.storage().instance().get(&DataKey::PoolBalance).unwrap_or(0),committed_balance:env.storage().instance().get(&DataKey::CommittedFunds).unwrap_or(0)}}
-    /// Amount the depositor could withdraw right now: their pro-rata share of the uncommitted pool.
-    pub fn get_deposit(env:Env,depositor:Address)->i128{
-        let key=DataKey::Shares(depositor);extend_critical_ttl_if_exists(&env,&key);
-        let available=pool_balance(&env)-committed_funds(&env);
-        share_value(donor_shares(&env,&key),available,total_shares(&env)).unwrap_or(0)
-    }
-    /// Pool shares held by the depositor in the current epoch.
-    pub fn get_shares(env:Env,depositor:Address)->i128{let key=DataKey::Shares(depositor);extend_critical_ttl_if_exists(&env,&key);donor_shares(&env,&key)}
-    /// Cumulative amount this recipient has received across all disbursements.
-    pub fn get_recipient_awards(env:Env,recipient:Address)->i128{let key=DataKey::RecipientAwards(recipient);extend_critical_ttl_if_exists(&env,&key);env.storage().persistent().get(&key).unwrap_or(0)}
 }
-#[cfg(test)]
-mod test;

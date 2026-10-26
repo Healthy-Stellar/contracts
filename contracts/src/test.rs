@@ -14,14 +14,13 @@ mod tests {
     fn setup_registry_test(
         env: &Env,
     ) -> (Address, HealthcareRegistryClient<'static>, Address, Address) {
-        let contract_id = env.register(HealthcareRegistry, ());
+        let admin = Address::generate(env);
+        let contract_id = env.register(HealthcareRegistry, (&admin,));
         let client = HealthcareRegistryClient::new(env, &contract_id);
 
-        let admin = Address::generate(env);
         let institution = Address::generate(env);
 
         env.mock_all_auths();
-        client.init(&admin);
 
         (contract_id, client, admin, institution)
     }
@@ -158,52 +157,6 @@ mod tests {
 
         assert_eq!(stored_admin(&env, &contract_id), admin.clone());
         assert_eq!(stored_pending_admin(&env, &contract_id), None);
-    }
-
-    #[test]
-    fn test_init_requires_admin_signature() {
-        let env = Env::default();
-        let contract_id = env.register(HealthcareRegistry, ());
-        let client = HealthcareRegistryClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        let attacker = Address::generate(&env);
-
-        let result = client
-            .mock_auths(&[MockAuth {
-                address: &attacker,
-                invoke: &MockAuthInvoke {
-                    contract: &contract_id,
-                    fn_name: "init",
-                    args: (&admin,).into_val(&env),
-                    sub_invokes: &[],
-                },
-            }])
-            .try_init(&admin);
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_init_prevents_reinitialize() {
-        let env = Env::default();
-        let (contract_id, client, admin, _) = setup_registry_test(&env);
-
-        let new_admin = Address::generate(&env);
-        let result = client
-            .mock_auths(&[MockAuth {
-                address: &new_admin,
-                invoke: &MockAuthInvoke {
-                    contract: &contract_id,
-                    fn_name: "init",
-                    args: (&new_admin,).into_val(&env),
-                    sub_invokes: &[],
-                },
-            }])
-            .try_init(&new_admin);
-
-        assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
-        assert_eq!(stored_admin(&env, &contract_id), admin);
     }
 
     #[test]
@@ -475,10 +428,10 @@ mod tests {
     fn test_safe_increment_starts_at_one() {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register(HealthcareRegistry, ());
+        let contract_id = env.register(HealthcareRegistry, (&Address::generate(&env),));
 
         env.as_contract(&contract_id, || {
-            let id = safe_increment(&env, &DataKey::Admin); // reuse any key type
+            let id = safe_increment(&env, &DataKey::PendingAdmin); // reuse any key type
             assert_eq!(id, 1);
         });
     }
@@ -487,12 +440,12 @@ mod tests {
     fn test_safe_increment_is_sequential() {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register(HealthcareRegistry, ());
+        let contract_id = env.register(HealthcareRegistry, (&Address::generate(&env),));
 
         env.as_contract(&contract_id, || {
-            assert_eq!(safe_increment(&env, &DataKey::Admin), 1);
-            assert_eq!(safe_increment(&env, &DataKey::Admin), 2);
-            assert_eq!(safe_increment(&env, &DataKey::Admin), 3);
+            assert_eq!(safe_increment(&env, &DataKey::PendingAdmin), 1);
+            assert_eq!(safe_increment(&env, &DataKey::PendingAdmin), 2);
+            assert_eq!(safe_increment(&env, &DataKey::PendingAdmin), 3);
         });
     }
 
@@ -500,10 +453,10 @@ mod tests {
     fn test_safe_increment_persistent_starts_at_one() {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register(HealthcareRegistry, ());
+        let contract_id = env.register(HealthcareRegistry, (&Address::generate(&env),));
 
         env.as_contract(&contract_id, || {
-            let id = safe_increment_persistent(&env, &DataKey::Admin);
+            let id = safe_increment_persistent(&env, &DataKey::PendingAdmin);
             assert_eq!(id, 1);
         });
     }
@@ -512,12 +465,12 @@ mod tests {
     fn test_safe_increment_persistent_is_sequential() {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register(HealthcareRegistry, ());
+        let contract_id = env.register(HealthcareRegistry, (&Address::generate(&env),));
 
         env.as_contract(&contract_id, || {
-            assert_eq!(safe_increment_persistent(&env, &DataKey::Admin), 1);
-            assert_eq!(safe_increment_persistent(&env, &DataKey::Admin), 2);
-            assert_eq!(safe_increment_persistent(&env, &DataKey::Admin), 3);
+            assert_eq!(safe_increment_persistent(&env, &DataKey::PendingAdmin), 1);
+            assert_eq!(safe_increment_persistent(&env, &DataKey::PendingAdmin), 2);
+            assert_eq!(safe_increment_persistent(&env, &DataKey::PendingAdmin), 3);
         });
     }
 
@@ -526,16 +479,16 @@ mod tests {
         // The same key in instance vs persistent storage must not share state.
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register(HealthcareRegistry, ());
+        let contract_id = env.register(HealthcareRegistry, (&Address::generate(&env),));
 
         env.as_contract(&contract_id, || {
             // Advance instance counter to 3.
-            safe_increment(&env, &DataKey::Admin);
-            safe_increment(&env, &DataKey::Admin);
-            safe_increment(&env, &DataKey::Admin);
+            safe_increment(&env, &DataKey::PendingAdmin);
+            safe_increment(&env, &DataKey::PendingAdmin);
+            safe_increment(&env, &DataKey::PendingAdmin);
 
             // Persistent counter for the same key must still start at 1.
-            assert_eq!(safe_increment_persistent(&env, &DataKey::Admin), 1);
+            assert_eq!(safe_increment_persistent(&env, &DataKey::PendingAdmin), 1);
         });
     }
 
@@ -545,7 +498,7 @@ mod tests {
 
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register(HealthcareRegistry, ());
+        let contract_id = env.register(HealthcareRegistry, (&Address::generate(&env),));
 
         env.as_contract(&contract_id, || {
             let ns_a = Symbol::new(&env, "patient_a");
@@ -571,7 +524,7 @@ mod tests {
 
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register(HealthcareRegistry, ());
+        let contract_id = env.register(HealthcareRegistry, (&Address::generate(&env),));
 
         env.as_contract(&contract_id, || {
             let ns_a = Symbol::new(&env, "hosp_a");
@@ -592,7 +545,7 @@ mod tests {
 
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register(HealthcareRegistry, ());
+        let contract_id = env.register(HealthcareRegistry, (&Address::generate(&env),));
 
         env.as_contract(&contract_id, || {
             let ns = Symbol::new(&env, "patient_x");
@@ -612,14 +565,14 @@ mod tests {
     fn test_safe_increment_panics_on_overflow() {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register(HealthcareRegistry, ());
+        let contract_id = env.register(HealthcareRegistry, (&Address::generate(&env),));
 
         env.as_contract(&contract_id, || {
             // Seed the counter at u64::MAX so the next increment overflows.
             env.storage()
                 .instance()
-                .set(&DataKey::Admin, &u64::MAX);
-            safe_increment(&env, &DataKey::Admin);
+                .set(&DataKey::PendingAdmin, &u64::MAX);
+            safe_increment(&env, &DataKey::PendingAdmin);
         });
     }
 
@@ -628,13 +581,13 @@ mod tests {
     fn test_safe_increment_persistent_panics_on_overflow() {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register(HealthcareRegistry, ());
+        let contract_id = env.register(HealthcareRegistry, (&Address::generate(&env),));
 
         env.as_contract(&contract_id, || {
             env.storage()
                 .persistent()
-                .set(&DataKey::Admin, &u64::MAX);
-            safe_increment_persistent(&env, &DataKey::Admin);
+                .set(&DataKey::PendingAdmin, &u64::MAX);
+            safe_increment_persistent(&env, &DataKey::PendingAdmin);
         });
     }
 }

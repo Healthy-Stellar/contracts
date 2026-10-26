@@ -109,14 +109,12 @@ pub struct ClinicalGuidelineContract;
 
 #[contractimpl]
 impl ClinicalGuidelineContract {
-    /// Initialize the contract with a stored admin address.
-    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
-        admin.require_auth();
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::NotAuthorized);
-        }
+    /// Bind the contract to a stored admin address.
+    ///
+    /// Runs atomically as part of contract creation and cannot be called again,
+    /// so an attacker cannot front-run deployment and elect themselves admin.
+    pub fn __constructor(env: Env, admin: Address) {
         env.storage().instance().set(&DataKey::Admin, &admin);
-        Ok(())
     }
 
     /// Set the provider registry address for authorization checks.

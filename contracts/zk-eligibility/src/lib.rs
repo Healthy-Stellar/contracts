@@ -153,12 +153,12 @@ pub struct ZkEligibility;
 #[contractimpl]
 impl ZkEligibility {
     /// Initialize with an admin address.
-    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
-        Self::assert_not_initialized(&env)?;
-        admin.require_auth();
+    ///
+    /// Runs atomically as part of contract creation and cannot be called again,
+    /// so an attacker cannot front-run deployment and elect themselves admin.
+    pub fn __constructor(env: Env, admin: Address) {
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage().persistent().set(&DataKey::Initialized, &true);
-        Ok(())
     }
 
     /// Set the nullifier TTL in ledgers. Admin only.

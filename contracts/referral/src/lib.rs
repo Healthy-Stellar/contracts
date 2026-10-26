@@ -9,9 +9,9 @@
 //! ## HIPAA Compliance
 //!
 //! **Access Control Safeguards:** Referring provider authentication for referral creation.
-//! Referred provider authentication for acceptance. Patient consent for referral transmission.
-//! Clinical summary access restricted to parties involved. Referral status changes authorized
-//! by appropriate parties.
+//! Referring provider must be registered. Patient consent required for referral transmission.
+//! Referred provider authentication for acceptance. Clinical summary access restricted to
+//! parties involved. Referral status changes authorized by appropriate parties.
 //!
 //! **Audit Controls:** Referral creation events logged with referring and referred providers.
 //! Clinical summary transmission events tracked. Referral acceptance events recorded. Rejection
@@ -24,7 +24,8 @@
 //!
 //! **Encryption/Integrity:** Clinical summary data encrypted via secure storage. Referring
 //! provider identity validated. Referred provider credentials verified. Patient linkage encrypted.
-//! Referral status enumeration prevents invalid states.
+//! Referral status enumeration prevents invalid states. Free-text reason and recommendations are
+//! stored only as hashes to avoid PHI on-chain.
 
 pub mod contract;
 pub mod test;

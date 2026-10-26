@@ -7,9 +7,10 @@
 //!
 //! ## HIPAA Compliance
 //!
-//! **Access Control Safeguards:** Admin-only insurer registration. Address nonzero validation
-//! prevents invalid entries. Network participation authorization required before claims processing.
-//! Update authorization restricted to insurer admin or network admin.
+//! **Access Control Safeguards:** Admin-managed trusted issuers authorize insurer registration.
+//! Insurer and issuer signatures are required. Credential lifetimes are capped, and only the
+//! registry admin can revoke credentials. Network participation authorization is required before
+//! claims processing.
 //!
 //! **Audit Controls:** Insurer registration events logged with insurer address and name. Network
 //! participation events tracked. Policy information update events recorded. Claims approval authority
@@ -45,7 +46,10 @@ pub enum Error {
     InvalidAddress = 7,
     PlanNotFound = 8,
     BatchSizeExceeded = 9,
+    InvalidCredentialExpiry = 10,
 }
+
+pub const MAX_CREDENTIAL_LIFETIME: u64 = 2 * 365 * 24 * 60 * 60;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -89,6 +93,8 @@ pub enum DataKey {
     /// insurer_wallet -> Vec<CoveragePlan>
     CoveragePlans(Address),
     CoveragePlanCounter(Address),
+    Admin,
+    TrustedIssuer(Address),
 }
 
 #[contract]
@@ -96,6 +102,29 @@ pub struct InsurerRegistry;
 
 #[contractimpl]
 impl InsurerRegistry {
+    pub fn __constructor(env: Env, admin: Address) {
+        assert!(validate_nonzero_address(&admin).is_ok());
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &admin);
+    }
+
+    pub fn set_trusted_issuer(
+        env: Env,
+        admin: Address,
+        issuer: Address,
+        trusted: bool,
+    ) -> Result<(), Error> {
+        validate_nonzero_address(&issuer).map_err(|_| Error::InvalidAddress)?;
+        Self::require_admin(&env, &admin)?;
+        let key = DataKey::TrustedIssuer(issuer);
+        if trusted {
+            env.storage().persistent().set(&key, &true);
+        } else {
+            env.storage().persistent().remove(&key);
+        }
+        Ok(())
+    }
+
     /// Register a new insurance company with comprehensive information
     ///
     /// # Arguments
@@ -119,6 +148,8 @@ impl InsurerRegistry {
         validate_nonzero_address(&issuer).map_err(|_| Error::InvalidAddress)?;
         wallet.require_auth();
         issuer.require_auth();
+        Self::require_trusted_issuer(&env, &issuer)?;
+        Self::validate_credential_expiry(&env, expires_at)?;
 
         let key = DataKey::Insurer(wallet.clone());
         if env.storage().persistent().has(&key) {
@@ -151,6 +182,76 @@ impl InsurerRegistry {
 
         env.events()
             .publish((symbol_short!("reg_ins"), wallet), symbol_short!("success"));
+        Ok(())
+    }
+
+    /// Renew an insurer credential using an issuer trusted by the registry admin.
+    pub fn renew_credential(
+        env: Env,
+        wallet: Address,
+        issuer: Address,
+        credential_hash: BytesN<32>,
+        attestation_hash: BytesN<32>,
+        expires_at: u64,
+        revocation_reference: BytesN<32>,
+    ) -> Result<(), Error> {
+        validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&issuer).map_err(|_| Error::InvalidAddress)?;
+        wallet.require_auth();
+        issuer.require_auth();
+        Self::require_trusted_issuer(&env, &issuer)?;
+        Self::validate_credential_expiry(&env, expires_at)?;
+
+        let key = DataKey::Insurer(wallet);
+        let mut insurer: InsurerData = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::InsurerNotFound)?;
+        insurer.credential = CredentialAnchor {
+            credential_hash,
+            issuer,
+            attestation_hash,
+            expires_at,
+            revocation_reference,
+            revoked_at: None,
+            revocation_reason: None,
+            revoked_by: None,
+        };
+        env.storage().persistent().set(&key, &insurer);
+        Ok(())
+    }
+
+    fn require_admin(env: &Env, admin: &Address) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotAuthorized)?;
+        if admin != &stored_admin {
+            return Err(Error::NotAuthorized);
+        }
+        Ok(())
+    }
+
+    fn require_trusted_issuer(env: &Env, issuer: &Address) -> Result<(), Error> {
+        let trusted: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TrustedIssuer(issuer.clone()))
+            .unwrap_or(false);
+        if !trusted {
+            return Err(Error::NotAuthorized);
+        }
+        Ok(())
+    }
+
+    fn validate_credential_expiry(env: &Env, expires_at: u64) -> Result<(), Error> {
+        let lifetime = expires_at.saturating_sub(env.ledger().timestamp());
+        if lifetime == 0 || lifetime > MAX_CREDENTIAL_LIFETIME {
+            return Err(Error::InvalidCredentialExpiry);
+        }
         Ok(())
     }
 
@@ -580,10 +681,10 @@ impl InsurerRegistry {
 
     /// Revoke an insurer's credential, recording the reason and revoking authority (#494).
     ///
-    /// Only the credential's original issuer may call this; the insurer cannot self-revoke.
+    /// Only the registry admin may revoke an insurer credential.
     ///
     /// # Arguments
-    /// * `admin`  - Must be the issuer stored in the credential.
+    /// * `admin`  - Must be the registry admin.
     /// * `wallet` - The insurer whose credential is being revoked.
     /// * `reason` - A short symbol code describing the revocation reason.
     pub fn revoke_credential(
@@ -594,7 +695,7 @@ impl InsurerRegistry {
     ) -> Result<(), Error> {
         validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
-        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
 
         let key = DataKey::Insurer(wallet.clone());
         let mut insurer: InsurerData = env
@@ -602,15 +703,6 @@ impl InsurerRegistry {
             .persistent()
             .get(&key)
             .ok_or(Error::InsurerNotFound)?;
-
-        // Only the credential issuer is authorised to revoke.
-        if admin != insurer.credential.issuer {
-            return Err(Error::NotAuthorized);
-        }
-        // Insurer cannot self-revoke.
-        if admin == wallet {
-            return Err(Error::NotAuthorized);
-        }
 
         let now = env.ledger().timestamp();
         insurer.credential.revoked_at = Some(now);

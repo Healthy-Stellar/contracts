@@ -4,11 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
-
-env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
 
 jobs:
   check-healthcare-analytics:
@@ -263,6 +258,137 @@ jobs:
       - name: Run access-control tests
         run: cargo test -p access-control --verbose
 
+  truncation-marker-check:
+    name: Truncation Marker Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Fail on truncation markers under contracts/
+        run: |
+          if grep -rnE '/\* … truncated [0-9]+ chars' contracts/; then
+            echo "::error::Found truncation markers in contracts/. Files must not be committed with '/* … truncated N chars' placeholders."
+            exit 1
+          fi
+          echo "No truncation markers found."
+
+  api-surface-diff:
+    name: API Surface Diff
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract pub fn names from #[contractimpl] blocks
+        run: |
+          set -euo pipefail
+          BASE_REF="origin/${{ github.base_ref }}"
+          git fetch origin "${{ github.base_ref }}" --depth=1 || true
+
+          extract() {
+            # $1 = git ref (or empty for working tree)
+            if [ -n "$1" ]; then
+              git ls-tree -r --name-only "$1" -- contracts/ | grep -E 'src/.*\.rs$' | while read -r f; do
+                git show "$1:$f" 2>/dev/null | awk -v file="$f" '
+                  /#\[contractimpl\]/ { in_impl=1; next }
+                  in_impl && /^[[:space:]]*pub fn / {
+                    line=$0
+                    sub(/^[[:space:]]*pub fn /, "", line)
+                    sub(/[^A-Za-z0-9_].*$/, "", line)
+                    print file ":" line
+                  }
+                  in_impl && /^}/ { in_impl=0 }
+                '
+              done
+            else
+              find contracts -type f -path '*/src/*.rs' | while read -r f; do
+                awk -v file="$f" '
+                  /#\[contractimpl\]/ { in_impl=1; next }
+                  in_impl && /^[[:space:]]*pub fn / {
+                    line=$0
+                    sub(/^[[:space:]]*pub fn /, "", line)
+                    sub(/[^A-Za-z0-9_].*$/, "", line)
+                    print file ":" line
+                  }
+                  in_impl && /^}/ { in_impl=0 }
+                ' "$f"
+              done
+            fi
+          }
+
+          extract "$BASE_REF" | sort -u > /tmp/base_api.txt
+          extract "" | sort -u > /tmp/pr_api.txt
+
+          echo "Base API surface:"; cat /tmp/base_api.txt
+          echo "PR API surface:"; cat /tmp/pr_api.txt
+
+          REMOVED=$(comm -23 /tmp/base_api.txt /tmp/pr_api.txt || true)
+          if [ -n "$REMOVED" ]; then
+            echo "::warning::Public functions removed from #[contractimpl] blocks:"
+            echo "$REMOVED"
+            LABELS='${{ toJson(github.event.pull_request.labels.*.name) }}'
+            if echo "$LABELS" | grep -q 'breaking-change'; then
+              echo "breaking-change label present; allowing removal."
+            else
+              echo "::error::Public API functions were removed. Add the 'breaking-change' label if intentional."
+              exit 1
+            fi
+          else
+            echo "No public functions removed."
+          fi
+
+  test-count-guard:
+    name: Non-Zero Test Count Guard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-git-
+
+      - name: Fail when a crate with test.rs reports 0 passed
+        run: |
+          set -uo pipefail
+          FAIL=0
+          for testfile in $(find contracts -type f -name 'test.rs'); do
+            crate_dir=$(dirname "$(dirname "$testfile")")
+            crate=$(basename "$crate_dir")
+            echo "::group::cargo test -p $crate"
+            OUT=$(cargo test -p "$crate" 2>&1) || true
+            echo "$OUT"
+            echo "::endgroup::"
+            PASSED=$(echo "$OUT" | grep -oE 'test result: ok\. [0-9]+ passed' | grep -oE '[0-9]+' | head -n1 || true)
+            if [ -z "${PASSED:-}" ]; then
+              echo "::error::crate $crate has test.rs but no passing test result was reported."
+              FAIL=1
+            elif [ "$PASSED" -eq 0 ]; then
+              echo "::error::crate $crate has test.rs but reported 0 passed tests."
+              FAIL=1
+            fi
+          done
+          exit $FAIL
+
   build-wasm:
     name: Build WASM
     runs-on: ubuntu-latest
@@ -295,55 +421,35 @@ jobs:
         uses: actions/cache@v4
         with:
           path: target
-          key: ${{ runner.os }}-cargo-wasm-build-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-wasm-build-
+            ${{ runner.os }}-cargo-build-target-
 
-      - name: Install soroban-cli
-        run: |
-          cargo install --locked soroban-cli
+      - name: Build all contracts to WASM
+        run: cargo build --workspace --target wasm32-unknown-unknown --release
 
-      - name: Build WASM binaries
+      - name: Verify WASM exports match each contract's own #[contractimpl]
         run: |
-          cargo build --release --target wasm32-unknown-unknown --workspace
-          
-      - name: Optimize WASM binaries
-        run: |
-          for contract in contracts/*/; do
-            contract_name=$(basename "$contract")
-            if [ -f "target/wasm32-unknown-unknown/release/${contract_name//-/_}.wasm" ]; then
-              echo "Optimizing $contract_name..."
-              soroban contract optimize \
-                --wasm target/wasm32-unknown-unknown/release/${contract_name//-/_}.wasm \
-                --wasm-out target/wasm32-unknown-unknown/release/${contract_name//-/_}_optimized.wasm || echo "Optimization failed for $contract_name, continuing..."
-            fi
+          set -euo pipefail
+          # For each built contract WASM, ensure it does not export entry points
+          # that belong to the root `Contracts` crate (HealthcareRegistry /
+          # AppointmentScheduling). Those leaked exports indicate the root crate
+          # is still being linked and would collide on storage keys.
+          leaked="init propose_admin accept_admin cancel_admin_transfer register_institution get_institution update_institution verify_institution create_appointment cancel_appointment complete_appointment get_appointments"
+          status=0
+          for wasm in target/wasm32-unknown-unknown/release/*.wasm; do
+            [ -e "$wasm" ] || continue
+            name=$(basename "$wasm")
+            # Skip the dedicated registry/scheduling crates themselves.
+            case "$name" in
+              healthcare_registry.wasm|appointment_scheduling.wasm) continue ;;
+            esac
+            exports=$(wasm-objdump -x "$wasm" 2>/dev/null | awk '/^Export\[/{flag=1;next}/^$/{flag=0}flag{print $NF}' || true)
+            for sym in $leaked; do
+              if printf '%s\n' "$exports" | grep -qx "$sym"; then
+                echo "::error file=$wasm::leaked export '$sym' from root Contracts crate"
+                status=1
+              fi
+            done
           done
-
-      - name: Upload WASM artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: wasm-binaries
-          path: target/wasm32-unknown-unknown/release/*.wasm
-          retention-days: 7
-
-  ci-success:
-    name: CI Success
-    runs-on: ubuntu-latest
-    needs: [format, check, check-lab-management, clippy, test, test-access-control, build-wasm]
-    if: always()
-    steps:
-      - name: Check all jobs
-        run: |
-          if [[ "${{ needs.truncation-markers.result }}" != "success" ]] || \
-             [[ "${{ needs.format.result }}" != "success" ]] || \
-             [[ "${{ needs.check.result }}" != "success" ]] || \
-             [[ "${{ needs.check-lab-management.result }}" != "success" ]] || \
-             [[ "${{ needs.check-medical-device-tracking.result }}" != "success" ]] || \
-             [[ "${{ needs.clippy.result }}" != "success" ]] || \
-             [[ "${{ needs.test.result }}" != "success" ]] || \
-             [[ "${{ needs.test-access-control.result }}" != "success" ]] || \
-             [[ "${{ needs.build-wasm.result }}" != "success" ]]; then
-            echo "One or more required jobs failed"
-            exit 1
-          fi
-          echo "All required jobs passed"
+          exit $status

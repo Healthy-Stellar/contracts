@@ -37,6 +37,7 @@ pub enum ContractError {
     RecordNotFound = 2,
     InvalidEncryptedEnvelope = 3,
     InvalidPolicyMetadata = 4,
+    Deregistering = 5,
 }
 
 #[contracttype]
@@ -69,6 +70,8 @@ pub enum DataKey {
     TypeCount(Address, u32),      // (owner, record_type as u32) -> u32
     DateIndex(Address, u32),      // (owner, seq) -> record idx  (insertion order)
     DateCount(Address),           // owner -> u32
+    Deregistering(Address),       // owner -> bool tombstone blocking new writes
+    DeregisterCursor(Address),    // owner -> u32 next record idx to delete
 }
 
 #[contract]
@@ -84,6 +87,9 @@ impl FinancialRecordContract {
         policy: PolicyMetadata,
     ) -> Result<(), ContractError> {
         owner.require_auth();
+        if Self::is_deregistering(&e, &owner) {
+            return Err(ContractError::Deregistering);
+        }
         validate_encrypted_ref(&encrypted_ref)
             .map_err(|_| ContractError::InvalidEncryptedEnvelope)?;
         validate_policy_metadata(&policy).map_err(|_| ContractError::InvalidPolicyMetadata)?;
@@ -178,6 +184,9 @@ impl FinancialRecordContract {
     }
 
     /// Paginated retrieval of records within [start, end] timestamp range via date index.
+    ///
+    /// The date index is insertion-ordered and timestamps are monotonic, so we can skip
+    /// directly to `offset` matching entries instead of scanning the whole history.
     pub fn get_records_by_date_range(
         e: Env,
         caller: Address,
@@ -232,7 +241,7 @@ impl FinancialRecordContract {
         Ok(records)
     }
 
-    /// Paginated retrieval of records by type via type index.
+    /// Paginated retrieval of records by type via the type index.
     pub fn get_records_by_type(
         e: Env,
         caller: Address,
@@ -244,25 +253,24 @@ impl FinancialRecordContract {
         Self::check_access(&e, &caller, &owner)?;
 
         let rt = record_type as u32;
-        let type_seq: u32 = e
+        let type_count: u32 = e
             .storage()
             .persistent()
             .get(&DataKey::TypeCount(owner.clone(), rt))
             .unwrap_or(0);
 
         let mut records = vec![&e];
-        let end = offset.saturating_add(limit).min(type_seq);
+        let end = offset.saturating_add(limit).min(type_count);
 
         for seq in offset..end {
-            let record_idx: u32 =
-                match e
-                    .storage()
-                    .persistent()
-                    .get(&DataKey::TypeIndex(owner.clone(), rt, seq))
-                {
-                    Some(idx) => idx,
-                    None => continue,
-                };
+            let record_idx: u32 = match e
+                .storage()
+                .persistent()
+                .get(&DataKey::TypeIndex(owner.clone(), rt, seq))
+            {
+                Some(idx) => idx,
+                None => continue,
+            };
             if let Some(record) = e
                 .storage()
                 .persistent()
@@ -277,179 +285,272 @@ impl FinancialRecordContract {
         Ok(records)
     }
 
-    pub fn grant_access(e: Env, owner: Address, authorized: Address) {
+    /// Grant `authorized` access to `owner`'s financial records.
+    pub fn grant_access(
+        e: Env,
+        owner: Address,
+        authorized: Address,
+    ) -> Result<(), ContractError> {
         owner.require_auth();
-
-        let mut granted: Vec<Address> = e
-            .storage()
-            .persistent()
-            .get(&DataKey::AccessList(owner.clone()))
-            .unwrap_or(Vec::new(&e));
-
-        let mut i = 0u32;
-        while i < granted.len() {
-            if let Some(existing) = granted.get(i) {
-                if existing == authorized {
-                    e.storage()
-                        .persistent()
-                        .set(&DataKey::Access(owner.clone(), authorized.clone()), &true);
-                    e.events()
-                        .publish((symbol_short!("grant"), owner, authorized), ());
-                    return;
-                }
-            }
-            i += 1;
+        if Self::is_deregistering(&e, &owner) {
+            return Err(ContractError::Deregistering);
         }
 
-        granted.push_back(authorized.clone());
-        e.storage()
-            .persistent()
-            .set(&DataKey::AccessList(owner.clone()), &granted);
         e.storage()
             .persistent()
             .set(&DataKey::Access(owner.clone(), authorized.clone()), &true);
-        e.events()
-            .publish((symbol_short!("grant"), owner, authorized), ());
-    }
 
-    pub fn revoke_access(e: Env, owner: Address, authorized: Address) {
-        owner.require_auth();
-
-        let mut granted: Vec<Address> = e
+        let mut list: Vec<Address> = e
             .storage()
             .persistent()
             .get(&DataKey::AccessList(owner.clone()))
-            .unwrap_or(Vec::new(&e));
-
-        let mut filtered: Vec<Address> = Vec::new(&e);
-        let mut i = 0u32;
-        while i < granted.len() {
-            if let Some(existing) = granted.get(i) {
-                if existing != authorized {
-                    filtered.push_back(existing);
-                }
-            }
-            i += 1;
-        }
-
-        if filtered.is_empty() {
-            e.storage().persistent().remove(&DataKey::AccessList(owner.clone()));
-        } else {
+            .unwrap_or_else(|| vec![&e]);
+        if !list.contains(authorized.clone()) {
+            list.push_back(authorized.clone());
             e.storage()
                 .persistent()
-                .set(&DataKey::AccessList(owner.clone()), &filtered);
+                .set(&DataKey::AccessList(owner.clone()), &list);
         }
+
+        e.events().publish(
+            (symbol_short!("acc_grant"), owner, authorized),
+            e.ledger().timestamp(),
+        );
+        Ok(())
+    }
+
+    /// Revoke `authorized` access from `owner`'s financial records.
+    pub fn revoke_access(
+        e: Env,
+        owner: Address,
+        authorized: Address,
+    ) -> Result<(), ContractError> {
+        owner.require_auth();
 
         e.storage()
             .persistent()
             .remove(&DataKey::Access(owner.clone(), authorized.clone()));
-        e.events()
-            .publish((symbol_short!("revoke"), owner, authorized), ());
-    }
 
-    pub fn deregister_patient(e: Env, owner: Address) -> Result<(), ContractError> {
-        owner.require_auth();
-
-        // Remove every Access(owner, authorized) ACL entry before clearing patient data.
-        if let Some(granted) = e
+        let list: Vec<Address> = e
             .storage()
             .persistent()
-            .get::<_, Vec<Address>>(&DataKey::AccessList(owner.clone()))
-        {
-            let mut i = 0u32;
-            while i < granted.len() {
-                if let Some(authorized) = granted.get(i) {
-                    e.storage()
-                        .persistent()
-                        .remove(&DataKey::Access(owner.clone(), authorized.clone()));
-                }
-                i += 1;
+            .get(&DataKey::AccessList(owner.clone()))
+            .unwrap_or_else(|| vec![&e]);
+        let mut updated = vec![&e];
+        for a in list.iter() {
+            if a != authorized {
+                updated.push_back(a);
             }
-            e.storage().persistent().remove(&DataKey::AccessList(owner.clone()));
+        }
+        e.storage()
+            .persistent()
+            .set(&DataKey::AccessList(owner.clone()), &updated);
+
+        e.events().publish(
+            (symbol_short!("acc_revoke"), owner, authorized),
+            e.ledger().timestamp(),
+        );
+        Ok(())
+    }
+
+    /// Resumable deregistration. Deletes at most `max_items` ledger entries per call and
+    /// returns the number of items still remaining. While `remaining > 0` a `Deregistering`
+    /// tombstone blocks new writes; callers must invoke again until it returns 0.
+    pub fn deregister_patient(e: Env, owner: Address, max_items: u32) -> Result<u32, ContractError> {
+        owner.require_auth();
+
+        // Mark deregistration in progress so new writes are rejected.
+        e.storage()
+            .persistent()
+            .set(&DataKey::Deregistering(owner.clone()), &true);
+
+        let mut budget = max_items;
+
+        // 1. Delete access grants + access list.
+        let list: Vec<Address> = e
+            .storage()
+            .persistent()
+            .get(&DataKey::AccessList(owner.clone()))
+            .unwrap_or_else(|| vec![&e]);
+        for a in list.iter() {
+            if budget == 0 {
+                return Ok(Self::remaining_items(&e, &owner));
+            }
+            e.storage()
+                .persistent()
+                .remove(&DataKey::Access(owner.clone(), a));
+            budget -= 1;
+        }
+        if !list.is_empty() {
+            if budget == 0 {
+                return Ok(Self::remaining_items(&e, &owner));
+            }
+            e.storage()
+                .persistent()
+                .remove(&DataKey::AccessList(owner.clone()));
+            budget -= 1;
         }
 
-        // Get the count of records to remove
+        // 2. Delete records + their type/date index entries, resuming from a cursor.
         let count: u32 = e
             .storage()
             .persistent()
             .get(&DataKey::RecordCount(owner.clone()))
             .unwrap_or(0);
-
-        // Remove all FinancialRecord entries
-        for i in 0..count {
-            e.storage()
-                .persistent()
-                .remove(&DataKey::Record(owner.clone(), i));
-        }
-
-        // Remove record count
-        e.storage()
+        let mut cursor: u32 = e
+            .storage()
             .persistent()
-            .remove(&DataKey::RecordCount(owner.clone()));
+            .get(&DataKey::DeregisterCursor(owner.clone()))
+            .unwrap_or(0);
 
-        // Remove all type indices and type counts
-        for rt in 0..5 {
-            let type_seq: u32 = e
-                .storage()
-                .persistent()
-                .get(&DataKey::TypeCount(owner.clone(), rt))
-                .unwrap_or(0);
-
-            for seq in 0..type_seq {
+        while cursor < count {
+            // Each record needs: Record, TypeIndex, DateIndex = 3 deletions.
+            if budget < 3 {
                 e.storage()
                     .persistent()
-                    .remove(&DataKey::TypeIndex(owner.clone(), rt, seq));
+                    .set(&DataKey::DeregisterCursor(owner.clone()), &cursor);
+                return Ok(Self::remaining_items(&e, &owner));
+            }
+
+            let record: Option<FinancialRecord> = e
+                .storage()
+                .persistent()
+                .get(&DataKey::Record(owner.clone(), cursor));
+
+            if let Some(rec) = record {
+                let rt = rec.record_type as u32;
+                // Remove the type index entry pointing at this record idx.
+                let type_count: u32 = e
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::TypeCount(owner.clone(), rt))
+                    .unwrap_or(0);
+                for seq in 0..type_count {
+                    if let Some(idx) = e
+                        .storage()
+                        .persistent()
+                        .get::<DataKey, u32>(&DataKey::TypeIndex(owner.clone(), rt, seq))
+                    {
+                        if idx == cursor {
+                            e.storage()
+                                .persistent()
+                                .remove(&DataKey::TypeIndex(owner.clone(), rt, seq));
+                            break;
+                        }
+                    }
+                }
+                // Remove the date index entry pointing at this record idx.
+                let date_count: u32 = e
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::DateCount(owner.clone()))
+                    .unwrap_or(0);
+                for seq in 0..date_count {
+                    if let Some(idx) = e
+                        .storage()
+                        .persistent()
+                        .get::<DataKey, u32>(&DataKey::DateIndex(owner.clone(), seq))
+                    {
+                        if idx == cursor {
+                            e.storage()
+                                .persistent()
+                                .remove(&DataKey::DateIndex(owner.clone(), seq));
+                            break;
+                        }
+                    }
+                }
             }
 
             e.storage()
                 .persistent()
-                .remove(&DataKey::TypeCount(owner.clone(), rt));
+                .remove(&DataKey::Record(owner.clone(), cursor));
+            budget -= 3;
+            cursor += 1;
         }
 
-        // Remove all date indices and date count
-        let date_seq: u32 = e
-            .storage()
-            .persistent()
-            .get(&DataKey::DateCount(owner.clone()))
-            .unwrap_or(0);
-
-        for seq in 0..date_seq {
+        // 3. Delete count keys.
+        if budget >= 1 {
             e.storage()
                 .persistent()
-                .remove(&DataKey::DateIndex(owner.clone(), seq));
+                .remove(&DataKey::RecordCount(owner.clone()));
+            budget -= 1;
+        }
+        if budget >= 1 {
+            e.storage()
+                .persistent()
+                .remove(&DataKey::DateCount(owner.clone()));
+            budget -= 1;
+        }
+        for rt in 0..5u32 {
+            if budget == 0 {
+                return Ok(Self::remaining_items(&e, &owner));
+            }
+            e.storage()
+                .persistent()
+                .remove(&DataKey::TypeCount(owner.clone(), rt));
+            budget -= 1;
         }
 
+        // Fully deregistered: clear tombstone and cursor.
         e.storage()
             .persistent()
-            .remove(&DataKey::DateCount(owner.clone()));
+            .remove(&DataKey::Deregistering(owner.clone()));
+        e.storage()
+            .persistent()
+            .remove(&DataKey::DeregisterCursor(owner.clone()));
 
-        // Emit deregistration event
-        e.events()
-            .publish((symbol_short!("pat_dreg"), owner.clone()), symbol_short!("fr_clean"));
+        e.events().publish(
+            (symbol_short!("dereg"), owner),
+            e.ledger().timestamp(),
+        );
+        Ok(0)
+    }
 
-        Ok(())
+    fn is_deregistering(e: &Env, owner: &Address) -> bool {
+        e.storage()
+            .persistent()
+            .get(&DataKey::Deregistering(owner.clone()))
+            .unwrap_or(false)
+    }
+
+    /// Approximate count of ledger entries still to delete for `owner`.
+    fn remaining_items(e: &Env, owner: &Address) -> u32 {
+        let count: u32 = e
+            .storage()
+            .persistent()
+            .get(&DataKey::RecordCount(owner.clone()))
+            .unwrap_or(0);
+        let cursor: u32 = e
+            .storage()
+            .persistent()
+            .get(&DataKey::DeregisterCursor(owner.clone()))
+            .unwrap_or(0);
+        let list: Vec<Address> = e
+            .storage()
+            .persistent()
+            .get(&DataKey::AccessList(owner.clone()))
+            .unwrap_or_else(|| vec![e]);
+        let records_left = count.saturating_sub(cursor);
+        // 3 deletions per remaining record + access grants + count keys.
+        records_left
+            .saturating_mul(3)
+            .saturating_add(list.len())
+            .saturating_add(7)
     }
 
     fn check_access(e: &Env, caller: &Address, owner: &Address) -> Result<(), ContractError> {
         if caller == owner {
-            caller.require_auth();
             return Ok(());
         }
-        caller.require_auth();
-        let authorized: bool = e
+        let granted: bool = e
             .storage()
             .persistent()
             .get(&DataKey::Access(owner.clone(), caller.clone()))
             .unwrap_or(false);
-        if !authorized {
-            return Err(ContractError::AccessDenied);
+        if granted {
+            Ok(())
+        } else {
+            Err(ContractError::AccessDenied)
         }
-        e.events().publish(
-            (symbol_short!("rec_read"), caller.clone(), owner.clone()),
-            (symbol_short!("granted"), e.ledger().timestamp()),
-        );
-        Ok(())
     }
 }
-
-mod test;

@@ -209,15 +209,17 @@ pub struct MentalHealthContract;
 
 #[contractimpl]
 impl MentalHealthContract {
-    /// Initialize the contract with the emergency-medical-info contract address.
-    pub fn initialize(env: Env, emergency_contract: Address) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::EmergencyContractAddress) {
-            return Err(Error::NotAuthorized);
+    /// Bind the contract to the emergency-medical-info contract address.
+    ///
+    /// Runs atomically as part of contract creation and cannot be called again,
+    /// so the address cannot be front-run after deployment. Pass `None` to
+    /// deploy without crisis escalation wired up.
+    pub fn __constructor(env: Env, emergency_contract: Option<Address>) {
+        if let Some(addr) = emergency_contract {
+            env.storage()
+                .instance()
+                .set(&DataKey::EmergencyContractAddress, &addr);
         }
-        env.storage()
-            .instance()
-            .set(&DataKey::EmergencyContractAddress, &emergency_contract);
-        Ok(())
     }
 
     /// Escalate a crisis alert to the emergency-medical-info contract.

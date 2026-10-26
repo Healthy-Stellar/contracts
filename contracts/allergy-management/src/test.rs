@@ -64,18 +64,19 @@ fn create_test_env() -> (
     let hospital_registry = Address::generate(&env);
     let insurer_registry = Address::generate(&env);
 
-    let contract_id = env.register(AllergyManagement, ());
-    let client = AllergyManagementClient::new(&env, &contract_id);
-
     // Wire in the *registered* provider-registry contract so that
     // is_registered_provider cross-contract calls resolve correctly.
-    client.initialize(
-        &admin,
-        &patient_registry,
-        &provider_registry_id,
-        &hospital_registry,
-        &insurer_registry,
+    let contract_id = env.register(
+        AllergyManagement,
+        (
+            &admin,
+            &patient_registry,
+            &provider_registry_id,
+            &hospital_registry,
+            &insurer_registry,
+        ),
     );
+    let client = AllergyManagementClient::new(&env, &contract_id);
 
     (env, admin, patient, provider, client)
 }

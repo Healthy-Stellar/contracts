@@ -26,17 +26,52 @@ pub enum PauseError {
     NotPauseAdmin = 201,
     /// Pause admin has not been initialised.
     PauseAdminNotSet = 202,
+    /// Pause admin has already been initialised.
+    PauseAdminAlreadySet = 203,
+}
+
+// ── TTL ───────────────────────────────────────────────────────────────────────
+
+/// Ledgers to extend pause state by on every touch (~30 days at 5s/ledger).
+const PAUSE_TTL_LEDGERS: u32 = 518_400;
+
+fn bump_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(PAUSE_TTL_LEDGERS, PAUSE_TTL_LEDGERS);
 }
 
 // ── Initialisation ────────────────────────────────────────────────────────────
 
 /// Register the address that may toggle pause flags.
-/// Call once during contract `initialize`. Idempotent: a second call with the
-/// same admin is a no-op; a different admin overwrites (admin-only).
+/// Call once during contract `initialize`. Rejects a second call so an
+/// unauthenticated caller cannot silently overwrite the configured admin.
 pub fn init_pause_admin(env: &Env, admin: &Address) {
+    if env
+        .storage()
+        .instance()
+        .has(&PauseKey::PauseAdmin)
+    {
+        panic_with_error!(env, PauseError::PauseAdminAlreadySet);
+    }
     env.storage()
         .instance()
         .set(&PauseKey::PauseAdmin, admin);
+    bump_ttl(env);
+}
+
+/// Rotate the pause admin. Only the current pause admin may rotate it.
+pub fn rotate_pause_admin(env: &Env, caller: &Address, new_admin: &Address) {
+    caller.require_auth();
+    assert_pause_admin(env, caller);
+    env.storage()
+        .instance()
+        .set(&PauseKey::PauseAdmin, new_admin);
+    bump_ttl(env);
+    env.events().publish(
+        (symbol_short!("pause"), symbol_short!("rotate")),
+        (caller.clone(), new_admin.clone()),
+    );
 }
 
 // ── Guards (write paths call these) ──────────────────────────────────────────
@@ -83,6 +118,7 @@ pub fn set_paused(env: &Env, caller: &Address, paused: bool) {
     env.storage()
         .instance()
         .set(&PauseKey::Global, &paused);
+    bump_ttl(env);
     let action = if paused {
         symbol_short!("paused")
     } else {
@@ -100,6 +136,7 @@ pub fn set_feature_paused(env: &Env, caller: &Address, feature: Symbol, paused: 
     env.storage()
         .instance()
         .set(&PauseKey::Feature(feature.clone()), &paused);
+    bump_ttl(env);
     let action = if paused {
         symbol_short!("f_paused")
     } else {

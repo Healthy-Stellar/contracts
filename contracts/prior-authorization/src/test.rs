@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use insurer_registry::{CoveragePlan, InsurerRegistry, InsurerRegistryClient};
+use insurer_registry::{CoveragePlan, InsurerRegistry, InsurerRegistryClient, MAX_CREDENTIAL_LIFETIME};
 use soroban_sdk::{testutils::{Address as _, Ledger}, Address, BytesN, Env, String, Symbol, Vec};
 
 // -----------------------------------------------------------------------
@@ -12,10 +12,13 @@ fn dummy_hash(env: &Env, byte: u8) -> BytesN<32> {
     BytesN::from_array(env, &[byte; 32])
 }
 
-fn setup_insurer_registry(env: &Env, insurer: &Address) -> Address {
-    let ir_id = env.register_contract(None, InsurerRegistry);
+fn setup_insurer_registry(env: &Env, insurer: &Address) -> (Address, Address) {
+    env.mock_all_auths();
+    let admin = Address::generate(env);
+    let ir_id = env.register(InsurerRegistry, (admin.clone(),));
     let ir_client = InsurerRegistryClient::new(env, &ir_id);
     let issuer = Address::generate(env);
+    ir_client.set_trusted_issuer(&admin, &issuer, &true);
     ir_client.register_insurer(
         insurer,
         &String::from_str(env, "Test Insurer"),
@@ -24,7 +27,7 @@ fn setup_insurer_registry(env: &Env, insurer: &Address) -> Address {
         &dummy_hash(env, 1),
         &issuer,
         &dummy_hash(env, 2),
-        &4_100_000_000_u64,
+        &(env.ledger().timestamp() + MAX_CREDENTIAL_LIFETIME),
         &dummy_hash(env, 3),
     );
 
@@ -40,7 +43,7 @@ fn setup_insurer_registry(env: &Env, insurer: &Address) -> Address {
         effective_until: None,
     });
     ir_client.set_coverage_plans(insurer, &plans);
-    ir_id
+    (ir_id, admin)
 }
 
 fn setup() -> (Env, Address, Address, Address) {
@@ -53,15 +56,13 @@ fn setup() -> (Env, Address, Address, Address) {
 }
 
 fn setup_client<'a>(env: &'a Env, insurer: &Address) -> PriorAuthorizationContractClient<'a> {
-    let ir_id = setup_insurer_registry(env, insurer);
+    let (ir_id, _) = setup_insurer_registry(env, insurer);
     register_contract(env, &ir_id)
 }
 
 fn register_contract<'a>(env: &'a Env, insurer_registry_id: &Address) -> PriorAuthorizationContractClient<'a> {
-    let contract_id = env.register(PriorAuthorizationContract, ());
-    let client = PriorAuthorizationContractClient::new(env, &contract_id);
-    client.initialize(insurer_registry_id);
-    client
+    let contract_id = env.register(PriorAuthorizationContract, (insurer_registry_id,));
+    PriorAuthorizationContractClient::new(env, &contract_id)
 }
 
 fn submit(
@@ -817,17 +818,20 @@ fn test_phi_reads_reject_unrelated_caller() {
 #[test]
 fn test_phi_reads_reject_reviewer_from_other_insurer() {
     let (env, provider, patient, insurer) = setup();
-    let ir_id = setup_insurer_registry(&env, &insurer);
+    let (ir_id, registry_admin) = setup_insurer_registry(&env, &insurer);
     let other_insurer = Address::generate(&env);
-    InsurerRegistryClient::new(&env, &ir_id).register_insurer(
+    let issuer = Address::generate(&env);
+    let registry_client = InsurerRegistryClient::new(&env, &ir_id);
+    registry_client.set_trusted_issuer(&registry_admin, &issuer, &true);
+    registry_client.register_insurer(
         &other_insurer,
         &String::from_str(&env, "Other Insurer"),
         &String::from_str(&env, "LIC-002"),
         &String::from_str(&env, "metadata"),
         &dummy_hash(&env, 4),
-        &Address::generate(&env),
+        &issuer,
         &dummy_hash(&env, 5),
-        &4_100_000_000_u64,
+        &(env.ledger().timestamp() + MAX_CREDENTIAL_LIFETIME),
         &dummy_hash(&env, 6),
     );
     let client = register_contract(&env, &ir_id);

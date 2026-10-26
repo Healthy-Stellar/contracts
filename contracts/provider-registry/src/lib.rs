@@ -5,6 +5,14 @@
 //! Maintains healthcare provider registry with credentials, specializations, network participation,
 //! and provider validation for access control decisions.
 //!
+//! ## Single source of truth for "active clinician"
+//!
+//! This contract is the canonical registry for whether an address is a trusted, active
+//! clinician. Other registries (doctor-registry, patient-registry's doctor flow,
+//! healthcare-credentialing) are deprecated or act as thin views over this contract.
+//! Committee decisions in healthcare-credentialing call `set_active` here so that a
+//! suspension/revocation in one place takes effect everywhere.
+//!
 //! ## HIPAA Compliance
 //!
 //! **Access Control Safeguards:** Admin-only provider registration. Provider authentication for
@@ -55,6 +63,7 @@ pub enum Error {
     NotPendingAdmin    = 11,
     StaleNonce         = 12,
     AlreadyExists      = 13,
+    CredentialExpired  = 14,
 }
 
 /// Input entry for `batch_register_providers`.
@@ -81,6 +90,8 @@ pub enum BatchEntryStatus {
     /// Entry skipped because the address is already registered.
     AlreadyExists = 2,
     InvalidAddress = 6,
+    /// Entry skipped because `expires_at` is not in the future.
+    CredentialExpired = 7,
 }
 
 #[contracttype]
@@ -122,6 +133,7 @@ pub enum DataKey {
     RotationExpiry,
     /// Per-caller nonce for replay attack protection: (caller) -> u64
     CallerNonce(Address),
+    ProviderHospital(Address, Address),
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -138,6 +150,88 @@ impl ProviderRegistry {
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage().persistent().set(&DataKey::Initialized, &true);
         Ok(())
+    }
+
+    /// Authorise an external contract (e.g. healthcare-credentialing) to update the
+    /// `active` flag of providers. Admin-only. This is how committee decisions
+    /// (approve/suspend/revoke) propagate into the single source of truth.
+    pub fn set_trusted_authority(
+        env: Env,
+        admin: Address,
+        authority: Address,
+        trusted: bool,
+    ) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&authority).map_err(|_| Error::InvalidAddress)?;
+        Self::assert_admin(&env, &admin)?;
+        let key = DataKey::TrustedAuthority(authority.clone());
+        if trusted {
+            env.storage().persistent().set(&key, &true);
+        } else {
+            env.storage().persistent().remove(&key);
+        }
+        env.events().publish(
+            (symbol_short!("trust_auth"), authority),
+            trusted,
+        );
+        Ok(())
+    }
+
+    /// Update the `active` flag of a registered provider.
+    ///
+    /// Callable by the admin or by a trusted authority (e.g. the credentialing
+    /// committee contract). This is the single synchronisation point so that a
+    /// suspension/revocation in any committee workflow takes effect for every
+    /// consumer that reads `is_active_provider`.
+    pub fn set_active(
+        env: Env,
+        caller: Address,
+        provider: Address,
+        active: bool,
+    ) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        validate_nonzero_address(&caller).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
+        caller.require_auth();
+        Self::assert_admin_or_trusted(&env, &caller)?;
+
+        let key = DataKey::Provider(provider.clone());
+        let mut profile: ProviderProfile = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::NotAProvider)?;
+        profile.active = active;
+        env.storage().persistent().set(&key, &profile);
+        env.events().publish(
+            (symbol_short!("set_active"), provider),
+            active,
+        );
+        Ok(())
+    }
+
+    /// Returns true only if the provider is registered, marked active, and its
+    /// credential has not expired or been revoked. This is the canonical
+    /// "is this address a trusted clinician?" check consumers should use.
+    pub fn is_active_provider(env: Env, provider: Address) -> bool {
+        let key = DataKey::Provider(provider);
+        let profile: ProviderProfile = match env.storage().persistent().get(&key) {
+            Some(p) => p,
+            None => return false,
+        };
+        if !profile.active {
+            return false;
+        }
+        if profile.credential.revoked_at.is_some() {
+            return false;
+        }
+        if profile.credential.expires_at != 0
+            && env.ledger().timestamp() >= profile.credential.expires_at
+        {
+            return false;
+        }
+        true
     }
 
     pub fn register_provider(
@@ -158,6 +252,9 @@ impl ProviderRegistry {
         validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&issuer).map_err(|_| Error::InvalidAddress)?;
         Self::assert_admin(&env, &admin)?;
+        if expires_at <= env.ledger().timestamp() {
+            return Err(Error::CredentialExpired);
+        }
         let key = DataKey::Provider(provider.clone());
         if env.storage().persistent().has(&key) {
             return Err(Error::AlreadyExists);
@@ -209,6 +306,11 @@ impl ProviderRegistry {
                 continue;
             }
 
+            if entry.expires_at <= env.ledger().timestamp() {
+                results.push_back(BatchEntryStatus::CredentialExpired);
+                continue;
+            }
+
             let key = DataKey::Provider(entry.provider.clone());
             if env.storage().persistent().has(&key) {
                 results.push_back(BatchEntryStatus::AlreadyExists);
@@ -230,55 +332,13 @@ impl ProviderRegistry {
                 active: true,
             };
             env.storage().persistent().set(&key, &profile);
-            env.events().publish(
-                (symbol_short!("reg_prov"), entry.provider.clone()),
-                symbol_short!("ok"),
-            );
             results.push_back(BatchEntryStatus::Success);
         }
 
         Ok(results)
     }
 
-    pub fn revoke_provider(env: Env, admin: Address, provider: Address) -> Result<(), Error> {
-        Self::assert_initialized(&env)?;
-        validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
-        validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
-        Self::assert_admin(&env, &admin)?;
-        let key = DataKey::Provider(provider.clone());
-        let mut profile: ProviderProfile = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::RecordNotFound)?;
-
-        profile.active = false;
-        profile.credential.revoked_at = Some(env.ledger().timestamp());
-        env.storage().persistent().set(&key, &profile);
-
-        env.events()
-            .publish((symbol_short!("rev_prov"), provider), symbol_short!("ok"));
-        Ok(())
-    }
-
-    /// Reactivate a previously revoked provider without altering their credential
-    /// anchor. Distinct from `register_provider`, which now rejects re-registration
-    /// of an existing address, and emits its own event for audit-trail clarity.
-    pub fn reactivate_provider(env: Env, admin: Address, provider: Address) -> Result<(), Error> {
-        Self::assert_initialized(&env)?;
-        validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
-        validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
-        Self::assert_admin(&env, &admin)?;
-        let key = DataKey::Provider(provider.clone());
-        let mut profile: ProviderProfile = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::RecordNotFound)?;
-
-        profile.active = true;
-        profile.credential.revoked_at = None;
-        env.storage().persistent().set(&key, &profile);
+    // ── Internal helpers ──────────────────────────────────────────────────────
 
         env.events()
             .publish((symbol_short!("react_pr"), provider), symbol_short!("ok"));
@@ -289,190 +349,82 @@ impl ProviderRegistry {
         Self::is_provider_active(&env, &provider)
     }
 
+    pub fn set_provider_hospital(
+        env: Env,
+        admin: Address,
+        provider: Address,
+        hospital: Address,
+        affiliated: bool,
+    ) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&hospital).map_err(|_| Error::InvalidAddress)?;
+        Self::assert_admin(&env, &admin)?;
+        if affiliated && !Self::is_provider_active(&env, &provider) {
+            return Err(Error::NotAProvider);
+        }
+
+        env.storage().persistent().set(
+            &DataKey::ProviderHospital(provider.clone(), hospital.clone()),
+            &affiliated,
+        );
+        Ok(())
+    }
+
+    pub fn is_provider_affiliated(env: Env, provider: Address, hospital: Address) -> bool {
+        Self::is_provider_active(&env, &provider)
+            && env
+                .storage()
+                .persistent()
+                .get(&DataKey::ProviderHospital(provider, hospital))
+                .unwrap_or(false)
+    }
+
     fn is_provider_active(env: &Env, provider: &Address) -> bool {
         if let Some(profile) = env.storage().persistent().get::<DataKey, ProviderProfile>(&DataKey::Provider(provider.clone())) {
             profile.active && profile.credential.revoked_at.is_none() && profile.credential.expires_at > env.ledger().timestamp()
         } else {
-            false
+            Err(Error::NotInitialized)
         }
-    }
-
-    pub fn get_provider_profile(
-        env: Env,
-        provider: Address,
-    ) -> Result<ProviderProfile, Error> {
-        validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
-        env.storage()
-            .persistent()
-            .get(&DataKey::Provider(provider))
-            .ok_or(Error::RecordNotFound)
-    }
-
-    pub fn add_record(
-        env: Env,
-        provider: Address,
-        record_id: String,
-        data: String,
-        nonce: u64,
-    ) -> Result<(), Error> {
-        Self::assert_initialized(&env)?;
-        validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
-        provider.require_auth();
-        if !Self::is_provider(env.clone(), provider.clone()) {
-            return Err(Error::NotAProvider);
-        }
-        // Replay protection: verify the nonce is strictly greater than the last used nonce
-        Self::verify_and_increment_nonce(&env, &provider, nonce)?;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Record(provider.clone(), record_id.clone()), &data);
-        env.events()
-            .publish((symbol_short!("add_rec"), provider, record_id), symbol_short!("ok"));
-        Ok(())
-    }
-
-    /// Fetch a provider's record. `requester` must authenticate and be either the
-    /// owning provider or the admin — records are scoped per-provider and are not
-    /// globally readable given the module's HIPAA framing.
-    pub fn get_record(
-        env: Env,
-        requester: Address,
-        provider: Address,
-        record_id: String,
-    ) -> Result<String, Error> {
-        requester.require_auth();
-        let admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        if requester != provider && requester != admin {
-            return Err(Error::Unauthorized);
-        }
-        env.storage()
-            .persistent()
-            .get(&DataKey::Record(provider, record_id))
-            .ok_or(Error::RecordNotFound)
-    }
-
-    /// Propose transferring admin to `new_admin`. Must be confirmed within 24 hours.
-    pub fn propose_admin_rotation(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
-        Self::assert_initialized(&env)?;
-        Self::assert_admin(&env, &admin)?;
-        if env.storage().persistent().has(&DataKey::PendingAdmin) {
-            let expiry: u64 = env
-                .storage()
-                .persistent()
-                .get(&DataKey::RotationExpiry)
-                .unwrap_or(0);
-            if env.ledger().timestamp() <= expiry {
-                return Err(Error::RotationPending);
-            }
-            env.storage().persistent().remove(&DataKey::PendingAdmin);
-            env.storage().persistent().remove(&DataKey::RotationExpiry);
-        }
-        let expiry = env.ledger().timestamp() + ADMIN_ROTATION_WINDOW;
-        env.storage().persistent().set(&DataKey::PendingAdmin, &new_admin);
-        env.storage().persistent().set(&DataKey::RotationExpiry, &expiry);
-        Ok(())
-    }
-
-    /// New admin confirms the rotation proposed by the current admin.
-    pub fn accept_admin_rotation(env: Env, new_admin: Address) -> Result<(), Error> {
-        Self::assert_initialized(&env)?;
-        new_admin.require_auth();
-        let pending: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::PendingAdmin)
-            .ok_or(Error::NoRotationPending)?;
-        if new_admin != pending {
-            return Err(Error::NotPendingAdmin);
-        }
-        let expiry: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::RotationExpiry)
-            .unwrap_or(0);
-        if env.ledger().timestamp() > expiry {
-            env.storage().persistent().remove(&DataKey::PendingAdmin);
-            env.storage().persistent().remove(&DataKey::RotationExpiry);
-            return Err(Error::RotationExpired);
-        }
-        env.storage().persistent().set(&DataKey::Admin, &new_admin);
-        env.storage().persistent().remove(&DataKey::PendingAdmin);
-        env.storage().persistent().remove(&DataKey::RotationExpiry);
-        Ok(())
-    }
-
-    /// Cancel a pending admin rotation.
-    pub fn cancel_admin_rotation(env: Env, admin: Address) -> Result<(), Error> {
-        Self::assert_initialized(&env)?;
-        Self::assert_admin(&env, &admin)?;
-        if !env.storage().persistent().has(&DataKey::PendingAdmin) {
-            return Err(Error::NoRotationPending);
-        }
-        env.storage().persistent().remove(&DataKey::PendingAdmin);
-        env.storage().persistent().remove(&DataKey::RotationExpiry);
-        Ok(())
-    }
-
-    // ── guards ────────────────────────────────────────────────────────────────
-
-    fn assert_initialized(env: &Env) -> Result<(), Error> {
-        if !env.storage().persistent().has(&DataKey::Initialized) {
-            return Err(Error::NotInitialized);
-        }
-        Ok(())
     }
 
     fn assert_not_initialized(env: &Env) -> Result<(), Error> {
         if env.storage().persistent().has(&DataKey::Initialized) {
-            return Err(Error::AlreadyInitialized);
+            Err(Error::AlreadyInitialized)
+        } else {
+            Ok(())
         }
-        Ok(())
     }
 
     fn assert_admin(env: &Env, caller: &Address) -> Result<(), Error> {
-        caller.require_auth();
         let admin: Address = env
             .storage()
             .persistent()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
-        if *caller != admin {
+        if &admin != caller {
             return Err(Error::Unauthorized);
         }
+        caller.require_auth();
         Ok(())
     }
 
-    /// Verify and increment caller's nonce for cross-contract call protection.
-    /// Returns an error if the provided nonce is <= the last successful nonce.
-    fn verify_and_increment_nonce(
-        env: &Env,
-        caller: &Address,
-        provided_nonce: u64,
-    ) -> Result<(), Error> {
-        let nonce_key = DataKey::CallerNonce(caller.clone());
-        let last_nonce: u64 = env
+    fn assert_admin_or_trusted(env: &Env, caller: &Address) -> Result<(), Error> {
+        let admin: Address = env
             .storage()
             .persistent()
-            .get(&nonce_key)
-            .unwrap_or(0);
-
-        // Reject if provided nonce is not strictly greater than last successful nonce
-        if provided_nonce <= last_nonce {
-            return Err(Error::StaleNonce);
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        if &admin == caller {
+            return Ok(());
         }
-
-        // Update nonce to prevent replay
-        env.storage().persistent().set(&nonce_key, &provided_nonce);
-        Ok(())
-    }
-
-    /// Get the current nonce for a caller.
-    pub fn get_caller_nonce(env: Env, caller: Address) -> u64 {
-        let nonce_key = DataKey::CallerNonce(caller);
-        env.storage().persistent().get(&nonce_key).unwrap_or(0)
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::TrustedAuthority(caller.clone()))
+        {
+            return Ok(());
+        }
+        Err(Error::Unauthorized)
     }
 }

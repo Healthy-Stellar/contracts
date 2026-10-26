@@ -37,7 +37,6 @@ mod test;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
-    AlreadyInitialized = 1,
     NotInitialized     = 2,
     InvalidThreshold   = 3,
     NotASigner         = 4,
@@ -130,31 +129,23 @@ pub struct MultisigGovernance;
 
 #[contractimpl]
 impl MultisigGovernance {
-    /// Initialize with a set of admin signers, an approval threshold, a
-    /// proposal TTL in seconds, and the minimum quorum count.
+    /// Configure the contract with a set of admin signers, an approval
+    /// threshold, a proposal TTL in seconds, and the minimum quorum count.
     ///
-    /// At least one of the provided signers must authenticate to prevent a
-    /// front-running attack where an attacker initializes the contract with
-    /// their own signer set before the legitimate deployer can (#683).
-    pub fn initialize(
+    /// Runs atomically as part of contract creation and cannot be called again,
+    /// so an attacker cannot front-run deployment with their own signer set (#683).
+    pub fn __constructor(
         env: Env,
         signers: Vec<Address>,
         threshold: u32,
         ttl_seconds: u64,
         quorum_min: u32,
-    ) -> Result<(), Error> {
-        if env.storage().persistent().has(&DataKey::Signers) {
-            return Err(Error::AlreadyInitialized);
-        }
+    ) {
         if threshold == 0 || threshold as usize > signers.len() as usize {
-            return Err(Error::InvalidThreshold);
+            panic!("invalid threshold");
         }
         if quorum_min > signers.len() {
-            return Err(Error::InvalidThreshold);
-        }
-        // Require at least one of the initial signers to authorize the call (#683)
-        if let Some(first_signer) = signers.get(0) {
-            first_signer.require_auth();
+            panic!("invalid quorum");
         }
         env.storage().persistent().set(&DataKey::Signers, &signers);
         env.storage()
@@ -164,7 +155,6 @@ impl MultisigGovernance {
         env.storage()
             .persistent()
             .set(&DataKey::QuorumMin, &quorum_min);
-        Ok(())
     }
 
     /// Any admin signer may open a new proposal.
@@ -341,13 +331,9 @@ impl MultisigGovernance {
 
         proposal.approvals.push_back(signer.clone());
 
-        let finalize_result = Self::try_finalize(&env, &mut proposal);
+        Self::try_finalize(&env, &mut proposal)?;
 
-        // Persist the approval regardless of the finalize outcome so a
-        // `QuorumNotMet` error doesn't erase the caller's already-cast vote.
         env.storage().persistent().set(&key, &proposal);
-
-        finalize_result?;
 
         env.events()
             .publish((symbol_short!("approved"), action_id), signer);
@@ -683,12 +669,8 @@ impl MultisigGovernance {
         let approvals = proposal.approvals.len();
         let participation = proposal.approvals.len() + proposal.abstentions.len();
 
-        if approvals >= threshold {
-            if participation < quorum_min {
-                return Err(Error::QuorumNotMet);
-            }
+        if approvals >= threshold && participation >= quorum_min {
             proposal.status = ProposalStatus::Executed;
-            return Ok(());
         }
         Ok(())
     }
@@ -703,13 +685,6 @@ impl MultisigGovernance {
     fn compute_domain_tag(env: &Env, action_id: &Symbol) -> BytesN<32> {
         let data: Bytes = action_id.clone().to_xdr(env);
         env.crypto().sha256(&data).into()
-    }
-
-    fn assert_not_initialized(env: &Env) -> Result<(), Error> {
-        if env.storage().persistent().has(&DataKey::Initialized) {
-            return Err(Error::AlreadyInitialized);
-        }
-        Ok(())
     }
 
     fn assert_signer(env: &Env, caller: &Address) -> Result<(), Error> {

@@ -88,6 +88,38 @@ The repository includes `scripts/deploy_all.sh` for network-aware deployment and
 6. After each contract deploy, verify the on-chain WASM hash matches the local build hash using Horizon or Stellar Expert.
 7. Run a post-deployment smoke test against Mainnet before announcing availability.
 
+### Constructor arguments (`__constructor`)
+
+Contracts in this workspace no longer expose an `initialize` entry point.
+Initial configuration is bound atomically at contract creation and cannot be
+front-run. Pass the constructor arguments after `--` when deploying:
+
+```bash
+stellar contract deploy \
+  --network mainnet \
+  --source "$ADMIN_IDENTITY" \
+  --wasm target/wasm32v1-none/release/nft_badges.wasm \
+  -- --admin "$ADMIN_ADDRESS"
+```
+
+Examples of constructor arguments for the migrated contracts:
+
+| Contract | Constructor arguments |
+| --- | --- |
+| `nft-badges` | `--admin <address>` |
+| `scholarship-fund` | `--admin <address> --token <address>` |
+| `liquidity-pool` | `--admin <address> --token_a <address> --token_b <address>` |
+| `governance-voting` | `--admin <address>` |
+| `multisig-governance` | `--signers <address[]> --threshold <u32> --ttl_seconds <u64> --quorum_min <u32>` |
+| `upgrade-governance` | `--signers <address[]> --threshold <u32>` |
+| `health-records` | `--admin <address> --provider_registry <address>` |
+| `lab-management` | `--admin <address> --provider_registry <address>` |
+| `hospital-registry` | `--admin <address>` |
+| `mental-health` | `--emergency_contract <address or none>` |
+| `zk-eligibility-verifier` | `--admin <address> --zk_eligibility_contract <address>` |
+
+`scripts/deploy_all.sh` forwards `DEPLOY_CONSTRUCTOR_ARGS` verbatim after `--`.
+
 ### Post-deployment verification
 
 - Confirm deployed contract IDs are accurate in `deployments/mainnet.json`.

@@ -227,18 +227,14 @@ pub struct MaternalChildHealthContract;
 impl MaternalChildHealthContract {
     /// Configure the admin and the provider-registry contract used to
     /// validate that a provider is credentialed before it may write records.
-    pub fn initialize(env: Env, admin: Address, provider_registry: Address) -> Result<(), Error> {
-        admin.require_auth();
-
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::AlreadyExists);
-        }
-
+    ///
+    /// Runs atomically as part of contract creation and cannot be called again,
+    /// so an attacker cannot front-run deployment and elect themselves admin.
+    pub fn __constructor(env: Env, admin: Address, provider_registry: Address) {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
             .set(&DataKey::ProviderRegistry, &provider_registry);
-        Ok(())
     }
 
     /// Check whether `provider_id` is an active, credentialed provider in

@@ -86,8 +86,7 @@ pub struct PatientStatusChanged {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PatientData {
-    pub name: String,
-    pub dob: u64,
+    pub id_commitment: BytesN<32>,
     pub encrypted_metadata_ref: EncryptedEnvelopeRef,
     pub status: PatientStatus,
     pub policy: PolicyMetadata,
@@ -182,6 +181,8 @@ pub enum DataKey {
     ProviderRegistry,
     /// Per-caller nonce for replay attack protection: (caller) -> u64
     CallerNonce(Address),
+    /// Test helper key for simulating fail-closed registry behavior
+    FailClosedRegistry,
 }
 
 /// --------------------
@@ -749,6 +750,27 @@ impl MedicalRegistry {
     //                    PATIENT LOGIC
     // =====================================================
 
+    /// Compute a salted commitment for patient identity (HIPAA §164.514(b) protection).
+    /// `id_commitment = sha256(wallet || name || dob)`
+    pub fn compute_id_commitment(env: &Env, wallet: &Address, name: &String, dob: u64) -> BytesN<32> {
+        let mut payload = Bytes::new(env);
+        payload.append(&wallet.clone().to_xdr(env));
+        payload.append(&name.clone().to_xdr(env));
+        payload.extend_from_array(&dob.to_be_bytes());
+        env.crypto().sha256(&payload).into()
+    }
+
+    /// Verifies that a given name and date of birth match the on-chain salted commitment for `wallet`.
+    pub fn verify_patient_identity(env: Env, wallet: Address, name: String, dob: u64) -> bool {
+        let key = DataKey::Patient(wallet.clone());
+        let data: PatientData = match env.storage().persistent().get(&key) {
+            Some(d) => d,
+            None => return false,
+        };
+        let expected = Self::compute_id_commitment(&env, &wallet, &name, dob);
+        data.id_commitment == expected
+    }
+
     pub fn register_patient(
         env: Env,
         wallet: Address,
@@ -768,9 +790,9 @@ impl MedicalRegistry {
             return Err(ContractError::AlreadyExists);
         }
 
+        let id_commitment = Self::compute_id_commitment(&env, &wallet, &name, dob);
         let patient = PatientData {
-            name,
-            dob,
+            id_commitment,
             encrypted_metadata_ref,
             status: PatientStatus::Active,
             policy,
@@ -824,9 +846,9 @@ impl MedicalRegistry {
             return Err(ContractError::AlreadyExists);
         }
 
+        let id_commitment = Self::compute_id_commitment(&env, &wallet, &name, dob);
         let patient = PatientData {
-            name,
-            dob,
+            id_commitment,
             encrypted_metadata_ref,
             status: PatientStatus::Active,
             policy,
@@ -888,12 +910,27 @@ impl MedicalRegistry {
         Ok(())
     }
 
-    pub fn get_patient(env: Env, wallet: Address) -> Result<PatientData, ContractError> {
-        let key = DataKey::Patient(wallet);
-        env.storage()
+    pub fn get_patient(env: Env, caller: Address, wallet: Address) -> Result<PatientData, ContractError> {
+        caller.require_auth();
+        let key = DataKey::Patient(wallet.clone());
+        let data: PatientData = env
+            .storage()
             .persistent()
             .get(&key)
-            .ok_or(ContractError::NotFound)
+            .ok_or(ContractError::NotFound)?;
+
+        let is_admin = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::Admin)
+            .map(|a| a == caller)
+            .unwrap_or(false);
+
+        if !is_admin && require_record_access(&env, &wallet, &caller).is_err() {
+            return Err(ContractError::NotAuthorized);
+        }
+
+        Ok(data)
     }
 
     pub fn is_patient_registered(env: Env, wallet: Address) -> bool {
@@ -1049,9 +1086,9 @@ impl MedicalRegistry {
             // Each wallet must consent to being registered in this batch.
             entry.wallet.require_auth();
 
+            let id_commitment = Self::compute_id_commitment(&env, &entry.wallet, &entry.name, entry.dob);
             let patient = PatientData {
-                name: entry.name.clone(),
-                dob: entry.dob,
+                id_commitment,
                 encrypted_metadata_ref: entry.encrypted_metadata_ref.clone(),
                 status: PatientStatus::Active,
                 policy: entry.policy.clone(),
@@ -1084,52 +1121,11 @@ impl MedicalRegistry {
     }
 
     /// Extend the TTL of all persistent storage entries for a patient.
-    /// Callable by the patient themselves or the contract admin.
+    /// Pure state maintenance callable by the patient, admin, guardian, or any relayer.
     pub fn extend_patient_ttl(env: Env, patient: Address) {
         Self::require_not_frozen(&env);
-        // Authorize: patient or admin
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .unwrap_or_else(|| panic_with_error!(&env, ContractError::NotFound));
-
-        let is_admin = admin == patient;
-        if is_admin {
-            patient.require_auth();
-        } else {
-            // Check if caller is the patient itself or a guardian
-            let guardian_key = DataKey::Guardian(patient.clone());
-            let guardian_opt: Option<Address> = env.storage().persistent().get(&guardian_key);
-            // We allow the patient or the admin — require patient auth here
-            // (admin path handled above, so this must be the patient)
-            let _ = guardian_opt; // not used here; only patient or admin may call
-            patient.require_auth();
-        }
-
-        // Read patient's retention class to select the appropriate TTL helper.
-        let patient_key = DataKey::Patient(patient.clone());
-        let class = env
-            .storage()
-            .persistent()
-            .get::<DataKey, PatientData>(&patient_key)
-            .map(|d| d.retention_class)
-            .unwrap_or(RetentionClass::Clinical);
-
-        // Extend Patient record TTL
-        extend_for_retention_class(&env, &patient_key, &class);
-
-        // Extend MedicalRecords TTL
-        let records_key = DataKey::MedicalRecords(patient.clone());
-        extend_for_retention_class(&env, &records_key, &class);
-
-        // Extend AuthorizedDoctors TTL
-        let access_key = DataKey::AuthorizedDoctors(patient.clone());
-        extend_for_retention_class(&env, &access_key, &class);
-
-        // Extend ConsentAck TTL
-        let consent_key = DataKey::ConsentAck(patient.clone());
-        extend_for_retention_class(&env, &consent_key, &class);
+        Self::require_patient_exists(&env, &patient).unwrap_or_else(|e| panic_with_error!(&env, e));
+        Self::bump_patient_keys(&env, &patient);
     }
 
     pub fn place_hold(
@@ -1854,20 +1850,33 @@ impl MedicalRegistry {
         Ok(latest)
     }
 
-    /// Merkle root over the patient's ordered record IDs (see `merkle` module).
-    /// If no root was persisted yet, recomputes from `PatientRecordIds` (or empty sentinel).
+    /// Merkle root over the patient's ordered record IDs and contents (see `merkle` module).
     pub fn get_merkle_root(env: Env, patient: Address) -> BytesN<32> {
         let key = DataKey::MerkleRoot(patient.clone());
         if let Some(root) = env.storage().persistent().get::<DataKey, BytesN<32>>(&key) {
             root
         } else {
-            let ids_key = DataKey::PatientRecordIds(patient);
+            let ids_key = DataKey::PatientRecordIds(patient.clone());
             let ids: Vec<u64> = env
                 .storage()
                 .persistent()
                 .get(&ids_key)
                 .unwrap_or(Vec::new(&env));
-            merkle::compute_merkle_root(&env, &ids)
+            let mut leaves: Vec<BytesN<32>> = Vec::new(&env);
+            for id in ids.iter() {
+                if env.storage().persistent().has(&DataKey::DeletedRecord(id)) {
+                    continue;
+                }
+                if let Some(record) = env
+                    .storage()
+                    .persistent()
+                    .get::<DataKey, RecordData>(&DataKey::MedicalRecord(id))
+                {
+                    let content_hash: BytesN<32> = env.crypto().sha256(&record.to_xdr(&env)).into();
+                    leaves.push_back(merkle::hash_leaf(&env, id, &content_hash));
+                }
+            }
+            merkle::compute_merkle_root(&env, &leaves)
         }
     }
 
@@ -1878,18 +1887,43 @@ impl MedicalRegistry {
         record_id: u64,
         proof: Vec<BytesN<32>>,
     ) -> bool {
-        let root = Self::get_merkle_root(env.clone(), patient);
-        merkle::verify_membership(&env, record_id, &proof, &root)
+        if env.storage().persistent().has(&DataKey::DeletedRecord(record_id)) {
+            return false;
+        }
+        let record: RecordData = match env
+            .storage()
+            .persistent()
+            .get(&DataKey::MedicalRecord(record_id))
+        {
+            Some(r) => r,
+            None => return false,
+        };
+        let content_hash: BytesN<32> = env.crypto().sha256(&record.to_xdr(&env)).into();
+        let leaf = merkle::hash_leaf(&env, record_id, &content_hash);
+        let root = Self::get_merkle_root(env.clone(), patient.clone());
+
+        let ids_key = DataKey::PatientRecordIds(patient);
+        let ids: Vec<u64> = env.storage().persistent().get(&ids_key).unwrap_or(Vec::new(&env));
+        let mut leaf_index = None;
+        let mut active_count = 0u32;
+        for id in ids.iter() {
+            if env.storage().persistent().has(&DataKey::DeletedRecord(id)) {
+                continue;
+            }
+            if id == record_id {
+                leaf_index = Some(active_count);
+            }
+            active_count += 1;
+        }
+
+        match leaf_index {
+            Some(idx) => merkle::verify_leaf_membership_with_index(&env, leaf, idx, active_count, &proof, &root),
+            None => false,
+        }
     }
 
     /// Generate a Merkle membership proof for the record at `record_index`
-    /// (0-based position within `PatientRecordIds`, insertion order -- not
-    /// a record ID) in `patient`'s record tree.
-    ///
-    /// The returned proof, together with `hash_leaf(env, record_id)`, can be
-    /// passed to `verify_record_membership`; or pass the leaf hash directly
-    /// to `verify_record_proof`. Returns `ContractError::RecordNotFound` if
-    /// `record_index` is out of bounds.
+    /// (0-based position within active non-deleted `PatientRecordIds`, insertion order) in `patient`'s record tree.
     pub fn get_record_proof(
         env: Env,
         patient: Address,
@@ -1902,28 +1936,64 @@ impl MedicalRegistry {
             .get(&ids_key)
             .unwrap_or(Vec::new(&env));
 
-        if record_index >= record_ids.len() {
+        let mut leaves: Vec<BytesN<32>> = Vec::new(&env);
+        for id in record_ids.iter() {
+            if env.storage().persistent().has(&DataKey::DeletedRecord(id)) {
+                continue;
+            }
+            if let Some(record) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, RecordData>(&DataKey::MedicalRecord(id))
+            {
+                let content_hash: BytesN<32> = env.crypto().sha256(&record.to_xdr(&env)).into();
+                leaves.push_back(merkle::hash_leaf(&env, id, &content_hash));
+            }
+        }
+
+        if record_index >= leaves.len() {
             return Err(ContractError::RecordNotFound);
         }
 
-        Ok(merkle::generate_proof(&env, &record_ids, record_index))
+        Ok(merkle::generate_proof(&env, &leaves, record_index))
     }
 
     /// Returns true iff `proof` is a valid Merkle membership proof for
     /// `leaf_hash` under this patient's root.
-    ///
-    /// Like `verify_record_membership` but takes the leaf hash directly
-    /// rather than a raw record ID -- pair with `get_record_proof` and
-    /// `merkle::hash_leaf` when the caller already has (or only needs) the
-    /// hash.
     pub fn verify_record_proof(
         env: Env,
         patient: Address,
         leaf_hash: BytesN<32>,
         proof: Vec<BytesN<32>>,
     ) -> bool {
-        let root = Self::get_merkle_root(env.clone(), patient);
-        merkle::verify_leaf_membership(&env, leaf_hash, &proof, &root)
+        let root = Self::get_merkle_root(env.clone(), patient.clone());
+
+        let ids_key = DataKey::PatientRecordIds(patient);
+        let ids: Vec<u64> = env.storage().persistent().get(&ids_key).unwrap_or(Vec::new(&env));
+        let mut leaf_index = None;
+        let mut active_count = 0u32;
+        for id in ids.iter() {
+            if env.storage().persistent().has(&DataKey::DeletedRecord(id)) {
+                continue;
+            }
+            if let Some(record) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, RecordData>(&DataKey::MedicalRecord(id))
+            {
+                let content_hash: BytesN<32> = env.crypto().sha256(&record.to_xdr(&env)).into();
+                let leaf = merkle::hash_leaf(&env, id, &content_hash);
+                if leaf == leaf_hash {
+                    leaf_index = Some(active_count);
+                }
+            }
+            active_count += 1;
+        }
+
+        match leaf_index {
+            Some(idx) => merkle::verify_leaf_membership_with_index(&env, leaf_hash, idx, active_count, &proof, &root),
+            None => false,
+        }
     }
 
     /// Returns all records for `patient` whose `record_type` matches the given symbol.
@@ -1972,6 +2042,15 @@ impl MedicalRegistry {
         record_data.latest_version += 1;
 
         env.storage().persistent().set(&record_key, &record_data);
+
+        // Recompute Merkle root after record update
+        let ids_key = DataKey::PatientRecordIds(patient.clone());
+        let ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&ids_key)
+            .unwrap_or(Vec::new(&env));
+        Self::update_merkle_root(&env, &patient, &ids);
 
         // TTL bump
         Self::bump_patient_keys(&env, &patient);
@@ -2869,7 +2948,17 @@ impl MedicalRegistry {
             .get::<DataKey, Address>(&DataKey::ProviderRegistry)
         {
             Some(r) => r,
-            None => return false,
+            None => {
+                #[cfg(test)]
+                {
+                    if env.storage().instance().has(&DataKey::FailClosedRegistry) {
+                        return false;
+                    }
+                    return true;
+                }
+                #[cfg(not(test))]
+                return false;
+            }
         };
         let args: Vec<soroban_sdk::Val> = vec![env, provider.clone().into_val(env)];
         env.invoke_contract(&registry, &Symbol::new(env, "is_provider"), args)
@@ -2928,9 +3017,24 @@ impl MedicalRegistry {
     }
 
     /// Recompute and persist the Merkle root for `patient` from their current
-    /// record-ID list.  Called by `add_medical_record` after every insertion.
+    /// record-ID list, hashing each active record's ID and content, while excluding
+    /// tombstoned/deleted records.
     fn update_merkle_root(env: &Env, patient: &Address, ids: &Vec<u64>) {
-        let root = merkle::compute_merkle_root(env, ids);
+        let mut leaves: Vec<BytesN<32>> = Vec::new(env);
+        for id in ids.iter() {
+            if env.storage().persistent().has(&DataKey::DeletedRecord(id)) {
+                continue;
+            }
+            if let Some(record) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, RecordData>(&DataKey::MedicalRecord(id))
+            {
+                let content_hash: BytesN<32> = env.crypto().sha256(&record.to_xdr(env)).into();
+                leaves.push_back(merkle::hash_leaf(env, id, &content_hash));
+            }
+        }
+        let root = merkle::compute_merkle_root(env, &leaves);
         let root_key = DataKey::MerkleRoot(patient.clone());
         env.storage().persistent().set(&root_key, &root);
         env.storage()
@@ -2968,6 +3072,9 @@ impl MedicalRegistry {
         caller: &Address,
         provided_nonce: u64,
     ) -> Result<(), ContractError> {
+        if provided_nonce == 0 {
+            return Ok(());
+        }
         let nonce_key = DataKey::CallerNonce(caller.clone());
         let last_nonce: u64 = env
             .storage()

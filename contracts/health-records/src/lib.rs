@@ -7,7 +7,11 @@
 //!
 //! ## HIPAA Compliance
 //!
-//! **Access Control Safeguards:** Patient and provider authentication required. Patient grants
+//! **Access Control Safeguards:** Record creation (both single and batch) uses consent-based
+//! write authorization. The provider authenticates the transaction (provider.require_auth()), and
+//! active write consent previously granted by the patient is verified against contract storage.
+//! The patient's live signature is not required at creation time, enabling asynchronous provider
+//! workflows (such as lab results, imaging reports, and discharge summaries). Patient grants
 //! scoped consent (read, write, share) per provider. Consent can expire or never expire (0 = no
 //! expiry). Patient revokes provider consent atomically. Emergency access override with 1-hour TTL.
 //! Batch record creation enforces per-patient consent validation.
@@ -97,18 +101,24 @@ pub struct MedicalRecord {
     pub version: u32,
 }
 
+/// Maximum number of record IDs stored per CategoryIndex page.
+pub const CATEGORY_PAGE_SIZE: u32 = 100;
+
 #[contracttype]
 pub enum DataKey {
     Record(u64),
     RecordCounter,
-    Consent(Address, Address),     // (patient, provider) -> ConsentScope
-    PatientProviders(Address),     // patient -> Vec<Address> of consented providers
-    CategoryIndex(RecordCategory), // category -> Vec<u64> of record ids in that category, for prefix-style queries
+    Consent(Address, Address),          // (patient, provider) -> ConsentScope
+    PatientProviders(Address),          // patient -> Vec<Address> of consented providers
+    CategoryIndex(RecordCategory, u32), // (category, page) -> Vec<u64> of record ids
+    CategoryCount(RecordCategory),      // category -> total record count
+    RecordCategoryLoc(u64),             // record_id -> (RecordCategory, page)
     ProviderRegistry,
     RecordVersion(u64, u32),
     /// Per-caller nonce for replay attack protection: (caller) -> u64
     CallerNonce(Address),
     Admin,
+    Analytics,
 }
 
 #[contracterror]
@@ -125,7 +135,6 @@ pub enum Error {
     ProviderNotRegistered = 8,
     VersionNotFound = 9,
     StaleNonce = 10,
-    AlreadyInitialized = 11,
 }
 
 #[soroban_sdk::contractclient(name = "ProviderRegistryClient")]
@@ -133,29 +142,39 @@ pub trait ProviderRegistryInterface {
     fn is_provider(env: Env, provider: Address) -> bool;
 }
 
-/// Append `record_category`'s record ID to its `CategoryIndex` so
-/// `get_records_by_category` can look up records of a given category
-/// without scanning every record.
+/// Append record ID to its paged CategoryIndex bucket.
 fn index_record_by_category(env: &Env, category: RecordCategory, record_id: u64) {
-    let key = DataKey::CategoryIndex(category);
-    let mut ids: Vec<u64> = env.storage().persistent().get(&key).unwrap_or(Vec::new(env));
+    let count_key = DataKey::CategoryCount(category);
+    let count: u64 = env.storage().persistent().get(&count_key).unwrap_or(0);
+    let page = (count / (CATEGORY_PAGE_SIZE as u64)) as u32;
+    let page_key = DataKey::CategoryIndex(category, page);
+    let mut ids: Vec<u64> = env.storage().persistent().get(&page_key).unwrap_or(Vec::new(env));
     ids.push_back(record_id);
-    env.storage().persistent().set(&key, &ids);
+    env.storage().persistent().set(&page_key, &ids);
+    env.storage().persistent().set(&count_key, &(count + 1));
+    env.storage().persistent().set(&DataKey::RecordCategoryLoc(record_id), &(category, page));
 }
 
 fn remove_record_from_category_index(env: &Env, category: RecordCategory, record_id: u64) {
-    let key = DataKey::CategoryIndex(category);
-    if let Some(ids) = env.storage().persistent().get::<DataKey, Vec<u64>>(&key) {
-        let mut filtered = Vec::new(env);
-        for id in ids.iter() {
-            if id != record_id {
-                filtered.push_back(id);
+    let loc_key = DataKey::RecordCategoryLoc(record_id);
+    let loc_opt: Option<(RecordCategory, u32)> = env.storage().persistent().get(&loc_key);
+    if let Some((stored_cat, page)) = loc_opt {
+        if stored_cat == category {
+            let page_key = DataKey::CategoryIndex(category, page);
+            if let Some(ids) = env.storage().persistent().get::<DataKey, Vec<u64>>(&page_key) {
+                let mut filtered = Vec::new(env);
+                for id in ids.iter() {
+                    if id != record_id {
+                        filtered.push_back(id);
+                    }
+                }
+                if filtered.is_empty() {
+                    env.storage().persistent().remove(&page_key);
+                } else {
+                    env.storage().persistent().set(&page_key, &filtered);
+                }
             }
-        }
-        if filtered.is_empty() {
-            env.storage().persistent().remove(&key);
-        } else {
-            env.storage().persistent().set(&key, &filtered);
+            env.storage().persistent().remove(&loc_key);
         }
     }
 }
@@ -206,22 +225,17 @@ pub struct HealthRecords;
 
 #[contractimpl]
 impl HealthRecords {
-    /// Initialize the contract with an admin and the provider registry address.
+    /// Bind the contract to an admin and the provider registry address.
     ///
-    /// `admin` must authorize this call, preventing an unauthorized caller
-    /// from front-running deployment and pointing `provider_registry` at a
-    /// malicious contract. Fails with `Error::AlreadyInitialized` if called
-    /// more than once.
-    pub fn initialize(env: Env, admin: Address, provider_registry: Address) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::ProviderRegistry) {
-            return Err(Error::AlreadyInitialized);
-        }
-        validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
-        validate_nonzero_address(&provider_registry).map_err(|_| Error::InvalidAddress)?;
-        admin.require_auth();
+    /// This runs atomically as part of contract creation and cannot be called
+    /// again, so an attacker cannot front-run deployment and point
+    /// `provider_registry` at a malicious contract.
+    pub fn __constructor(env: Env, admin: Address, provider_registry: Address) {
+        validate_nonzero_address(&admin).expect("admin address must not be zero");
+        validate_nonzero_address(&provider_registry)
+            .expect("provider registry address must not be zero");
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::ProviderRegistry, &provider_registry);
-        Ok(())
     }
 
     /// Patient grants a provider scoped consent to act on their records.
@@ -315,7 +329,8 @@ impl HealthRecords {
         Ok(())
     }
 
-    /// Create a record. Requires both patient and provider auth, plus active write consent.
+    /// Create a record. Uses consent-based write authorization matching create_records_batch:
+    /// only the provider needs to auth, and active write consent granted by the patient is verified.
     pub fn create_record(
         env: Env,
         patient: Address,
@@ -328,7 +343,6 @@ impl HealthRecords {
     ) -> Result<u64, Error> {
         validate_nonzero_address(&patient).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
-        patient.require_auth();
         provider.require_auth();
         Self::verify_and_increment_nonce(&env, &provider, provider_nonce)?;
         validate_encrypted_ref(&encrypted_ref).map_err(|_| Error::InvalidEncryptedEnvelope)?;
@@ -383,16 +397,75 @@ impl HealthRecords {
         Ok(record_id)
     }
 
-    /// Return every record ID filed under `category`, in creation order.
-    ///
-    /// Backed by `DataKey::CategoryIndex`, populated by `create_record` and
-    /// `create_records_batch` -- a category-prefixed index rather than a
-    /// linear scan of every record ever created.
-    pub fn get_records_by_category(env: Env, category: RecordCategory) -> Vec<u64> {
+    /// Return record IDs filed under `category` for a given 0-indexed page (capped at CATEGORY_PAGE_SIZE).
+    /// Access is restricted to the contract admin or configured analytics address.
+    pub fn get_records_by_category(
+        env: Env,
+        requester: Address,
+        category: RecordCategory,
+        page: u32,
+    ) -> Result<Vec<u64>, Error> {
+        validate_nonzero_address(&requester).map_err(|_| Error::InvalidAddress)?;
+        requester.require_auth();
+
+        let is_admin = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::Admin)
+            .map(|a| a == requester)
+            .unwrap_or(false);
+        let is_analytics = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::Analytics)
+            .map(|a| a == requester)
+            .unwrap_or(false);
+
+        if !is_admin && !is_analytics {
+            return Err(Error::Unauthorized);
+        }
+
+        let key = DataKey::CategoryIndex(category, page);
+        Ok(env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env)))
+    }
+
+    /// Return total number of records indexed under a category.
+    pub fn get_category_count(env: Env, category: RecordCategory) -> u64 {
         env.storage()
             .persistent()
-            .get(&DataKey::CategoryIndex(category))
-            .unwrap_or(Vec::new(&env))
+            .get(&DataKey::CategoryCount(category))
+            .unwrap_or(0)
+    }
+
+    /// Set an authorized analytics address that can query category indexes. Admin-only.
+    pub fn set_analytics_address(env: Env, admin: Address, analytics: Address) -> Result<(), Error> {
+        validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&analytics).map_err(|_| Error::InvalidAddress)?;
+        admin.require_auth();
+
+        let current_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::Unauthorized)?;
+        if admin != current_admin {
+            return Err(Error::Unauthorized);
+        }
+
+        env.storage().instance().set(&DataKey::Analytics, &analytics);
+        Ok(())
+    }
+
+    /// Return the contract admin address.
+    pub fn get_admin(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::Unauthorized)
     }
 
     /// Create multiple records in one transaction.

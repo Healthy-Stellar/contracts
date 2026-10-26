@@ -43,9 +43,9 @@ fn setup_env_with_registered_provider()
     pr_client.initialize(&admin);
 
     // Register the lab-management contract, pointing it at the registry
-    let contract_id = env.register(LabManagementContract, ());
+    let lab_admin = Address::generate(&env);
+    let contract_id = env.register(LabManagementContract, (&lab_admin, &provider_registry_id));
     let client = LabManagementContractClient::new(&env, &contract_id);
-    client.initialize(&admin, &provider_registry_id);
 
     // Register the provider that will place lab orders
     let provider = Address::generate(&env);
@@ -66,19 +66,19 @@ fn setup_env_with_registered_provider()
     (env, client, provider, patient)
 }
 
-/// Set up a provider registry and register a single provider for use
-/// with a pre-existing env + lab-management client.  Returns the
-/// registered provider address.
+/// Set up a provider registry and register a single provider, then register a
+/// lab-management contract pointed at that registry.  Returns the client and
+/// the registered provider address.
 fn setup_registered_provider(
     env: &Env,
-    client: &LabManagementContractClient<'static>,
-) -> Address {
+) -> (LabManagementContractClient<'static>, Address) {
     let provider_registry_id = env.register_contract(None, ProviderRegistry);
     let pr_client = ProviderRegistryClient::new(env, &provider_registry_id);
     let admin = Address::generate(env);
     pr_client.initialize(&admin);
 
-    client.initialize(&admin, &provider_registry_id);
+    let contract_id = env.register(LabManagementContract, (&admin, &provider_registry_id));
+    let client = LabManagementContractClient::new(env, &contract_id);
 
     let provider = Address::generate(env);
     pr_client.register_provider(
@@ -94,7 +94,7 @@ fn setup_registered_provider(
         &BytesN::from_array(env, &[3u8; 32]),
     );
 
-    provider
+    (client, provider)
 }
 
 // ── existing tests (unchanged behaviour) ─────────────────────────────────────
@@ -150,9 +150,7 @@ fn test_fail_qc_check() {
 fn test_critical_value_alerting() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(LabManagementContract, ());
-    let client = LabManagementContractClient::new(&env, &contract_id);
-    let provider = setup_registered_provider(&env, &client);
+    let (client, provider) = setup_registered_provider(&env);
 
     let patient = Address::generate(&env);
     let lab = Address::generate(&env);
@@ -172,9 +170,7 @@ fn test_critical_value_alerting() {
 fn test_flag_critical_value_unassigned_lab_returns_error() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(LabManagementContract, ());
-    let client = LabManagementContractClient::new(&env, &contract_id);
-    let provider = setup_registered_provider(&env, &client);
+    let (client, provider) = setup_registered_provider(&env);
 
     let patient = Address::generate(&env);
     let lab = Address::generate(&env);
@@ -194,9 +190,7 @@ fn test_flag_critical_value_unassigned_lab_returns_error() {
 fn test_flag_critical_value_wrong_lab_returns_error() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(LabManagementContract, ());
-    let client = LabManagementContractClient::new(&env, &contract_id);
-    let provider = setup_registered_provider(&env, &client);
+    let (client, provider) = setup_registered_provider(&env);
 
     let patient = Address::generate(&env);
     let lab_a = Address::generate(&env);
@@ -218,7 +212,10 @@ fn test_flag_critical_value_wrong_lab_returns_error() {
 fn test_flag_critical_value_nonexistent_order_returns_error() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(LabManagementContract, ());
+    let contract_id = env.register(
+        LabManagementContract,
+        (&Address::generate(&env), &Address::generate(&env)),
+    );
     let client = LabManagementContractClient::new(&env, &contract_id);
 
     let lab = Address::generate(&env);
@@ -234,9 +231,7 @@ fn test_flag_critical_value_nonexistent_order_returns_error() {
 fn test_flag_critical_value_correct_lab_succeeds() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(LabManagementContract, ());
-    let client = LabManagementContractClient::new(&env, &contract_id);
-    let provider = setup_registered_provider(&env, &client);
+    let (client, provider) = setup_registered_provider(&env);
 
     let patient = Address::generate(&env);
     let lab = Address::generate(&env);
@@ -255,7 +250,10 @@ fn test_flag_critical_value_correct_lab_succeeds() {
 fn test_fail_assign_nonexistent_order() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(LabManagementContract, ());
+    let contract_id = env.register(
+        LabManagementContract,
+        (&Address::generate(&env), &Address::generate(&env)),
+    );
     let client = LabManagementContractClient::new(&env, &contract_id);
 
     let lab = Address::generate(&env);
@@ -413,10 +411,10 @@ fn test_provider_registration_verification() {
     let admin = Address::generate(&env);
     pr_client.initialize(&admin);
 
-    // Register LabManagementContract and initialize it with ProviderRegistry
-    let lab_contract_id = env.register(LabManagementContract, ());
+    // Register LabManagementContract, wiring it to the ProviderRegistry
+    let lab_contract_id =
+        env.register(LabManagementContract, (&admin, &provider_registry_id));
     let client = LabManagementContractClient::new(&env, &lab_contract_id);
-    client.initialize(&admin, &provider_registry_id);
 
     let unregistered_provider = Address::generate(&env);
     let registered_provider = Address::generate(&env);
@@ -500,9 +498,9 @@ fn test_order_lab_test_rejects_unregistered_provider() {
     pr_client.initialize(&admin);
 
     // Deploy the lab-management contract and wire it to the registry.
-    let contract_id = env.register(LabManagementContract, ());
+    let contract_id =
+        env.register(LabManagementContract, (&admin, &provider_registry_id));
     let client = LabManagementContractClient::new(&env, &contract_id);
-    client.initialize(&admin, &provider_registry_id);
 
     let unregistered_provider = Address::generate(&env);
     let patient = Address::generate(&env);

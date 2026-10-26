@@ -42,9 +42,8 @@ fn setup() -> (
     let registry = ProviderRegistryClient::new(&env, &registry_id);
     registry.initialize(&admin);
 
-    let contract_id = env.register(MaternalChildHealthContract, ());
+    let contract_id = env.register(MaternalChildHealthContract, (&admin, &registry_id));
     let client = MaternalChildHealthContractClient::new(&env, &contract_id);
-    client.initialize(&admin, &registry_id);
 
     (env, client, registry, admin)
 }

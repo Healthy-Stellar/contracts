@@ -51,3 +51,21 @@ Emitted when a provider (doctor) successfully adds a medical record for a patien
 | `snap_meta` | `("snap_meta", ledger_seq)` | `(patient_count, doctor_count, consent_ver)` | State snapshot metadata |
 | `snap_pats` | `("snap_pats", ledger_seq)` | `Vec<Address>` | Snapshot: all patient addresses |
 | `snap_docs` | `("snap_docs", ledger_seq)` | `Vec<Address>` | Snapshot: all doctor addresses |
+
+---
+
+## PACS Integration (`pacs-integration`)
+
+### `anon` — Study Anonymization Recorded
+
+Emitted when a study is anonymized for research. The contract records only a **commitment** to the anonymized UID; the pseudonym itself is derived off-chain by the PACS/anonymization service using a secret, rotatable HMAC key. The on-chain salt is a per-study random value from `env.prng()` that is never emitted or returned, so pseudonyms cannot be recomputed from public on-chain data.
+
+| Field | Location | Type | Description |
+|-------|----------|------|-------------|
+| `"anon"` | Topic[0] | `Symbol` | Event discriminator |
+| `commitment` | Data[0] | `BytesN<32>` | Commitment to the anonymized UID (does not reveal the UID) |
+| `anonymization_level` | Data[1] | `Symbol` | Level of anonymization applied |
+| `purpose` | Data[2] | `Symbol` | Research purpose |
+| `rotation_epoch` | Data[3] | `u32` | Key-rotation epoch used by the off-chain service |
+
+**Privacy note:** `study_id` and `requesting_researcher` are intentionally **not** emitted together with the anonymized record, so researchers cannot be linked to specific patients' studies. The `study_reg` event still maps `study_id → patient_id` for registry purposes; pseudonyms must therefore never be derived from on-chain-recoverable inputs.

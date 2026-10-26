@@ -76,6 +76,8 @@ pub enum DataKey {
     /// Stored as a WindowIndex struct; updated on every record_vital_signs call.
     /// Required so deregister_patient can enumerate and purge all buckets.
     PatientWindows(Address),
+    /// Monotonically increasing reading counter for stable IDs per patient
+    ReadingCounter(Address),
 }
 
 /// Tracks which RawWindow and AggWindow bucket indices have been written for

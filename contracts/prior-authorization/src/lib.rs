@@ -182,20 +182,16 @@ pub struct PriorAuthorizationContract;
 
 #[contractimpl]
 impl PriorAuthorizationContract {
-    /// One-time setup: store the insurer-registry contract address used for
-    /// coverage-plan validation during authorization submission (#526).
-    pub fn initialize(env: Env, insurer_registry_id: Address) -> Result<(), Error> {
-        if env
-            .storage()
-            .instance()
-            .has(&DataKey::InsurerRegistryId)
-        {
-            return Err(Error::AlreadyInitialized);
-        }
+    /// Store the insurer-registry contract address used for coverage-plan
+    /// validation during authorization submission (#526).
+    ///
+    /// Runs atomically as part of contract creation and cannot be called again,
+    /// so an attacker cannot front-run deployment and point it at a registry
+    /// they control.
+    pub fn __constructor(env: Env, insurer_registry_id: Address) {
         env.storage()
             .instance()
             .set(&DataKey::InsurerRegistryId, &insurer_registry_id);
-        Ok(())
     }
 
     /// Submit a new prior authorization request.

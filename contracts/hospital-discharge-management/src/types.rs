@@ -1,4 +1,4 @@
-use soroban_sdk::{contracterror, contracttype, Address, BytesN, String, Symbol, Vec};
+use soroban_sdk::{contracterror, contracttype, Address, BytesN, String, Vec};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -8,12 +8,15 @@ pub enum Error {
     PlanNotFound = 2,
     InvalidStatus = 3,
     Unauthorized = 4,
+    AlreadyInitialized = 5,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
+    Admin,
     HospitalRegistry,
+    ProviderRegistry,
 }
 
 #[contracttype]
@@ -47,7 +50,7 @@ pub enum RiskLevel {
 pub struct DischargePlan {
     pub plan_id: u64,
     pub patient_id: BytesN<32>,
-    pub hospital_id: BytesN<32>,
+    pub hospital_id: Address,
     pub admission_date: u64,
     pub expected_discharge_date: u64,
     pub actual_discharge_date: Option<u64>,

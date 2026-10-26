@@ -23,6 +23,10 @@
 //! **Encryption/Integrity:** Video session data encrypted end-to-end. Prescription data encrypted
 //! in persistent storage. Patient-provider linkage encrypted. Session endpoint validated.
 //! Recording consent immutable. Patient authorization required for data retention.
+//!
+//! **PHI Minimization:** Clinical documentation (diagnosis codes, assessment, plan) is kept
+//! off-chain behind a `visit_note_hash`; events carry only the hash and a code count. Prescription
+//! reads are authorized to the patient, prescriber, and authorized pharmacies only.
 
 pub mod contract;
 pub mod test;
