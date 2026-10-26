@@ -61,9 +61,12 @@ fn test_register_and_get_patient() {
 
     client.register_patient(&patient_wallet, &name, &dob, &metadata, &metadata_policy);
 
-    let patient_data = client.get_patient(&patient_wallet);
-    assert_eq!(patient_data.name, name);
-    assert_eq!(patient_data.dob, dob);
+    let patient_data = client.get_patient(&patient_wallet, &patient_wallet);
+    assert_eq!(
+        patient_data.id_commitment,
+        MedicalRegistry::compute_id_commitment(&env, &patient_wallet, &name, dob)
+    );
+    assert!(client.verify_patient_identity(&patient_wallet, &name, &dob));
     assert_eq!(patient_data.encrypted_metadata_ref, metadata);
 }
 
@@ -93,7 +96,7 @@ fn test_update_patient() {
     let new_policy = policy(&env);
     client.update_patient(&patient_wallet, &patient_wallet, &new_metadata, &new_policy);
 
-    let patient_data = client.get_patient(&patient_wallet);
+    let patient_data = client.get_patient(&patient_wallet, &patient_wallet);
     assert_eq!(patient_data.encrypted_metadata_ref, new_metadata);
 }
 
@@ -274,7 +277,7 @@ fn test_total_records_created_increments_on_add_record() {
         &encrypted_ref(&env, 11),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
     let after = client.get_total_records_created();
     assert_eq!(after, 1);
 }
@@ -318,17 +321,17 @@ fn test_total_access_grants_increments_on_grant_and_decrements_on_revoke() {
     // `setup_for_ttl` already granted `doctor` once.
     assert_eq!(client.get_total_access_grants(), 1);
 
-    client.grant_access(&patient, &patient, &doctor);
+    client.grant_access(&patient, &patient, &doctor, &0u64);
     assert_eq!(client.get_total_access_grants(), 1);
 
     // granting same doctor again should not increment
-    client.grant_access(&patient, &patient, &doctor);
+    client.grant_access(&patient, &patient, &doctor, &0u64);
     assert_eq!(client.get_total_access_grants(), 1);
 
-    client.grant_access(&patient, &patient, &other_doctor);
+    client.grant_access(&patient, &patient, &other_doctor, &0u64);
     assert_eq!(client.get_total_access_grants(), 2);
 
-    client.revoke_access(&patient, &patient, &doctor);
+    client.revoke_access(&patient, &patient, &doctor, &0u64);
     assert_eq!(client.get_total_access_grants(), 1);
 }
 
@@ -462,7 +465,7 @@ fn test_grant_access_and_add_medical_record() {
     );
     client.publish_consent_version(&v1);
     client.acknowledge_consent(&patient, &patient, &v1);
-    client.grant_access(&patient, &patient, &doctor);
+    client.grant_access(&patient, &patient, &doctor, &0u64);
     let record_ref = encrypted_ref(&env, 11);
     client.add_medical_record(
         &patient,
@@ -470,7 +473,7 @@ fn test_grant_access_and_add_medical_record() {
         &record_ref,
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 
     let records = client.get_medical_records(&patient, &patient);
     assert_eq!(records.len(), 1);
@@ -517,7 +520,7 @@ fn test_unauthorized_doctor_cannot_add_record() {
         &encrypted_ref(&env, 3),
         &Symbol::new(&env, "IMAGING"),
         &policy(&env),
-    );
+    &0u64);
 }
 
 #[test]
@@ -531,8 +534,8 @@ fn test_revoke_access() {
 
     env.mock_all_auths();
 
-    client.grant_access(&patient, &patient, &doctor);
-    client.revoke_access(&patient, &patient, &doctor);
+    client.grant_access(&patient, &patient, &doctor, &0u64);
+    client.revoke_access(&patient, &patient, &doctor, &0u64);
 
     let doctors = client.get_authorized_doctors(&patient);
     assert_eq!(doctors.len(), 0);
@@ -652,7 +655,7 @@ fn test_add_medical_record_rejects_invalid_cid() {
     );
     client.publish_consent_version(&version);
     client.acknowledge_consent(&patient, &patient, &version);
-    client.grant_access(&patient, &patient, &doctor);
+    client.grant_access(&patient, &patient, &doctor, &0u64);
 
     let result = client.try_add_medical_record(
         &patient,
@@ -664,7 +667,7 @@ fn test_add_medical_record_rejects_invalid_cid() {
         },
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 
     assert!(matches!(
         result,
@@ -920,14 +923,14 @@ fn test_hold_blocks_grant_and_revoke_access() {
         &policy(&env),
     );
 
-    client.grant_access(&patient, &patient, &doctor);
+    client.grant_access(&patient, &patient, &doctor, &0u64);
     env.ledger().set_timestamp(50);
     client.place_hold(&patient, &reason_hash, &250);
 
-    let grant_result = client.try_grant_access(&patient, &patient, &Address::generate(&env));
+    let grant_result = client.try_grant_access(&patient, &patient, &Address::generate(&env), &0u64);
     assert!(grant_result.is_err());
 
-    let revoke_result = client.try_revoke_access(&patient, &patient, &doctor);
+    let revoke_result = client.try_revoke_access(&patient, &patient, &doctor, &0u64);
     assert!(revoke_result.is_err());
 }
 
@@ -964,7 +967,7 @@ fn test_write_succeeds_after_hold_expiry() {
     assert!(!client.is_hold_active(&patient));
 
     client.update_patient(&patient, &patient, &updated_metadata, &updated_policy);
-    let patient_data = client.get_patient(&patient);
+    let patient_data = client.get_patient(&patient, &patient);
     assert_eq!(patient_data.encrypted_metadata_ref, updated_metadata);
 }
 
@@ -1030,7 +1033,7 @@ fn test_lifting_hold_restores_normal_write_ability() {
     client.lift_hold(&patient);
     client.update_patient(&patient, &patient, &updated_metadata, &updated_policy);
 
-    let patient_data = client.get_patient(&patient);
+    let patient_data = client.get_patient(&patient, &patient);
     assert_eq!(patient_data.encrypted_metadata_ref, updated_metadata);
 }
 
@@ -1249,14 +1252,14 @@ fn test_add_record_blocked_without_consent() {
     );
     client.publish_consent_version(&make_version(&env, 1));
     // Patient never acknowledges
-    client.grant_access(&patient, &patient, &doctor);
+    client.grant_access(&patient, &patient, &doctor, &0u64);
     client.add_medical_record(
         &patient,
         &doctor,
         &encrypted_ref(&env, 1),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 }
 
 #[test]
@@ -1282,14 +1285,14 @@ fn test_add_record_allowed_after_consent() {
     );
     client.publish_consent_version(&v1);
     client.acknowledge_consent(&patient, &patient, &v1);
-    client.grant_access(&patient, &patient, &doctor);
+    client.grant_access(&patient, &patient, &doctor, &0u64);
     client.add_medical_record(
         &patient,
         &doctor,
         &encrypted_ref(&env, 2),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 
     assert_eq!(client.get_medical_records(&patient, &patient).len(), 1);
 }
@@ -1319,7 +1322,7 @@ fn test_add_record_blocked_after_new_version() {
     );
     client.publish_consent_version(&v1);
     client.acknowledge_consent(&patient, &patient, &v1);
-    client.grant_access(&patient, &patient, &doctor);
+    client.grant_access(&patient, &patient, &doctor, &0u64);
 
     // Admin bumps version — patient must re-acknowledge
     client.publish_consent_version(&v2);
@@ -1329,7 +1332,7 @@ fn test_add_record_blocked_after_new_version() {
         &encrypted_ref(&env, 3),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 }
 
 // ------------------------------------------------
@@ -1399,11 +1402,11 @@ fn test_guardian_can_grant_and_revoke_access() {
 
     client.assign_guardian(&patient, &guardian);
     client.acknowledge_consent(&patient, &guardian, &v1);
-    client.grant_access(&patient, &guardian, &doctor);
+    client.grant_access(&patient, &guardian, &doctor, &0u64);
 
     assert_eq!(client.get_authorized_doctors(&patient).len(), 1);
 
-    client.revoke_access(&patient, &guardian, &doctor);
+    client.revoke_access(&patient, &guardian, &doctor, &0u64);
     assert_eq!(client.get_authorized_doctors(&patient).len(), 0);
 }
 
@@ -1426,7 +1429,7 @@ fn test_guardian_can_update_patient() {
     client.update_patient(&patient, &guardian, &updated_metadata, &policy(&env));
 
     assert_eq!(
-        client.get_patient(&patient).encrypted_metadata_ref,
+        client.get_patient(&patient, &patient).encrypted_metadata_ref,
         updated_metadata
     );
 }
@@ -1449,14 +1452,14 @@ fn test_guardian_enables_record_write() {
     );
     client.assign_guardian(&patient, &guardian);
     client.acknowledge_consent(&patient, &guardian, &v1);
-    client.grant_access(&patient, &guardian, &doctor);
+    client.grant_access(&patient, &guardian, &doctor, &0u64);
     client.add_medical_record(
         &patient,
         &doctor,
         &encrypted_ref(&env, 5),
         &Symbol::new(&env, "PRESCRIPTION"),
         &policy(&env),
-    );
+    &0u64);
 
     assert_eq!(client.get_medical_records(&patient, &patient).len(), 1);
 }
@@ -1706,7 +1709,7 @@ fn setup_with_fee(
     );
     client.publish_consent_version(&v1);
     client.acknowledge_consent(&patient, &patient, &v1);
-    client.grant_access(&patient, &patient, &doctor);
+    client.grant_access(&patient, &patient, &doctor, &0u64);
 
     token_client.mint(&doctor, &10_000);
 
@@ -1739,7 +1742,7 @@ fn test_add_record_zero_fee_no_transfer() {
         &encrypted_ref(&env, 7),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 
     let token = soroban_sdk::token::TokenClient::new(&env, &token_id);
     assert_eq!(token.balance(&treasury), 0);
@@ -1758,7 +1761,7 @@ fn test_add_record_transfers_fee_to_treasury() {
         &encrypted_ref(&env, 8),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 
     let token = soroban_sdk::token::TokenClient::new(&env, &token_id);
     assert_eq!(token.balance(&treasury), 200);
@@ -1779,7 +1782,7 @@ fn test_fee_deducted_per_record() {
             &encrypted_ref(&env, i),
             &Symbol::new(&env, "LAB"),
             &policy(&env),
-        );
+        &0u64);
     }
 
     let token = soroban_sdk::token::TokenClient::new(&env, &token_id);
@@ -1809,7 +1812,7 @@ fn test_fee_can_be_reset_to_zero() {
         &encrypted_ref(&env, 9),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 
     let token = soroban_sdk::token::TokenClient::new(&env, &token_id);
     assert_eq!(token.balance(&treasury), 0);
@@ -1876,7 +1879,7 @@ fn setup_for_ttl(
         &String::from_str(env, "Cardiology"),
         &Bytes::from_array(env, &[1, 2, 3]),
     );
-    client.grant_access(&patient, &patient, &doctor);
+    client.grant_access(&patient, &patient, &doctor, &0u64);
 
     (client, admin, patient, doctor, v1)
 }
@@ -1908,7 +1911,7 @@ fn test_add_record_extends_patient_ttl() {
         &encrypted_ref(&env, 5),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 
     // Verify the records are still accessible after adding
     let records = client.get_medical_records(&patient, &patient);
@@ -1926,14 +1929,14 @@ fn test_get_records_by_type_returns_matching_records() {
         &encrypted_ref(&env, 10),
         &Symbol::new(&env, "VISIT"),
         &policy(&env),
-    );
+    &0u64);
     client.add_medical_record(
         &patient,
         &doctor,
         &encrypted_ref(&env, 11),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 
     let results = client.get_records_by_type(&patient, &patient, &Symbol::new(&env, "VISIT"));
     assert_eq!(results.len(), 1);
@@ -1954,7 +1957,7 @@ fn test_get_records_by_type_missing_doctor_history_returns_not_found() {
         &encrypted_ref(&env, 12),
         &Symbol::new(&env, "VISIT"),
         &policy(&env),
-    );
+    &0u64);
 
     env.as_contract(&client.address, || {
         let mut record_data: RecordData = env
@@ -1995,7 +1998,7 @@ fn test_get_records_by_type_ttl_refreshes_records() {
         &encrypted_ref(&env, 6),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 
     // Call get_medical_records — internally bumps TTL
     let records = client.get_medical_records(&patient, &patient);
@@ -2021,7 +2024,7 @@ fn test_get_records_by_type_returns_empty_when_no_match() {
         &encrypted_ref(&env, 13),
         &Symbol::new(&env, "IMAGING"),
         &policy(&env),
-    );
+    &0u64);
 
     // No PRESCRIPTION records exist — should return empty vec, not error
     let result = client.get_records_by_type(&patient, &patient, &Symbol::new(&env, "PRESCRIPTION"));
@@ -2043,7 +2046,7 @@ fn test_get_records_extends_ttl() {
         &encrypted_ref(&env, 13),
         &Symbol::new(&env, "IMAGING"),
         &policy(&env),
-    );
+    &0u64);
 
     // Accessing records bumps TTL; data still present after threshold
     let records = client.get_medical_records(&patient, &patient);
@@ -2068,7 +2071,7 @@ fn test_get_records_by_type_returns_empty_when_no_match_after_ttl() {
         &encrypted_ref(&env, 14),
         &Symbol::new(&env, "IMAGING"),
         &policy(&env),
-    );
+    &0u64);
 
     // No PRESCRIPTION records exist — should return empty vec, not error
     let result = client.get_records_by_type(&patient, &patient, &Symbol::new(&env, "PRESCRIPTION"));
@@ -2089,7 +2092,7 @@ fn test_get_latest_record_returns_most_recent() {
         &encrypted_ref(&env, 51),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 
     env.ledger().set_timestamp(2000);
     client.add_medical_record(
@@ -2098,7 +2101,7 @@ fn test_get_latest_record_returns_most_recent() {
         &encrypted_ref(&env, 52),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 
     let latest = client
         .try_get_latest_record(&patient, &patient)
@@ -2151,7 +2154,7 @@ fn test_get_latest_record_access_control() {
         &encrypted_ref(&env, 61),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 
     let attacker = Address::generate(&env);
     let result = client.try_get_latest_record(&patient, &attacker);
@@ -2167,37 +2170,44 @@ fn test_extend_patient_ttl_by_patient() {
 
     let (client, _admin, patient, _doctor, _v1) = setup_for_ttl(&env);
 
-    // Should not panic
+    // Patient extends their own TTL
     client.extend_patient_ttl(&patient);
 
     // Patient record is still readable
-    let data = client.get_patient(&patient);
-    assert_eq!(data.name, String::from_str(&env, "Alice"));
+    let _data = client.get_patient(&patient, &patient);
+    assert!(client.verify_patient_identity(&patient, &String::from_str(&env, "Alice"), &631152000));
 }
 
-/// `extend_patient_ttl` called by the admin must succeed.
+/// `extend_patient_ttl` called by the admin for another patient must succeed.
 #[test]
 fn test_extend_patient_ttl_by_admin() {
     let env = Env::default();
     env.ledger().set(make_ledger_info(100, 1_000_000));
 
-    let (client, admin, _patient, _doctor, _v1) = setup_for_ttl(&env);
+    let (client, admin, patient, _doctor, _v1) = setup_for_ttl(&env);
 
-    // Admin calling extend_patient_ttl with admin address
-    // (admin == patient arg in our extend_patient_ttl logic)
-    // Instead, register admin as a patient to satisfy `Patient key exists`
-    env.mock_all_auths();
-    client.register_patient(
-        &admin,
-        &String::from_str(&env, "Admin User"),
-        &631152000,
-        &encrypted_ref(&env, 1),
-        &policy(&env),
-    );
-    client.extend_patient_ttl(&admin);
+    // Admin calling extend_patient_ttl for patient
+    client.extend_patient_ttl(&patient);
 
-    let data = client.get_patient(&admin);
-    assert_eq!(data.name, String::from_str(&env, "Admin User"));
+    let _data = client.get_patient(&admin, &patient);
+    assert!(client.verify_patient_identity(&patient, &String::from_str(&env, "Alice"), &631152000));
+}
+
+/// `extend_patient_ttl` called by guardian must succeed.
+#[test]
+fn test_extend_patient_ttl_by_guardian() {
+    let env = Env::default();
+    env.ledger().set(make_ledger_info(100, 1_000_000));
+
+    let (client, _admin, patient, _doctor, _v1) = setup_for_ttl(&env);
+    let guardian = Address::generate(&env);
+    client.assign_guardian(&patient, &guardian);
+
+    // Guardian calling extend_patient_ttl for patient
+    client.extend_patient_ttl(&patient);
+
+    let _data = client.get_patient(&guardian, &patient);
+    assert!(client.verify_patient_identity(&patient, &String::from_str(&env, "Alice"), &631152000));
 }
 
 #[test]
@@ -2347,7 +2357,7 @@ fn test_new_record_event_emitted_on_add_record() {
         &encrypted_ref(&env, 20),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 
     let events = env.events().all();
     let new_record_topic = Symbol::new(&env, NEW_RECORD_TOPIC);
@@ -2384,7 +2394,7 @@ fn test_new_record_event_contains_correct_record_id() {
         &encrypted_ref(&env, 21),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 
     let events1 = env.events().all();
     let mut found_first = false;
@@ -2409,7 +2419,7 @@ fn test_new_record_event_contains_correct_record_id() {
         &encrypted_ref(&env, 22),
         &Symbol::new(&env, "IMAGING"),
         &policy(&env),
-    );
+    &0u64);
 
     let events2 = env.events().all();
     let mut found_second = false;
@@ -2443,7 +2453,7 @@ fn test_new_record_event_contains_correct_record_type() {
         &encrypted_ref(&env, 23),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 
     let events1 = env.events().all();
     let mut found_lab = false;
@@ -2466,7 +2476,7 @@ fn test_new_record_event_contains_correct_record_type() {
         &encrypted_ref(&env, 24),
         &Symbol::new(&env, "IMAGING"),
         &policy(&env),
-    );
+    &0u64);
 
     let events2 = env.events().all();
     let mut found_imaging = false;
@@ -2497,7 +2507,7 @@ fn test_new_record_event_contains_correct_timestamp() {
         &encrypted_ref(&env, 25),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 
     let events = env.events().all();
     let new_record_topic = Symbol::new(&env, NEW_RECORD_TOPIC);
@@ -2544,7 +2554,7 @@ fn test_new_record_event_not_emitted_on_unauthorized_add() {
         &encrypted_ref(&env, 26),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
     assert!(result.is_err());
 
     // Verify no new_record event was emitted
@@ -2693,8 +2703,8 @@ fn test_reads_allowed_during_freeze() {
     // Reads must still succeed during a freeze
     assert!(client.is_frozen());
     assert!(client.is_patient_registered(&patient));
-    let data = client.get_patient(&patient);
-    assert_eq!(data.name, String::from_str(&env, "Carol"));
+    let _data = client.get_patient(&patient, &patient);
+    assert!(client.verify_patient_identity(&patient, &String::from_str(&env, "Carol"), &631152000));
     assert_eq!(client.get_total_patients(), 1);
 }
 
@@ -2815,14 +2825,14 @@ fn setup_with_record(
     );
     client.publish_consent_version(&v1);
     client.acknowledge_consent(&patient, &patient, &v1);
-    client.grant_access(&patient, &patient, &doctor);
+    client.grant_access(&patient, &patient, &doctor, &0u64);
     client.add_medical_record(
         &patient,
         &doctor,
         &encrypted_ref(env, 1),
         &Symbol::new(env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 
     (admin, patient, doctor, client)
 }
@@ -3002,14 +3012,14 @@ fn test_only_patient_can_create_share_link() {
     );
     client.publish_consent_version(&v1);
     client.acknowledge_consent(&patient, &patient, &v1);
-    client.grant_access(&patient, &patient, &doctor);
+    client.grant_access(&patient, &patient, &doctor, &0u64);
     client.add_medical_record(
         &patient,
         &doctor,
         &encrypted_ref(&env, 1),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 
     // Attacker tries to create a link for the patient's record — auth will fail
     // because patient.require_auth() won't be satisfied by attacker's signature.
@@ -3164,7 +3174,7 @@ fn setup_for_dereg(env: &Env) -> (MedicalRegistryClient<'_>, Address, Address, A
         &encrypted_ref(env, 1),
         &policy(env),
     );
-    client.grant_access(&patient, &patient, &doctor);
+    client.grant_access(&patient, &patient, &doctor, &0u64);
 
     (client, admin, patient, doctor)
 }
@@ -3176,7 +3186,7 @@ fn test_deregister_sets_status() {
 
     client.deregister_patient(&patient);
 
-    let data = client.get_patient(&patient);
+    let data = client.get_patient(&patient, &patient);
     assert_eq!(data.status, PatientStatus::Deregistered);
 }
 
@@ -3203,7 +3213,7 @@ fn test_deregister_records_retained_admin_can_read() {
         &encrypted_ref(&env, 20),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 
     client.deregister_patient(&patient);
 
@@ -3224,7 +3234,7 @@ fn test_deregister_blocks_grantee_read() {
         &encrypted_ref(&env, 21),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 
     client.deregister_patient(&patient);
 
@@ -3310,7 +3320,7 @@ fn setup_with_records(env: &Env, n: u32) -> (MedicalRegistryClient, Address, Vec
     );
     client.publish_consent_version(&consent);
     client.acknowledge_consent(&patient, &patient, &consent);
-    client.grant_access(&patient, &patient, &doctor);
+    client.grant_access(&patient, &patient, &doctor, &0u64);
 
     let mut ids: Vec<u64> = Vec::new(env);
     for i in 0..n {
@@ -3320,70 +3330,13 @@ fn setup_with_records(env: &Env, n: u32) -> (MedicalRegistryClient, Address, Vec
             &encrypted_ref(env, (i + 1) as u8),
             &Symbol::new(env, "LAB"),
             &policy(env),
-        );
+        &0u64);
         ids.push_back(id);
     }
     (client, patient, ids)
 }
 
 /// Compute a Merkle membership proof for `target_id` given the ordered `ids`
-/// list.  Mirrors `compute_merkle_root` exactly so the proof is consistent
-/// with what the contract stores.
-fn build_proof(env: &Env, ids: &Vec<u64>, target_id: u64) -> Vec<BytesN<32>> {
-    let n = ids.len();
-    assert!(n > 0, "no records");
-
-    let mut layer: Vec<BytesN<32>> = Vec::new(env);
-    for id in ids.iter() {
-        layer.push_back(merkle::hash_leaf(env, id));
-    }
-
-    let mut pos: u32 = 0;
-    for (i, id) in ids.iter().enumerate() {
-        if id == target_id {
-            pos = i as u32;
-        }
-    }
-
-    let mut proof: Vec<BytesN<32>> = Vec::new(env);
-    let mut cur_len = layer.len();
-    let mut cur_pos = pos;
-
-    while cur_len > 1 {
-        let mut next: Vec<BytesN<32>> = Vec::new(env);
-        let mut i = 0u32;
-        while i + 1 < cur_len {
-            next.push_back(merkle::hash_pair(
-                env,
-                layer.get(i).unwrap(),
-                layer.get(i + 1).unwrap(),
-            ));
-            i += 2;
-        }
-        if cur_len % 2 == 1 {
-            let last = layer.get(cur_len - 1).unwrap();
-            next.push_back(merkle::hash_pair(env, last.clone(), last));
-        }
-
-        let sibling_pos = if cur_pos % 2 == 0 {
-            if cur_pos + 1 < cur_len {
-                cur_pos + 1
-            } else {
-                cur_pos
-            }
-        } else {
-            cur_pos - 1
-        };
-        proof.push_back(layer.get(sibling_pos).unwrap());
-
-        cur_pos /= 2;
-        cur_len = next.len();
-        layer = next;
-    }
-
-    proof
-}
-
 #[test]
 fn test_merkle_root_empty_before_any_record() {
     let env = Env::default();
@@ -3404,7 +3357,14 @@ fn test_merkle_root_single_record() {
     let (client, patient, ids) = setup_with_records(&env, 1);
 
     let id = ids.get(0).unwrap();
-    let expected = merkle::hash_leaf(&env, id);
+    let rec: RecordData = env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .get(&DataKey::MedicalRecord(id))
+            .unwrap()
+    });
+    let content_hash: BytesN<32> = env.crypto().sha256(&rec.to_xdr(&env)).into();
+    let expected = merkle::hash_leaf(&env, id, &content_hash);
     assert_eq!(client.get_merkle_root(&patient), expected);
 }
 
@@ -3416,10 +3376,24 @@ fn test_merkle_root_two_records() {
 
     let id0 = ids.get(0).unwrap();
     let id1 = ids.get(1).unwrap();
+    let (rec0, rec1): (RecordData, RecordData) = env.as_contract(&client.address, || {
+        (
+            env.storage()
+                .persistent()
+                .get(&DataKey::MedicalRecord(id0))
+                .unwrap(),
+            env.storage()
+                .persistent()
+                .get(&DataKey::MedicalRecord(id1))
+                .unwrap(),
+        )
+    });
+    let h0: BytesN<32> = env.crypto().sha256(&rec0.to_xdr(&env)).into();
+    let h1: BytesN<32> = env.crypto().sha256(&rec1.to_xdr(&env)).into();
     let expected = merkle::hash_pair(
         &env,
-        merkle::hash_leaf(&env, id0),
-        merkle::hash_leaf(&env, id1),
+        merkle::hash_leaf(&env, id0, &h0),
+        merkle::hash_leaf(&env, id1, &h1),
     );
     assert_eq!(client.get_merkle_root(&patient), expected);
 }
@@ -3448,7 +3422,7 @@ fn test_merkle_root_updates_on_each_addition() {
     );
     client.publish_consent_version(&consent);
     client.acknowledge_consent(&patient, &patient, &consent);
-    client.grant_access(&patient, &patient, &doctor);
+    client.grant_access(&patient, &patient, &doctor, &0u64);
 
     let root_before = client.get_merkle_root(&patient);
 
@@ -3458,7 +3432,7 @@ fn test_merkle_root_updates_on_each_addition() {
         &encrypted_ref(&env, 1),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
     let root_after_1 = client.get_merkle_root(&patient);
     assert_ne!(root_before, root_after_1);
 
@@ -3468,7 +3442,7 @@ fn test_merkle_root_updates_on_each_addition() {
         &encrypted_ref(&env, 2),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
     let root_after_2 = client.get_merkle_root(&patient);
     assert_ne!(root_after_1, root_after_2);
 }
@@ -3493,12 +3467,10 @@ fn test_verify_membership_two_leaves_each() {
     let id0 = ids.get(0).unwrap();
     let id1 = ids.get(1).unwrap();
 
-    let mut p0: Vec<BytesN<32>> = Vec::new(&env);
-    p0.push_back(merkle::hash_leaf(&env, id1));
+    let p0 = client.get_record_proof(&patient, &0u32);
     assert!(client.verify_record_membership(&patient, &id0, &p0));
 
-    let mut p1: Vec<BytesN<32>> = Vec::new(&env);
-    p1.push_back(merkle::hash_leaf(&env, id0));
+    let p1 = client.get_record_proof(&patient, &1u32);
     assert!(client.verify_record_membership(&patient, &id1, &p1));
 }
 
@@ -3510,7 +3482,7 @@ fn test_verify_membership_three_leaves() {
 
     for i in 0..3u32 {
         let id = ids.get(i).unwrap();
-        let proof = build_proof(&env, &ids, id);
+        let proof = client.get_record_proof(&patient, &i);
         assert!(
             client.verify_record_membership(&patient, &id, &proof),
             "membership check failed for record at index {i}"
@@ -3526,7 +3498,7 @@ fn test_verify_membership_four_leaves() {
 
     for i in 0..4u32 {
         let id = ids.get(i).unwrap();
-        let proof = build_proof(&env, &ids, id);
+        let proof = client.get_record_proof(&patient, &i);
         assert!(
             client.verify_record_membership(&patient, &id, &proof),
             "membership check failed for record at index {i}"
@@ -3538,11 +3510,11 @@ fn test_verify_membership_four_leaves() {
 fn test_verify_non_membership_wrong_id() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, patient, ids) = setup_with_records(&env, 2);
+    let (client, patient, _ids) = setup_with_records(&env, 2);
 
     let non_existent: u64 = 9999;
     let mut bogus: Vec<BytesN<32>> = Vec::new(&env);
-    bogus.push_back(merkle::hash_leaf(&env, ids.get(0).unwrap()));
+    bogus.push_back(BytesN::from_array(&env, &[0u8; 32]));
     assert!(!client.verify_record_membership(&patient, &non_existent, &bogus));
 }
 
@@ -3588,7 +3560,7 @@ fn test_type_index_consistency_after_multiple_soft_deletes() {
             &encrypted_ref(&env, i + 30),
             &Symbol::new(&env, "LAB"),
             &policy(&env),
-        );
+        &0u64);
         ids.push_back(id);
     }
 
@@ -3647,7 +3619,7 @@ fn test_deleted_records_not_returned_by_type_query() {
             &encrypted_ref(&env, i + 40),
             &Symbol::new(&env, "VISIT"),
             &policy(&env),
-        );
+        &0u64);
         ids.push_back(id);
     }
 
@@ -3745,11 +3717,11 @@ fn test_record_history_four_entries_after_three_updates() {
         &encrypted_ref(&env, 1),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 
-    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 2), &policy(&env));
-    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 3), &policy(&env));
-    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 4), &policy(&env));
+    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 2), &policy(&env), &0u64);
+    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 3), &policy(&env), &0u64);
+    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 4), &policy(&env), &0u64);
 
     let history = client.get_record_history(&record_id, &patient, &0);
     assert_eq!(history.ids.len(), 4, "expected 4 history entries (1 initial + 3 updates)");
@@ -3769,7 +3741,7 @@ fn test_version_ids_are_monotonically_increasing() {
         &encrypted_ref(&env, 10),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 
     // Read latest_version via the contract's internal storage through as_contract
     let v1: u64 = env.as_contract(&client.address, || {
@@ -3782,7 +3754,7 @@ fn test_version_ids_are_monotonically_increasing() {
     });
     assert_eq!(v1, 1);
 
-    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 11), &policy(&env));
+    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 11), &policy(&env), &0u64);
     let v2: u64 = env.as_contract(&client.address, || {
         let rd: RecordData = env
             .storage()
@@ -3793,7 +3765,7 @@ fn test_version_ids_are_monotonically_increasing() {
     });
     assert_eq!(v2, 2);
 
-    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 12), &policy(&env));
+    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 12), &policy(&env), &0u64);
     let v3: u64 = env.as_contract(&client.address, || {
         let rd: RecordData = env
             .storage()
@@ -3821,9 +3793,9 @@ fn test_history_entries_contain_correct_refs() {
         &encrypted_ref(&env, 1),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
-    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 2), &policy(&env));
-    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 3), &policy(&env));
+    &0u64);
+    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 2), &policy(&env), &0u64);
+    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 3), &policy(&env), &0u64);
 
     let history = client.get_record_history(&record_id, &patient, &0);
     assert_eq!(history.ids.len(), 3);
@@ -3847,9 +3819,9 @@ fn test_current_ref_reflects_latest_update() {
         &encrypted_ref(&env, 1),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
-    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 2), &policy(&env));
-    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 3), &policy(&env));
+    &0u64);
+    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 2), &policy(&env), &0u64);
+    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 3), &policy(&env), &0u64);
 
     let current: EncryptedEnvelopeRef = env.as_contract(&client.address, || {
         let rd: RecordData = env
@@ -3879,7 +3851,7 @@ fn test_concurrent_updates_from_multiple_providers() {
         &String::from_str(&env, "Neurology"),
         &Bytes::from_array(&env, &[4, 5, 6]),
     );
-    client.grant_access(&patient, &patient, &doctor2);
+    client.grant_access(&patient, &patient, &doctor2, &0u64);
 
     let record_id = client.add_medical_record(
         &patient,
@@ -3887,15 +3859,15 @@ fn test_concurrent_updates_from_multiple_providers() {
         &encrypted_ref(&env, 1),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 
     // doctor1 updates, then doctor2 updates, then doctor1 again.
     env.ledger().set_timestamp(1000);
-    client.update_record(&doctor1, &record_id, &encrypted_ref(&env, 2), &policy(&env));
+    client.update_record(&doctor1, &record_id, &encrypted_ref(&env, 2), &policy(&env), &0u64);
     env.ledger().set_timestamp(2000);
-    client.update_record(&doctor2, &record_id, &encrypted_ref(&env, 3), &policy(&env));
+    client.update_record(&doctor2, &record_id, &encrypted_ref(&env, 3), &policy(&env), &0u64);
     env.ledger().set_timestamp(3000);
-    client.update_record(&doctor1, &record_id, &encrypted_ref(&env, 4), &policy(&env));
+    client.update_record(&doctor1, &record_id, &encrypted_ref(&env, 4), &policy(&env), &0u64);
 
     let history = client.get_record_history(&record_id, &patient, &0);
     assert_eq!(history.ids.len(), 4, "all 4 versions must be in history");
@@ -3931,10 +3903,10 @@ fn test_unauthorized_caller_cannot_update_record() {
         &encrypted_ref(&env, 1),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 
     let result =
-        client.try_update_record(&stranger, &record_id, &encrypted_ref(&env, 2), &policy(&env));
+        client.try_update_record(&stranger, &record_id, &encrypted_ref(&env, 2), &policy(&env), &0u64);
     assert!(result.is_err(), "unauthorized caller must be rejected");
 }
 
@@ -3952,8 +3924,8 @@ fn test_get_record_history_readable_by_authorized_doctor() {
         &encrypted_ref(&env, 1),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
-    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 2), &policy(&env));
+    &0u64);
+    client.update_record(&doctor, &record_id, &encrypted_ref(&env, 2), &policy(&env), &0u64);
 
     // Doctor (authorized) can read history.
     let history = client.get_record_history(&record_id, &doctor, &0);
@@ -3973,11 +3945,11 @@ fn test_get_record_history_pagination() {
         &encrypted_ref(&env, 0),
         &Symbol::new(&env, "LAB"),
         &policy(&env),
-    );
+    &0u64);
 
     // Perform 45 updates to get a total of 46 versions (1 initial + 45 updates).
     for i in 1..46 {
-        client.update_record(&doctor, &record_id, &encrypted_ref(&env, i), &policy(&env));
+        client.update_record(&doctor, &record_id, &encrypted_ref(&env, i), &policy(&env), &0u64);
     }
 
     // Page 0: should return 20 items, has_more = true
@@ -4263,7 +4235,7 @@ fn test_grant_access_rejects_unregistered_provider() {
     );
 
     let unregistered_doctor = Address::generate(&env);
-    let result = client.try_grant_access(&patient, &patient, &unregistered_doctor);
+    let result = client.try_grant_access(&patient, &patient, &unregistered_doctor, &0u64);
     assert!(
         result.is_err(),
         "grant_access should reject a provider not in the registry"
@@ -4314,7 +4286,7 @@ fn test_grant_access_allows_registered_provider() {
         &BytesN::from_array(&env, &[3u8; 32]),
     );
 
-    client.grant_access(&patient, &patient, &doctor);
+    client.grant_access(&patient, &patient, &doctor, &0u64);
     let authorized = client.get_authorized_doctors(&patient);
     assert_eq!(authorized.len(), 1);
 }
@@ -4332,6 +4304,12 @@ fn test_grant_access_fails_when_registry_not_configured() {
     let client = MedicalRegistryClient::new(&env, &contract_id);
     client.initialize(&admin, &treasury, &fee_token);
 
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&DataKey::FailClosedRegistry, &true);
+    });
+
     let patient = Address::generate(&env);
     client.register_patient(
         &patient,
@@ -4346,7 +4324,7 @@ fn test_grant_access_fails_when_registry_not_configured() {
     client.acknowledge_consent(&patient, &patient, &v1);
 
     let doctor = Address::generate(&env);
-    let result = client.try_grant_access(&patient, &patient, &doctor);
+    let result = client.try_grant_access(&patient, &patient, &doctor, &0u64);
     assert!(
         result.is_err(),
         "grant_access should reject any doctor when provider registry is not configured"
@@ -4435,7 +4413,7 @@ fn test_guardian_registration_stores_guardian_and_patient() {
 
     assert!(client.is_patient_registered(&patient));
 
-    let data = client.get_patient(&patient);
+    let data = client.get_patient(&patient, &patient);
     assert_eq!(data.guardian, Some(guardian.clone()));
 
     assert_eq!(client.get_guardian(&patient), Some(guardian));
@@ -4569,11 +4547,11 @@ fn test_guardian_can_revoke_access() {
     );
 
     // Guardian grants access.
-    client.grant_access(&patient, &guardian, &doctor);
+    client.grant_access(&patient, &guardian, &doctor, &0u64);
     assert_eq!(client.get_authorized_doctors(&patient).len(), 1);
 
     // Guardian revokes access — guardian cannot exceed patient's explicit consent preferences.
-    client.revoke_access(&patient, &guardian, &doctor);
+    client.revoke_access(&patient, &guardian, &doctor, &0u64);
     assert_eq!(client.get_authorized_doctors(&patient).len(), 0);
 }
 
@@ -4622,8 +4600,8 @@ fn test_add_medical_record_sequential_non_colliding_ids() {
         &Bytes::from_array(&env, &[0u8; 32]),
     );
 
-    client.grant_access(&patient1, &patient1, &doctor);
-    client.grant_access(&patient2, &patient2, &doctor);
+    client.grant_access(&patient1, &patient1, &doctor, &0u64);
+    client.grant_access(&patient2, &patient2, &doctor, &0u64);
 
     // Add multiple records across multiple patients and verify monotonic, sequential, non-colliding IDs.
     let mut generated_ids = Vec::new(&env);
@@ -4641,7 +4619,7 @@ fn test_add_medical_record_sequential_non_colliding_ids() {
             &expected_ref,
             &expected_record_type,
             &expected_policy,
-        );
+        &0u64);
         assert_eq!(
             record_id,
             (i + 1) as u64,
@@ -4715,4 +4693,178 @@ fn test_add_medical_record_sequential_non_colliding_ids() {
         let history = client.get_record_history(&id, target_patient, &0u32);
         assert_eq!(history.ids.len(), 1);
     }
+}
+
+// ── #958: Salted ID commitment & get_patient access control ──────────────────
+
+#[test]
+fn test_patient_id_commitment_and_verify_identity() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let name = String::from_str(&env, "Jane Doe");
+    let dob = 631152000u64;
+    client.register_patient(&patient, &name, &dob, &encrypted_ref(&env, 1), &policy(&env));
+
+    let data = client.get_patient(&patient, &patient);
+    let expected = MedicalRegistry::compute_id_commitment(&env, &patient, &name, dob);
+    assert_eq!(data.id_commitment, expected);
+
+    // Identity verification
+    assert!(client.verify_patient_identity(&patient, &name, &dob));
+    assert!(!client.verify_patient_identity(&patient, &String::from_str(&env, "John Doe"), &dob));
+    assert!(!client.verify_patient_identity(&patient, &name, &123456789u64));
+}
+
+#[test]
+fn test_get_patient_access_control() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let fee_token = Address::generate(&env);
+    let patient = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let doctor = Address::generate(&env);
+    let stranger = Address::generate(&env);
+
+    client.initialize(&admin, &treasury, &fee_token);
+    client.register_patient_with_guardian(
+        &patient,
+        &guardian,
+        &String::from_str(&env, "Alice"),
+        &631152000u64,
+        &encrypted_ref(&env, 1),
+        &policy(&env),
+    );
+
+    let v1 = BytesN::from_array(&env, &[1u8; 32]);
+    client.publish_consent_version(&v1);
+    client.acknowledge_consent(&patient, &patient, &v1);
+    client.grant_access(&patient, &patient, &doctor, &0u64);
+
+    // Patient can read
+    assert!(client.try_get_patient(&patient, &patient).is_ok());
+
+    // Guardian can read
+    assert!(client.try_get_patient(&guardian, &patient).is_ok());
+
+    // Admin can read
+    assert!(client.try_get_patient(&admin, &patient).is_ok());
+
+    // Authorized doctor can read
+    assert!(client.try_get_patient(&doctor, &patient).is_ok());
+
+    // Unauthorized stranger is rejected
+    let res = client.try_get_patient(&stranger, &patient);
+    assert_eq!(res.err(), Some(Ok(ContractError::NotAuthorized)));
+}
+
+// ── #961: Merkle tree content binding, odd promotion, and soft delete ────────
+
+#[test]
+fn test_merkle_content_binding_and_tampering_detection() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, patient, doctor, _v1) = setup_for_ttl(&env);
+
+    let id = client.add_medical_record(
+        &patient,
+        &doctor,
+        &encrypted_ref(&env, 1),
+        &Symbol::new(&env, "LAB"),
+        &policy(&env),
+        &0u64,
+    );
+
+    let root_initial = client.get_merkle_root(&patient);
+    let proof = client.get_record_proof(&patient, &0u32);
+    assert!(client.verify_record_membership(&patient, &id, &proof));
+
+    // Update record content
+    client.update_record(
+        &patient,
+        &id,
+        &encrypted_ref(&env, 2),
+        &policy(&env),
+        &0u64,
+    );
+
+    let root_after_update = client.get_merkle_root(&patient);
+    assert_ne!(root_initial, root_after_update, "Root must change when record content is updated");
+
+    // New proof against new root verifies
+    let new_proof = client.get_record_proof(&patient, &0u32);
+    assert!(client.verify_record_membership(&patient, &id, &new_proof));
+}
+
+#[test]
+fn test_merkle_soft_delete_invalidates_proof() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, patient, doctor, _v1) = setup_for_ttl(&env);
+
+    let id0 = client.add_medical_record(
+        &patient,
+        &doctor,
+        &encrypted_ref(&env, 1),
+        &Symbol::new(&env, "LAB"),
+        &policy(&env),
+        &0u64,
+    );
+    let id1 = client.add_medical_record(
+        &patient,
+        &doctor,
+        &encrypted_ref(&env, 2),
+        &Symbol::new(&env, "LAB"),
+        &policy(&env),
+        &0u64,
+    );
+
+    let root_before = client.get_merkle_root(&patient);
+    let proof0 = client.get_record_proof(&patient, &0u32);
+    assert!(client.verify_record_membership(&patient, &id0, &proof0));
+
+    // Soft delete record 0
+    client.soft_delete_record(&id0, &patient);
+
+    let root_after = client.get_merkle_root(&patient);
+    assert_ne!(root_before, root_after, "Root must change after soft delete");
+
+    // Deleted record can no longer verify membership
+    assert!(!client.verify_record_membership(&patient, &id0, &proof0));
+
+    // Remaining active record id1 verifies with fresh proof
+    let proof1 = client.get_record_proof(&patient, &0u32);
+    assert!(client.verify_record_membership(&patient, &id1, &proof1));
+}
+
+#[test]
+fn test_merkle_odd_nodes_promoted_without_collision() {
+    let env = Env::default();
+    let l1 = BytesN::from_array(&env, &[1u8; 32]);
+    let l2 = BytesN::from_array(&env, &[2u8; 32]);
+    let l3 = BytesN::from_array(&env, &[3u8; 32]);
+
+    let mut three_leaves = Vec::new(&env);
+    three_leaves.push_back(l1.clone());
+    three_leaves.push_back(l2.clone());
+    three_leaves.push_back(l3.clone());
+
+    let mut four_leaves_dup = Vec::new(&env);
+    four_leaves_dup.push_back(l1);
+    four_leaves_dup.push_back(l2);
+    four_leaves_dup.push_back(l3.clone());
+    four_leaves_dup.push_back(l3);
+
+    let root3 = merkle::compute_merkle_root(&env, &three_leaves);
+    let root4 = merkle::compute_merkle_root(&env, &four_leaves_dup);
+
+    assert_ne!(root3, root4, "[a,b,c] and [a,b,c,c] must have distinct roots");
 }
