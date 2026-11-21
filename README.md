@@ -398,3 +398,6 @@ cargo test --test integration_tests
 
 <!-- handsoff-issue-988 -->
 - #988: [healthcare-credentialing] verify_credential counts repeated verifications of one credential type — a single verifier can push a case to committee review
+
+<!-- handsoff-issue-1054 -->
+- #1054: [patient-vitals] Caller-supplied measurement_time drives the alert cooldown — one future-dated reading silences all threshold alerts for that vital
