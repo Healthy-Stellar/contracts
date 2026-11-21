@@ -93,6 +93,41 @@ pub struct WindowIndex {
     pub agg_indices: soroban_sdk::Vec<u64>,
 }
 
+/// Per-vital running accumulator used while building a daily aggregate.
+///
+/// `sum` holds the exact sum of all values seen for this vital (u64 to avoid
+/// overflow across a day's readings) and `n` holds the number of readings
+/// that actually carried this vital. The average is computed on read as
+/// `sum / n`, so readings that omit the vital do not skew the result and
+/// there is no per-step integer truncation drift.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VitalAccumulator {
+    pub sum: u64,
+    pub n: u32,
+}
+
+impl VitalAccumulator {
+    pub fn new() -> Self {
+        Self { sum: 0, n: 0 }
+    }
+
+    /// Add a single observation for this vital.
+    pub fn add(&mut self, value: u32) {
+        self.sum += value as u64;
+        self.n += 1;
+    }
+
+    /// Compute the average for this vital, or `None` if no readings carried it.
+    pub fn average(&self) -> Option<u32> {
+        if self.n == 0 {
+            None
+        } else {
+            Some((self.sum / self.n as u64) as u32)
+        }
+    }
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VitalsAggregate {
