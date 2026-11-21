@@ -128,6 +128,12 @@ pub enum DataKey {
 /// Inputs exceeding this cap are rejected to prevent unbounded Vec growth.
 pub const MAX_CRITICAL_ALLERGIES: u32 = 50;
 
+/// Maximum number of critical alerts retained per patient. Once the cap is
+/// reached, `add_critical_alert` evicts the oldest alert so the stored Vec
+/// cannot grow unbounded and exceed the ledger-entry size limit (which would
+/// otherwise permanently brick the alerting path for that patient).
+pub const MAX_CRITICAL_ALERTS: u32 = 50;
+
 /// Time window (in seconds) during which a break-glass emergency access
 /// grant remains valid. Matches access-control's 1-hour emergency override.
 /// After this window elapses, the responder must issue a fresh
@@ -221,45 +227,192 @@ impl EmergencyMedicalInfo {
         Ok(())
     }
 
-    /// Check whether `responder` is currently a registered emergency responder.
-    pub fn is_registered_responder(env: Env, responder: Address) -> bool {
-        let key = DataKey::Responder(responder);
-        let registered = env.storage().persistent().has(&key);
-        if registered {
-            ttl_config::extend_critical_ttl(&env, &key);
+    /// Append a critical alert for a patient.
+    ///
+    /// The stored alert list is capped at `MAX_CRITICAL_ALERTS`. When the cap
+    /// is reached the oldest alert is evicted so the entry can never grow past
+    /// the ledger-entry size limit (which would otherwise permanently brick
+    /// the alerting path for that patient).
+    pub fn add_critical_alert(
+        env: Env,
+        provider: Address,
+        patient: Address,
+        alert_type: Symbol,
+        alert_text_hash: BytesN<32>,
+        severity: Symbol,
+    ) -> Result<(), Error> {
+        provider.require_auth();
+        Self::assert_responder(&env, &provider)?;
+
+        let key = DataKey::CriticalAlerts(patient.clone());
+        let mut alerts: Vec<CriticalAlert> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        // Evict the oldest alert(s) so the Vec stays bounded. Alerts are
+        // appended in chronological order, so index 0 is the oldest.
+        while alerts.len() >= MAX_CRITICAL_ALERTS {
+            alerts.remove(0);
         }
-        registered
+
+        alerts.push_back(CriticalAlert {
+            provider_id: provider.clone(),
+            alert_type,
+            alert_text_hash,
+            severity,
+            timestamp: env.ledger().timestamp(),
+        });
+
+        env.storage().persistent().set(&key, &alerts);
+        ttl_config::extend_critical_ttl(&env, &key);
+        Ok(())
     }
 
+    /// Read the critical alerts for a patient.
+    ///
+    /// Access is restricted to the patient themselves, an active break-glass
+    /// grant holder, or a registered responder. Every successful read is
+    /// logged for compliance auditing.
+    pub fn get_critical_alerts(
+        env: Env,
+        caller: Address,
+        patient: Address,
+    ) -> Result<Vec<CriticalAlert>, Error> {
+        caller.require_auth();
+        Self::assert_read_access(&env, &caller, &patient)?;
+
+        let key = DataKey::CriticalAlerts(patient.clone());
+        let alerts: Vec<CriticalAlert> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(&env));
+        ttl_config::extend_critical_ttl(&env, &key);
+
+        Self::log_access(&env, &caller, &patient, Symbol::new(&env, "read_alerts"));
+        Ok(alerts)
+    }
+
+    /// Read the DNR order for a patient.
+    ///
+    /// Access is restricted to the patient themselves, an active break-glass
+    /// grant holder, or a registered responder. Every successful read is
+    /// logged for compliance auditing.
+    pub fn get_dnr_order(
+        env: Env,
+        caller: Address,
+        patient: Address,
+    ) -> Result<Option<DNROrder>, Error> {
+        caller.require_auth();
+        Self::assert_read_access(&env, &caller, &patient)?;
+
+        let key = DataKey::DNROrder(patient.clone());
+        let order: Option<DNROrder> = env.storage().persistent().get(&key);
+        ttl_config::extend_critical_ttl(&env, &key);
+
+        Self::log_access(&env, &caller, &patient, Symbol::new(&env, "read_dnr"));
+        Ok(order)
+    }
+
+    /// Check whether a patient has an emergency profile on file.
+    ///
+    /// Access is restricted to the patient themselves, an active break-glass
+    /// grant holder, or a registered responder. Every successful read is
+    /// logged for compliance auditing.
+    pub fn has_emergency_profile(
+        env: Env,
+        caller: Address,
+        patient: Address,
+    ) -> Result<bool, Error> {
+        caller.require_auth();
+        Self::assert_read_access(&env, &caller, &patient)?;
+
+        let key = DataKey::EmergencyProfile(patient.clone());
+        let exists = env.storage().persistent().has(&key);
+        ttl_config::extend_critical_ttl(&env, &key);
+
+        Self::log_access(&env, &caller, &patient, Symbol::new(&env, "read_profile"));
+        Ok(exists)
+    }
+
+    /// --------------------
+    /// Internal helpers
+    /// --------------------
+
     fn assert_admin(env: &Env, admin: &Address) -> Result<(), Error> {
-        admin.require_auth();
-        let stored_admin: Address = env
+        let stored: Address = env
             .storage()
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
-        if *admin != stored_admin {
+        if &stored != admin {
             return Err(Error::NotAuthorized);
         }
-        ttl_config::extend_instance_ttl(env);
         Ok(())
     }
 
-    /// Set or update emergency profile for a patient
-    /// Sub-second access optimized with persistent storage
-    #[allow(clippy::too_many_arguments)]
-    pub fn set_emergency_profile(
-        env: Env,
-        patient_id: Address,
-        blood_type: Symbol,
-        critical_allergy_hashes: Vec<BytesN<32>>,
-        critical_condition_hashes: Vec<BytesN<32>>,
-        current_medication_hashes: Vec<BytesN<32>>,
-        emergency_contacts: Vec<EmergencyContact>,
-        advance_directives_hash: Option<BytesN<32>>,
-    ) -> Result<(), Error> {
-        patient_id.require_auth();
+    fn assert_responder(env: &Env, responder: &Address) -> Result<(), Error> {
+        let active: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Responder(responder.clone()))
+            .unwrap_or(false);
+        if !active {
+            return Err(Error::NotRegisteredResponder);
+        }
+        Ok(())
+    }
 
-   
+    /// Authorize a read of a patient's emergency data. Allowed when the caller
+    /// is the patient, holds an unexpired break-glass grant, or is a registered
+    /// responder.
+    fn assert_read_access(env: &Env, caller: &Address, patient: &Address) -> Result<(), Error> {
+        if caller == patient {
+            return Ok(());
+        }
 
-/* … truncated 9042 chars — edit only what you need near the top … */
+        // Active break-glass grant for this caller.
+        if let Some(expiry) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, u64>(&DataKey::EmergencyAccessGrant(caller.clone()))
+        {
+            if env.ledger().timestamp() < expiry {
+                return Ok(());
+            }
+        }
+
+        // Registered responder.
+        let is_responder: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Responder(caller.clone()))
+            .unwrap_or(false);
+        if is_responder {
+            return Ok(());
+        }
+
+        Err(Error::NotAuthorized)
+    }
+
+    /// Append an access-log entry recording who read a patient's data and why.
+    fn log_access(env: &Env, caller: &Address, patient: &Address, emergency_type: Symbol) {
+        let key = DataKey::EmergencyAccessLog(patient.clone());
+        let mut logs: Vec<EmergencyAccessLog> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(env));
+        logs.push_back(EmergencyAccessLog {
+            provider_id: caller.clone(),
+            emergency_type,
+            justification_hash: BytesN::from_array(env, &[0u8; 32]),
+            location_hash: BytesN::from_array(env, &[0u8; 32]),
+            access_time: env.ledger().timestamp(),
+        });
+        env.storage().persistent().set(&key, &logs);
+        ttl_config::extend_critical_ttl(env, &key);
+    }
+}

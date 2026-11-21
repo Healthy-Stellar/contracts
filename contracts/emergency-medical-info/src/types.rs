@@ -88,6 +88,18 @@ pub struct EmergencyAlert {
     pub created_at: u32,
 }
 
+/// A critical alert record (allergy, condition, etc.) surfaced to responders.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct CriticalAlert {
+    pub patient: Address,
+    pub kind: String,
+    pub severity: u32,
+    pub note: String,
+    pub author: Address,
+    pub created_at: u32,
+}
+
 /// An access log entry.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -107,14 +119,7 @@ pub enum DataKey {
     Profile(Address),
     Dnr(Address),
     Alerts(Address),
+    CriticalAlerts(Address),
     Logs(Address),
     KeyHash(Address),
-}
-
-/// A hashed key reference used to detect key loss.
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub struct KeyHash {
-    pub owner: Address,
-    pub hash: BytesN<32>,
 }
