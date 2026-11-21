@@ -90,6 +90,76 @@ pub fn get_aggregate(env: &Env, patient: &Address, day: u64) -> Option<DailyAggr
     env.storage().persistent().get(&(patient.clone(), day))
 }
 
+/// Index of device ids registered for a patient, so deregistration can
+/// enumerate and clear every `DeviceReg` / `DeviceAddress` entry.
+pub fn add_registered_device(env: &Env, patient: &Address, device_id: &Address) {
+    let key = (patient.clone(),);
+    let mut devices: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    if !devices.contains(device_id) {
+        devices.push_back(device_id.clone());
+        env.storage().persistent().set(&key, &devices);
+    }
+}
+
+pub fn remove_registered_device(env: &Env, patient: &Address, device_id: &Address) {
+    let key = (patient.clone(),);
+    if let Some(devices) = env.storage().persistent().get::<_, Vec<Address>>(&key) {
+        let mut next: Vec<Address> = Vec::new(env);
+        for d in devices.iter() {
+            if &d != device_id {
+                next.push_back(d);
+            }
+        }
+        env.storage().persistent().set(&key, &next);
+    }
+}
+
+pub fn get_registered_devices(env: &Env, patient: &Address) -> Vec<Address> {
+    env.storage()
+        .persistent()
+        .get(&(patient.clone(),))
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Index of vital types a patient has granted to providers, so
+/// deregistration can enumerate and clear every `MonitoringParams` entry.
+pub fn add_monitoring_vital(env: &Env, patient: &Address, vital: &VitalType) {
+    let key = (patient.clone(),);
+    let mut vitals: Vec<VitalType> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    if !vitals.contains(vital) {
+        vitals.push_back(vital.clone());
+        env.storage().persistent().set(&key, &vitals);
+    }
+}
+
+pub fn remove_monitoring_vital(env: &Env, patient: &Address, vital: &VitalType) {
+    let key = (patient.clone(),);
+    if let Some(vitals) = env.storage().persistent().get::<_, Vec<VitalType>>(&key) {
+        let mut next: Vec<VitalType> = Vec::new(env);
+        for v in vitals.iter() {
+            if &v != vital {
+                next.push_back(v);
+            }
+        }
+        env.storage().persistent().set(&key, &next);
+    }
+}
+
+pub fn get_monitoring_vitals(env: &Env, patient: &Address) -> Vec<VitalType> {
+    env.storage()
+        .persistent()
+        .get(&(patient.clone(),))
+        .unwrap_or_else(|| Vec::new(env))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
