@@ -114,6 +114,10 @@ pub enum DataKey {
     /// break-glass audit log.
     EmergencyAccessLogSeq(Address),
     DNROrder(Address),
+    /// Patient-authored advance directive hash. Stored separately from
+    /// `DNROrder` so a patient can never overwrite a clinician-recorded
+    /// DNR order.
+    AdvanceDirective(Address),
     EmergencyNotifications(Address),
     RecoveryConfig(Address),
     RecoveryProposal(Address),
@@ -215,86 +219,6 @@ impl EmergencyMedicalInfo {
     /// reached the oldest entry is evicted (ring buffer).
     ///
     /// The event payload contains only audit metadata (responder, patient,
-    /// emergency type, justification hash, timestamp) — never profile content.
-    fn record_emergency_access(
-        env: &Env,
-        patient_id: &Address,
-        responder: &Address,
-        emergency_type: &Symbol,
-        justification_hash: &BytesN<32>,
-        location_hash: &BytesN<32>,
-    ) {
-        let access_time = env.ledger().timestamp();
+    /// emergency type, justification hash, timestamp) —
 
-        let seq_key = DataKey::EmergencyAccessLogSeq(patient_id.clone());
-        let seq: u32 = env.storage().persistent().get(&seq_key).unwrap_or(0);
-
-        let log = EmergencyAccessLog {
-            provider_id: responder.clone(),
-            emergency_type: emergency_type.clone(),
-            justification_hash: justification_hash.clone(),
-            location_hash: location_hash.clone(),
-            access_time,
-        };
-        env.storage()
-            .persistent()
-            .set(&DataKey::EmergencyAccessLog(patient_id.clone(), seq), &log);
-
-        // Evict the oldest entry once the bounded ring buffer is full.
-        if seq >= MAX_EMERGENCY_ACCESS_LOG_ENTRIES {
-            let evict_seq = seq - MAX_EMERGENCY_ACCESS_LOG_ENTRIES;
-            env.storage().persistent().remove(&DataKey::EmergencyAccessLog(
-                patient_id.clone(),
-                evict_seq,
-            ));
-        }
-
-        env.storage().persistent().set(&seq_key, &(seq + 1));
-
-        env.events().publish(
-            (
-                Symbol::new(env, "emergency_access"),
-                patient_id.clone(),
-                responder.clone(),
-            ),
-            (
-                emergency_type.clone(),
-                justification_hash.clone(),
-                access_time,
-            ),
-        );
-    }
-
-    /// Set or update emergency profile for a patient
-    /// Sub-second access optimized with persistent storage
-    #[allow(clippy::too_many_arguments)]
-    pub fn set_emergency_profile(
-        env: Env,
-        patient_id: Address,
-        blood_type: Symbol,
-        critical_allergy_hashes: Vec<BytesN<32>>,
-        critical_condition_hashes: Vec<BytesN<32>>,
-        current_medication_hashes: Vec<BytesN<32>>,
-        emergency_contacts: Vec<EmergencyContact>,
-        advance_directives_hash: Option<BytesN<32>>,
-    ) -> Result<(), Error> {
-        patient_id.require_auth();
-
-        if critical_allergy_hashes.len() > MAX_CRITICAL_ALLERGIES {
-            return Err(Error::TooManyCriticalAllergies);
-        }
-
-        let profile = EmergencyProfile {
-            blood_type,
-            critical_allergy_hashes,
-            active_condition_hashes: critical_condition_hashes,
-            current_medication_hashes,
-            dnr_status: false,
-            emergency_contacts,
-        };
-
-        let key = DataKey::EmergencyProfile(patient_id.clone());
-        env.storage().persistent().set(&key, &profile);
-        Ok(())
-    }
-}
+/* … truncated 2780 chars — edit only what you need near the top … */
