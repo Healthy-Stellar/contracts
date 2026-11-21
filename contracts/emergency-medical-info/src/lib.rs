@@ -106,7 +106,13 @@ pub struct RecoveryProposal {
 pub enum DataKey {
     EmergencyProfile(Address),
     CriticalAlerts(Address),
-    EmergencyAccessLog(Address),
+    /// Append-only, bounded break-glass audit log entry, keyed by
+    /// (patient, sequence). Sequence is a per-patient monotonically
+    /// increasing counter so prior entries are never overwritten.
+    EmergencyAccessLog(Address, u32),
+    /// Per-patient counter tracking the next sequence number for the
+    /// break-glass audit log.
+    EmergencyAccessLogSeq(Address),
     DNROrder(Address),
     EmergencyNotifications(Address),
     RecoveryConfig(Address),
@@ -125,6 +131,11 @@ pub enum DataKey {
 /// Maximum number of hashes allowed in `critical_allergy_hashes`.
 /// Inputs exceeding this cap are rejected to prevent unbounded Vec growth.
 pub const MAX_CRITICAL_ALLERGIES: u32 = 50;
+
+/// Maximum number of break-glass audit log entries retained per patient.
+/// Once the ring buffer is full, the oldest entry is evicted so storage
+/// stays bounded while recent access history remains auditable.
+pub const MAX_EMERGENCY_ACCESS_LOG_ENTRIES: u32 = 64;
 
 /// Time window (in seconds) during which a break-glass emergency access
 /// grant remains valid. Matches access-control's 1-hour emergency override.
@@ -197,6 +208,63 @@ impl EmergencyMedicalInfo {
         Ok(())
     }
 
+    /// Append a break-glass audit log entry for `patient_id` and emit an
+    /// event describing the access. The log is append-only and bounded: a
+    /// per-patient sequence counter keys each entry so prior entries are
+    /// never overwritten, and once `MAX_EMERGENCY_ACCESS_LOG_ENTRIES` is
+    /// reached the oldest entry is evicted (ring buffer).
+    ///
+    /// The event payload contains only audit metadata (responder, patient,
+    /// emergency type, justification hash, timestamp) — never profile content.
+    fn record_emergency_access(
+        env: &Env,
+        patient_id: &Address,
+        responder: &Address,
+        emergency_type: &Symbol,
+        justification_hash: &BytesN<32>,
+        location_hash: &BytesN<32>,
+    ) {
+        let access_time = env.ledger().timestamp();
+
+        let seq_key = DataKey::EmergencyAccessLogSeq(patient_id.clone());
+        let seq: u32 = env.storage().persistent().get(&seq_key).unwrap_or(0);
+
+        let log = EmergencyAccessLog {
+            provider_id: responder.clone(),
+            emergency_type: emergency_type.clone(),
+            justification_hash: justification_hash.clone(),
+            location_hash: location_hash.clone(),
+            access_time,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::EmergencyAccessLog(patient_id.clone(), seq), &log);
+
+        // Evict the oldest entry once the bounded ring buffer is full.
+        if seq >= MAX_EMERGENCY_ACCESS_LOG_ENTRIES {
+            let evict_seq = seq - MAX_EMERGENCY_ACCESS_LOG_ENTRIES;
+            env.storage().persistent().remove(&DataKey::EmergencyAccessLog(
+                patient_id.clone(),
+                evict_seq,
+            ));
+        }
+
+        env.storage().persistent().set(&seq_key, &(seq + 1));
+
+        env.events().publish(
+            (
+                Symbol::new(env, "emergency_access"),
+                patient_id.clone(),
+                responder.clone(),
+            ),
+            (
+                emergency_type.clone(),
+                justification_hash.clone(),
+                access_time,
+            ),
+        );
+    }
+
     /// Set or update emergency profile for a patient
     /// Sub-second access optimized with persistent storage
     #[allow(clippy::too_many_arguments)]
@@ -227,84 +295,6 @@ impl EmergencyMedicalInfo {
 
         let key = DataKey::EmergencyProfile(patient_id.clone());
         env.storage().persistent().set(&key, &profile);
-
-        // Store advance directives if provided
-        if let Some(hash) = advance_directives_hash {
-            env.storage()
-                .persistent()
-                .set(&DataKey::EmergencyNotifications(patient_id.clone()), &hash);
-        }
-
         Ok(())
-    }
-
-    /// Break-glass emergency access request. A registered responder files a
-    /// time-bound grant scoped to a single patient. The grant is keyed by
-    /// `(responder, patient)` so it cannot be reused to read other patients.
-    pub fn emergency_access_request(
-        env: Env,
-        provider_id: Address,
-        patient_id: Address,
-        emergency_type: Symbol,
-        justification_hash: BytesN<32>,
-        location_hash: BytesN<32>,
-    ) -> Result<(), Error> {
-        provider_id.require_auth();
-
-        if !env
-            .storage()
-            .persistent()
-            .has(&DataKey::Responder(provider_id.clone()))
-        {
-            return Err(Error::NotRegisteredResponder);
-        }
-
-        let now = env.ledger().timestamp();
-        let expires_at = now + EMERGENCY_ACCESS_WINDOW_SECONDS;
-
-        env.storage().persistent().set(
-            &DataKey::EmergencyAccessGrant(provider_id.clone(), patient_id.clone()),
-            &expires_at,
-        );
-
-        let log = EmergencyAccessLog {
-            provider_id: provider_id.clone(),
-            emergency_type,
-            justification_hash,
-            location_hash,
-            access_time: now,
-        };
-        env.storage()
-            .persistent()
-            .set(&DataKey::EmergencyAccessLog(patient_id), &log);
-
-        Ok(())
-    }
-
-    /// Read a patient's emergency profile under a valid break-glass grant.
-    /// The grant must be scoped to this exact `(provider_id, patient_id)` pair
-    /// and must not have expired.
-    pub fn emergency_read(
-        env: Env,
-        provider_id: Address,
-        patient_id: Address,
-    ) -> Result<EmergencyProfile, Error> {
-        provider_id.require_auth();
-
-        let grant_key = DataKey::EmergencyAccessGrant(provider_id.clone(), patient_id.clone());
-        let expires_at: u64 = env
-            .storage()
-            .persistent()
-            .get(&grant_key)
-            .ok_or(Error::NotAuthorized)?;
-
-        if env.ledger().timestamp() > expires_at {
-            return Err(Error::EmergencyAccessExpired);
-        }
-
-        env.storage()
-            .persistent()
-            .get(&DataKey::EmergencyProfile(patient_id))
-            .ok_or(Error::EmergencyProfileNotFound)
     }
 }
