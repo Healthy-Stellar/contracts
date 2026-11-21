@@ -160,6 +160,129 @@ pub fn get_monitoring_vitals(env: &Env, patient: &Address) -> Vec<VitalType> {
         .unwrap_or_else(|| Vec::new(env))
 }
 
+/// Bounded per-day page of window indices. Each page holds at most
+/// `WINDOW_PAGE_CAP` entries, so a write only ever touches the current
+/// day's page instead of the whole patient index. This keeps write cost
+/// constant regardless of how many windows a patient has accumulated.
+pub const WINDOW_PAGE_CAP: u32 = 64;
+
+#[contracttype]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct WindowPage {
+    pub raw_indices: Vec<u32>,
+    pub agg_indices: Vec<u32>,
+}
+
+/// Append a raw window index to the patient's current day page, spilling
+/// into a new page when the current one is full. Only the current page is
+/// read and written, so cost does not grow with total window count.
+pub fn append_raw_window(env: &Env, patient: &Address, day: u64, idx: u32) {
+    let mut page_no = current_page_no(env, patient, day);
+    loop {
+        let key = (patient.clone(), day, page_no);
+        let mut page: WindowPage = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_default();
+        if page.raw_indices.len() < WINDOW_PAGE_CAP {
+            page.raw_indices.push_back(idx);
+            env.storage().persistent().set(&key, &page);
+            return;
+        }
+        page_no += 1;
+        env.storage()
+            .persistent()
+            .set(&(patient.clone(), day), &page_no);
+    }
+}
+
+/// Append an aggregate window index to the patient's current day page.
+pub fn append_agg_window(env: &Env, patient: &Address, day: u64, idx: u32) {
+    let mut page_no = current_page_no(env, patient, day);
+    loop {
+        let key = (patient.clone(), day, page_no);
+        let mut page: WindowPage = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_default();
+        if page.agg_indices.len() < WINDOW_PAGE_CAP {
+            page.agg_indices.push_back(idx);
+            env.storage().persistent().set(&key, &page);
+            return;
+        }
+        page_no += 1;
+        env.storage()
+            .persistent()
+            .set(&(patient.clone(), day), &page_no);
+    }
+}
+
+fn current_page_no(env: &Env, patient: &Address, day: u64) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&(patient.clone(), day))
+        .unwrap_or(0u32)
+}
+
+/// Read the raw window indices for a single day page.
+pub fn get_raw_page(env: &Env, patient: &Address, day: u64, page_no: u32) -> Vec<u32> {
+    env.storage()
+        .persistent()
+        .get::<_, WindowPage>(&(patient.clone(), day, page_no))
+        .map(|p| p.raw_indices)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Read the aggregate window indices for a single day page.
+pub fn get_agg_page(env: &Env, patient: &Address, day: u64, page_no: u32) -> Vec<u32> {
+    env.storage()
+        .persistent()
+        .get::<_, WindowPage>(&(patient.clone(), day, page_no))
+        .map(|p| p.agg_indices)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Remove up to `max_windows` window entries for a patient, starting from
+/// `day`/`page_no`. Returns the next `(day, page_no)` cursor, or `None`
+/// when the index is fully drained. Callers can invoke this repeatedly to
+/// complete erasure without exceeding per-transaction limits.
+pub fn drain_window_page(
+    env: &Env,
+    patient: &Address,
+    day: u64,
+    page_no: u32,
+    max_windows: u32,
+) -> Option<(u64, u32)> {
+    let key = (patient.clone(), day, page_no);
+    let page: WindowPage = match env.storage().persistent().get(&key) {
+        Some(p) => p,
+        None => return None,
+    };
+    let mut removed = 0u32;
+    for idx in page.raw_indices.iter() {
+        if removed >= max_windows {
+            return Some((day, page_no));
+        }
+        env.storage()
+            .persistent()
+            .remove(&(patient.clone(), idx));
+        removed += 1;
+    }
+    for idx in page.agg_indices.iter() {
+        if removed >= max_windows {
+            return Some((day, page_no));
+        }
+        env.storage()
+            .persistent()
+            .remove(&(patient.clone(), idx));
+        removed += 1;
+    }
+    env.storage().persistent().remove(&key);
+    Some((day, page_no + 1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
