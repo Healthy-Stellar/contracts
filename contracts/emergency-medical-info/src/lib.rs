@@ -130,6 +130,9 @@ pub enum DataKey {
     /// specific patient it was requested for; afterwards the responder must
     /// issue a fresh `emergency_access_request`.
     EmergencyAccessGrant(Address, Address),
+    /// Configured healthcare proxy authorized to act on a patient's behalf
+    /// for DNR record/revoke decisions, keyed by patient.
+    HealthcareProxy(Address),
 }
 
 /// Maximum number of hashes allowed in `critical_allergy_hashes`.
@@ -212,13 +215,101 @@ impl EmergencyMedicalInfo {
         Ok(())
     }
 
+    /// Configure the healthcare proxy authorized to act on `patient_id`'s
+    /// behalf for DNR record/revoke decisions. Only the patient may set it.
+    pub fn set_healthcare_proxy(
+        env: Env,
+        patient_id: Address,
+        proxy: Address,
+    ) -> Result<(), Error> {
+        patient_id.require_auth();
+        env.storage()
+            .persistent()
+            .set(&DataKey::HealthcareProxy(patient_id), &proxy);
+        Ok(())
+    }
+
+    /// Record a DNR order for `patient_id`.
+    ///
+    /// Requires the caller to be a registered responder AND the patient (or
+    /// their configured healthcare proxy) to authorize the change. Emits a
+    /// `dnr_set` event including the acting provider.
+    pub fn record_dnr_order(
+        env: Env,
+        provider_id: Address,
+        patient_id: Address,
+        dnr_document_hash: BytesN<32>,
+        effective_date: u64,
+    ) -> Result<(), Error> {
+        provider_id.require_auth();
+        if !Self::is_registered_responder(env.clone(), provider_id.clone()) {
+            return Err(Error::NotRegisteredResponder);
+        }
+        Self::require_patient_or_proxy_auth(&env, &patient_id)?;
+
+        let order = DNROrder {
+            provider_id: provider_id.clone(),
+            dnr_document_hash,
+            effective_date,
+            recorded_at: env.ledger().timestamp(),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::DNROrder(patient_id.clone()), &order);
+
+        env.events().publish(
+            (Symbol::new(&env, "dnr_set"), patient_id.clone()),
+            (provider_id, dnr_document_hash, effective_date),
+        );
+        Ok(())
+    }
+
+    /// Revoke a DNR order for `patient_id`.
+    ///
+    /// Requires the caller to be a registered responder AND the patient (or
+    /// their configured healthcare proxy) to authorize the change. Emits a
+    /// `dnr_revoked` event including the acting provider.
+    pub fn revoke_dnr_order(
+        env: Env,
+        provider_id: Address,
+        patient_id: Address,
+    ) -> Result<(), Error> {
+        provider_id.require_auth();
+        if !Self::is_registered_responder(env.clone(), provider_id.clone()) {
+            return Err(Error::NotRegisteredResponder);
+        }
+        Self::require_patient_or_proxy_auth(&env, &patient_id)?;
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::DNROrder(patient_id.clone()));
+
+        env.events().publish(
+            (Symbol::new(&env, "dnr_revoked"), patient_id.clone()),
+            provider_id,
+        );
+        Ok(())
+    }
+
+    /// Require authorization from the patient or their configured healthcare
+    /// proxy. The patient's own auth is always accepted; if a proxy is
+    /// configured, the proxy's auth is also accepted.
+    fn require_patient_or_proxy_auth(env: &Env, patient_id: &Address) -> Result<(), Error> {
+        patient_id.require_auth();
+        if let Some(proxy) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&DataKey::HealthcareProxy(patient_id.clone()))
+        {
+            proxy.require_auth();
+        }
+        Ok(())
+    }
+
     /// Append a break-glass audit log entry for `patient_id` and emit an
     /// event describing the access. The log is append-only and bounded: a
     /// per-patient sequence counter keys each entry so prior entries are
     /// never overwritten, and once `MAX_EMERGENCY_ACCESS_LOG_ENTRIES` is
-    /// reached the oldest entry is evicted (ring buffer).
-    ///
-    /// The event payload contains only audit metadata (responder, patient,
-    /// emergency type, justification hash, timestamp) —
+    
 
-/* … truncated 2780 chars — edit only what you need near the top … */
+/* … truncated 267 chars — edit only what you need near the top … */
