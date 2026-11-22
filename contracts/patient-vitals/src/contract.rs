@@ -23,6 +23,7 @@ impl PatientVitalsContract {
         measurement_time: u64,
         vitals: VitalSigns,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         recorder.require_auth();
 
         // Authorization check: recorder must be the patient, a provider holding
@@ -142,6 +143,7 @@ impl PatientVitalsContract {
         alert_thresholds: AlertThresholds,
         monitoring_frequency: u32,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         // #728: a MonitoringParameters record grants `provider_id` PHI read access
         // to the patient (see is_authorized_provider). Without the patient's own
@@ -171,6 +173,7 @@ impl PatientVitalsContract {
         serial_number: String,
         calibration_date: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
 
         let key = DataKey::DeviceReg(patient_id.clone(), device_id);
@@ -197,6 +200,7 @@ impl PatientVitalsContract {
         _reading_time: u64,
         readings: Vec<DeviceReading>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         // Verify device is registered
         let device_key = DataKey::DeviceReg(patient_id.clone(), device_id);
         if !env.storage().persistent().has(&device_key) {
@@ -239,6 +243,7 @@ impl PatientVitalsContract {
         severity: Symbol,
         alert_time: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         // Require auth from whichever actor is asserting the alert.
         caller.require_auth();
 
@@ -363,6 +368,7 @@ impl PatientVitalsContract {
         vital_type: Symbol,
         period: u64,
     ) -> Result<VitalStatistics, Error> {
+        ttl_config::extend_instance_ttl(&env);
         requester.require_auth();
 
         // Authorization: requester must be the patient or an authorized provider.
@@ -732,6 +738,7 @@ impl PatientVitalsContract {
     ///
     /// Callable by the patient themselves.
     pub fn deregister_patient(env: Env, patient_id: Address) {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
 
         env.storage()

@@ -29,7 +29,7 @@ use soroban_sdk::{
     contract, contractevent, contractimpl, Address, BytesN, Env, String, Symbol, Vec,
 };
 use shared::{events::EVENT_VERSION, temporal};
-use shared_contracts::safe_increment;
+use shared::counters::safe_increment;
 
 mod types;
 use types::*;
@@ -72,6 +72,7 @@ impl DentalRecordsContract {
         chart_date: u64,
         tooth_notation_system: Symbol, // universal, palmer, fdi
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
 
         let count = safe_increment(&env, &DataKey::ChartCount);
@@ -98,6 +99,7 @@ impl DentalRecordsContract {
         condition: Symbol,       // caries, filling, crown, missing, implant
         condition_details: Option<String>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let chart: DentalChart = env
             .storage()
             .persistent()
@@ -128,6 +130,7 @@ impl DentalRecordsContract {
         bleeding_on_probing: bool,
         mobility: Option<u32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let chart: DentalChart = env
             .storage()
             .persistent()
@@ -158,6 +161,7 @@ impl DentalRecordsContract {
         phased_treatment: bool,
         estimated_cost: i128,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         dentist_id.require_auth();
         patient_id.require_auth();
 
@@ -185,6 +189,7 @@ impl DentalRecordsContract {
         estimated_duration: u32,
         sedation_required: bool,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         // #215 – dental procedure dates are future-scheduled appointments
         temporal::must_be_future(&env, scheduled_date)
             .map_err(|_| Error::InvalidScheduledDate)?;
@@ -229,6 +234,7 @@ impl DentalRecordsContract {
         complications: Option<Vec<String>>,
         post_op_instructions_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         dentist_id.require_auth();
 
         // #215 – procedure_date records when the procedure happened; it must not be future
@@ -287,6 +293,7 @@ impl DentalRecordsContract {
         findings: String,
         image_hash: BytesN<32>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         dentist_id.require_auth();
 
         let count = safe_increment(&env, &DataKey::RadiographCount);

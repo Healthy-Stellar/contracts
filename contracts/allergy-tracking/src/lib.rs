@@ -175,11 +175,13 @@ impl AllergyTrackingContract {
     /// Runs atomically as part of contract creation and cannot be called again,
     /// so an attacker cannot front-run deployment and elect themselves admin.
     pub fn __constructor(env: Env, admin: Address) {
+        ttl_config::extend_instance_ttl(&env);
         env.storage().instance().set(&DataKey::Admin, &admin);
     }
 
     /// Admin-only: set the provider-registry contract address used to gate clinician writes.
     pub fn set_provider_registry(env: Env, admin: Address, registry: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -226,6 +228,7 @@ impl AllergyTrackingContract {
         onset_date: Option<u64>,
         verified: bool,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         Self::require_registered_provider(&env, &provider_id)?;
 
@@ -334,6 +337,7 @@ impl AllergyTrackingContract {
         provider_id: Address,
         entries: Vec<AllergyEntry>,
     ) -> Result<Vec<u64>, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         Self::require_registered_provider(&env, &provider_id)?;
 
@@ -370,6 +374,7 @@ impl AllergyTrackingContract {
         new_severity: Symbol,
         reason: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         Self::require_registered_provider(&env, &provider_id)?;
 
@@ -429,6 +434,7 @@ impl AllergyTrackingContract {
         allergy_id: u64,
         resolution_reason: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         Self::require_registered_provider(&env, &provider_id)?;
 
@@ -472,6 +478,7 @@ impl AllergyTrackingContract {
         provider_id: Address,
         allergy_id: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         Self::require_registered_provider(&env, &provider_id)?;
 
@@ -508,6 +515,7 @@ impl AllergyTrackingContract {
         provider_id: Address,
         allergy_id: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         Self::require_registered_provider(&env, &provider_id)?;
 

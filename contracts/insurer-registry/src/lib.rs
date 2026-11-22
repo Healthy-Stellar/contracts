@@ -103,6 +103,7 @@ pub struct InsurerRegistry;
 #[contractimpl]
 impl InsurerRegistry {
     pub fn __constructor(env: Env, admin: Address) {
+        ttl_config::extend_instance_ttl(&env);
         assert!(validate_nonzero_address(&admin).is_ok());
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -114,6 +115,7 @@ impl InsurerRegistry {
         issuer: Address,
         trusted: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&issuer).map_err(|_| Error::InvalidAddress)?;
         Self::require_admin(&env, &admin)?;
         let key = DataKey::TrustedIssuer(issuer);
@@ -144,6 +146,7 @@ impl InsurerRegistry {
         expires_at: u64,
         revocation_reference: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&issuer).map_err(|_| Error::InvalidAddress)?;
         wallet.require_auth();
@@ -195,6 +198,7 @@ impl InsurerRegistry {
         expires_at: u64,
         revocation_reference: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&issuer).map_err(|_| Error::InvalidAddress)?;
         wallet.require_auth();
@@ -261,6 +265,7 @@ impl InsurerRegistry {
     /// * `wallet` - The wallet address of the insurance company
     /// * `metadata` - Updated metadata information
     pub fn update_insurer(env: Env, wallet: Address, metadata: String) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         wallet.require_auth();
 
@@ -293,6 +298,7 @@ impl InsurerRegistry {
         wallet: Address,
         contact_details: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         wallet.require_auth();
 
@@ -327,6 +333,7 @@ impl InsurerRegistry {
         wallet: Address,
         coverage_policies: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         wallet.require_auth();
 
@@ -380,6 +387,7 @@ impl InsurerRegistry {
         insurer_wallet: Address,
         plans: Vec<CoveragePlan>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&insurer_wallet).map_err(|_| Error::InvalidAddress)?;
         insurer_wallet.require_auth();
 
@@ -445,6 +453,7 @@ impl InsurerRegistry {
         effective_from: u64,
         effective_until: Option<u64>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         wallet.require_auth();
 
@@ -516,6 +525,7 @@ impl InsurerRegistry {
         insurer_wallet: Address,
         reviewer_wallet: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&insurer_wallet).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&reviewer_wallet).map_err(|_| Error::InvalidAddress)?;
         insurer_wallet.require_auth();
@@ -565,6 +575,7 @@ impl InsurerRegistry {
         insurer_wallet: Address,
         reviewers: Vec<Address>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&insurer_wallet).map_err(|_| Error::InvalidAddress)?;
         insurer_wallet.require_auth();
 
@@ -633,6 +644,7 @@ impl InsurerRegistry {
         insurer_wallet: Address,
         reviewer_wallet: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&insurer_wallet).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&reviewer_wallet).map_err(|_| Error::InvalidAddress)?;
         insurer_wallet.require_auth();
@@ -693,6 +705,7 @@ impl InsurerRegistry {
         wallet: Address,
         reason: Symbol,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         Self::require_admin(&env, &admin)?;

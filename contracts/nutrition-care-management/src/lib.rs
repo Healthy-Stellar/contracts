@@ -74,6 +74,7 @@ impl NutritionCareContract {
         dietary_history_hash: BytesN<32>,
         nutritional_risk_factors: Vec<String>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         dietitian_id.require_auth();
 
         let assessment_id = next_assessment_id(&env);
@@ -122,6 +123,7 @@ impl NutritionCareContract {
         stress_factor_x100: i64,
         special_considerations: Vec<String>,
     ) -> Result<NutritionalNeeds, Error> {
+        ttl_config::extend_instance_ttl(&env);
         let assessment = load_assessment(&env, assessment_id).ok_or(Error::AssessmentNotFound)?;
 
         // Activity multiplier × 100 based on keyword matching.
@@ -203,6 +205,7 @@ impl NutritionCareContract {
         interventions: Vec<String>,
         follow_up_frequency: String,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         dietitian_id.require_auth();
 
         let assessment = load_assessment(&env, assessment_id).ok_or(Error::AssessmentNotFound)?;
@@ -256,6 +259,7 @@ impl NutritionCareContract {
         calorie_target: Option<u32>,
         special_instructions: Option<String>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         ordering_provider.require_auth();
 
         // Cross-check active prescriptions for contraindications
@@ -324,6 +328,7 @@ impl NutritionCareContract {
         admin: Address,
         prescription_contract: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -343,6 +348,7 @@ impl NutritionCareContract {
     /// Fails if an admin has already been set; use `set_contraindication_admin`
     /// (called by the current admin) to rotate the admin afterwards.
     pub fn init_contraindication_admin(env: Env, admin: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         if env
             .storage()
@@ -366,6 +372,7 @@ impl NutritionCareContract {
         env: Env,
         admin: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
 
         if let Some(current_admin) = env
@@ -392,6 +399,7 @@ impl NutritionCareContract {
         diet_type: Symbol,
         medication: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -432,6 +440,7 @@ impl NutritionCareContract {
         diet_type: Symbol,
         medication: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -475,6 +484,7 @@ impl NutritionCareContract {
         duration_minutes: u32,
         patient_comprehension: Symbol,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         dietitian_id.require_auth();
 
         load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
@@ -516,6 +526,7 @@ impl NutritionCareContract {
         foods_consumed: Vec<FoodItem>,
         percentage_consumed: u32,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
 
         let record = FoodIntakeRecord {
@@ -551,6 +562,7 @@ impl NutritionCareContract {
         weight_kg_x100: i64,
         method: Symbol,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
 
         let entry = WeightEntry {
@@ -587,6 +599,7 @@ impl NutritionCareContract {
         score: u32,
         risk_level: Symbol,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         dietitian_id.require_auth();
 
         let assessment = load_assessment(&env, assessment_id).ok_or(Error::AssessmentNotFound)?;
@@ -646,6 +659,7 @@ impl NutritionCareContract {
         dosage: String,
         rationale: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         dietitian_id.require_auth();
 
         load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
@@ -691,6 +705,7 @@ impl NutritionCareContract {
         goals_met: Vec<String>,
         continue_care: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         dietitian_id.require_auth();
 
         load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
@@ -740,6 +755,7 @@ impl NutritionCareContract {
         outcome_value_x100: i64,
         measured_at: u64,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         // Verify care plan exists
@@ -833,6 +849,7 @@ impl NutritionCareContract {
         care_plan_id: u64,
         dietitian_id: Address,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         dietitian_id.require_auth();
 
         let plan = load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
@@ -866,6 +883,7 @@ impl NutritionCareContract {
         dietitian_id: Address,
         provider_id: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         dietitian_id.require_auth();
 
         let plan = load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
@@ -1010,6 +1028,7 @@ impl NutritionCareContract {
         admin: Address,
         care_plan_addr: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -1040,6 +1059,7 @@ impl NutritionCareContract {
         outcome_id: u64,
         care_plan_id: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         caller.require_auth();
 
         // Confirm outcome exists.

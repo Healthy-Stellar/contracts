@@ -141,6 +141,7 @@ impl MultisigGovernance {
         ttl_seconds: u64,
         quorum_min: u32,
     ) {
+        ttl_config::extend_instance_ttl(&env);
         if threshold == 0 || threshold as usize > signers.len() as usize {
             panic!("invalid threshold");
         }
@@ -164,6 +165,7 @@ impl MultisigGovernance {
         action_id: Symbol,
         payload: Bytes,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         signer.require_auth();
         Self::assert_signer(&env, &signer)?;
 
@@ -242,6 +244,7 @@ impl MultisigGovernance {
 
     /// Delete all proposals whose TTL has elapsed. Callable by anyone.
     pub fn cleanup_expired_proposals(env: Env) -> Result<u32, Error> {
+        ttl_config::extend_instance_ttl(&env);
         let ttl: u64 = env
             .storage()
             .persistent()
@@ -293,6 +296,7 @@ impl MultisigGovernance {
         signer: Address,
         action_id: Symbol,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         signer.require_auth();
         Self::assert_signer(&env, &signer)?;
 
@@ -357,6 +361,7 @@ impl MultisigGovernance {
         signer: Address,
         action_id: Symbol,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         signer.require_auth();
         Self::assert_signer(&env, &signer)?;
 
@@ -423,6 +428,7 @@ impl MultisigGovernance {
     /// Returns `Expired` (re-used as "not yet expired") if the TTL has not
     /// elapsed — callers should check the error meaning.
     pub fn finalize_expired(env: Env, action_id: Symbol) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let key = DataKey::Proposal(action_id.clone());
         let mut proposal: Proposal = env
             .storage()
@@ -462,6 +468,7 @@ impl MultisigGovernance {
         kind: SignerChangeKind,
         target: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
         proposer.require_auth();
         Self::assert_signer(&env, &proposer)?;
@@ -559,6 +566,7 @@ impl MultisigGovernance {
     /// Approve the active signer-change proposal.  Executes immediately when
     /// the approval threshold is reached.
     pub fn approve_signer_change(env: Env, signer: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
         signer.require_auth();
         Self::assert_signer(&env, &signer)?;

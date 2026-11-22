@@ -83,6 +83,7 @@ impl PacsContract {
         image_count: u32,
         storage_location_hash: BytesN<32>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         ordering_provider.require_auth();
 
         if study_uid.is_empty() || body_part.is_empty() {
@@ -132,6 +133,7 @@ impl PacsContract {
         image_count: u32,
         acquisition_date: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let mut study = load_study(&env, study_id).ok_or(Error::NotFound)?;
         study.ordering_provider.require_auth();
 
@@ -169,6 +171,7 @@ impl PacsContract {
         report_hash: BytesN<32>,
         critical_findings: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         radiologist_id.require_auth();
 
         let mut study = load_study(&env, study_id).ok_or(Error::NotFound)?;
@@ -211,6 +214,7 @@ impl PacsContract {
         radiologist_id: Address,
         comparison_criteria: ComparisonCriteria,
     ) -> Result<Vec<u64>, Error> {
+        ttl_config::extend_instance_ttl(&env);
         radiologist_id.require_auth();
 
         let current = load_study(&env, current_study_id).ok_or(Error::NotFound)?;
@@ -398,6 +402,7 @@ impl PacsContract {
         view_timestamp: u64,
         view_duration: u32,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         viewer_id.require_auth();
 
         let study = load_study(&env, study_id).ok_or(Error::NotFound)?;
@@ -459,6 +464,7 @@ impl PacsContract {
         purpose: String,
         expires_at: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
 
         let study = load_study(&env, study_id).ok_or(Error::NotFound)?;
@@ -496,6 +502,7 @@ impl PacsContract {
         patient_id: Address,
         viewer_id: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
 
         let study = load_study(&env, study_id).ok_or(Error::NotFound)?;

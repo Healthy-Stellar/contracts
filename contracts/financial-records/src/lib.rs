@@ -86,6 +86,7 @@ impl FinancialRecordContract {
         encrypted_ref: EncryptedEnvelopeRef,
         policy: PolicyMetadata,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&e);
         owner.require_auth();
         if Self::is_deregistering(&e, &owner) {
             return Err(ContractError::Deregistering);
@@ -291,6 +292,7 @@ impl FinancialRecordContract {
         owner: Address,
         authorized: Address,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&e);
         owner.require_auth();
         if Self::is_deregistering(&e, &owner) {
             return Err(ContractError::Deregistering);
@@ -325,6 +327,7 @@ impl FinancialRecordContract {
         owner: Address,
         authorized: Address,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&e);
         owner.require_auth();
 
         e.storage()
@@ -357,6 +360,7 @@ impl FinancialRecordContract {
     /// returns the number of items still remaining. While `remaining > 0` a `Deregistering`
     /// tombstone blocks new writes; callers must invoke again until it returns 0.
     pub fn deregister_patient(e: Env, owner: Address, max_items: u32) -> Result<u32, ContractError> {
+        ttl_config::extend_instance_ttl(&e);
         owner.require_auth();
 
         // Mark deregistration in progress so new writes are rejected.
