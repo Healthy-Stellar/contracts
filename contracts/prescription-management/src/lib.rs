@@ -94,6 +94,9 @@ pub const PRESCRIPTION_TTL_EXTEND: u32 = 535_680;
 pub const MAX_SCHEDULE_REFILLS: u32 = 5;
 /// Maximum days supply for schedules III–IV (statutory 6-month cap).
 pub const MAX_SCHEDULE_DAYS_SUPPLY: u32 = 180;
+pub const SECONDS_PER_DAY: u64 = 24 * SECONDS_PER_HOUR;
+/// Share (percent) of `days_supply` that must elapse since the last dispense before a refill is released.
+pub const REFILL_MIN_INTERVAL_PERCENT: u64 = 75;
 
 // ── DEA number validation ─────────────────────────────────────────────────────
 
@@ -274,6 +277,8 @@ pub enum Error {
     /// The allergy-management cross-contract check could not be completed;
     /// the prescription is refused rather than issued unchecked (#952)
     AllergyCheckUnavailable = 32,
+    /// Refill requested before the minimum interval since the last dispense has elapsed
+    RefillTooSoon = 33,
 }
 
 #[contracttype]
@@ -423,6 +428,7 @@ pub struct Prescription {
     pub medication_name: String,
     pub quantity: u32,
     pub quantity_dispensed: u32,
+    pub days_supply: u32,
     pub refills_allowed: u32,
     pub refills_remaining: u32,
     pub refills_used: u32,
@@ -1613,6 +1619,11 @@ impl PrescriptionContract {
         let mut p: Prescription =
             get_prescription(&env, prescription_id).ok_or(Error::NotFound)?;
 
+        // Schedule II may never be refilled (21 CFR 1306.12).
+        if p.schedule == Some(2) {
+            return Err(Error::ControlledSubstanceViolation);
+        }
+
         // Validate prescription allows refills
         if p.refills_allowed == 0 {
             return Err(Error::RefillExceeded);
@@ -1620,6 +1631,11 @@ impl PrescriptionContract {
 
         // Check remaining refills
         if p.refills_remaining == 0 {
+            return Err(Error::RefillExceeded);
+        }
+
+        // Schedules III–V: at most MAX_SCHEDULE_REFILLS refills.
+        if matches!(p.schedule, Some(3..=5)) && p.refills_used >= MAX_SCHEDULE_REFILLS {
             return Err(Error::RefillExceeded);
         }
 
@@ -1638,8 +1654,30 @@ impl PrescriptionContract {
         // is considered expired when ledger timestamp >= valid_until.
         // This ensures consistent behaviour at UTC midnight boundaries
         // regardless of sub-second ledger close timing.
-        if env.ledger().timestamp() >= p.valid_until {
+        // Expiry is anchored to issue time: refills never run past
+        // issued_at + max_validity (180 days for schedules III–V, 1 year otherwise).
+        let now = env.ledger().timestamp();
+        let max_validity = if matches!(p.schedule, Some(3..=5)) {
+            MAX_SCHEDULE_DAYS_SUPPLY as u64 * SECONDS_PER_DAY
+        } else {
+            temporal::MAX_VALIDITY_WINDOW_SECS
+        };
+        let validity_cap = p
+            .issued_at
+            .checked_add(max_validity)
+            .ok_or(Error::TimestampOverflow)?;
+        if now >= p.valid_until || now >= validity_cap {
             return Err(Error::Expired);
+        }
+
+        // Minimum interval: the next fill may not be released until most of the
+        // previous supply should have been consumed.
+        if let Some(last) = p.last_dispensed {
+            let min_interval =
+                p.days_supply as u64 * SECONDS_PER_DAY * REFILL_MIN_INTERVAL_PERCENT / 100;
+            if now < last.saturating_add(min_interval) {
+                return Err(Error::RefillTooSoon);
+            }
         }
 
         // Validate pharmacy authorization
@@ -1656,20 +1694,22 @@ impl PrescriptionContract {
             return Err(Error::Unauthorized);
         }
 
-        // Decrement refills and reset quantity for new fill
+        // Unfilled remainder is discarded by the reset below; record it in the event.
+        let forfeited = p.quantity.saturating_sub(p.quantity_dispensed);
+
+        // Decrement refills and reset quantity for new fill.
+        // last_dispensed is kept so the minimum-interval check anchors on the last real dispense.
         p.refills_remaining -= 1;
         p.refills_used += 1;
         p.quantity_dispensed = 0;
         p.status = PrescriptionStatus::Active;
-        p.last_dispensed = None;
 
-        // Extend validity if needed (30 days from refill). Use checked_add to
-        // guard against overflow when ledger timestamp is near u64::MAX.
-        let new_valid_until = env
-            .ledger()
-            .timestamp()
+        // Extend validity by the refill window, capped at the issue-anchored limit.
+        // checked_add guards against overflow when ledger timestamp is near u64::MAX.
+        let new_valid_until = now
             .checked_add(REFILL_WINDOW_SECS)
-            .ok_or(Error::InvalidValidityWindow)?;
+            .ok_or(Error::InvalidValidityWindow)?
+            .min(validity_cap);
         if new_valid_until > p.valid_until {
             p.valid_until = new_valid_until;
         }
@@ -1679,7 +1719,7 @@ impl PrescriptionContract {
         // Emit refill event — refills_remaining omitted to avoid clinical detail on-chain (#227)
         env.events().publish(
             (Symbol::new(&env, "prescription_refilled"),),
-            (prescription_id, pharmacy_id, provider_id),
+            (prescription_id, pharmacy_id, provider_id, forfeited),
         );
 
         Ok(())
@@ -2077,6 +2117,7 @@ fn do_issue_prescription(
         medication_name: req.medication_name.clone(),
         quantity: req.quantity,
         quantity_dispensed: 0,
+        days_supply: req.days_supply,
         refills_allowed: req.refills_allowed,
         refills_remaining: req.refills_allowed,
         refills_used: 0,
