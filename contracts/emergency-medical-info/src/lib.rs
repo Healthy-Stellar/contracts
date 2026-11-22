@@ -109,8 +109,18 @@ pub struct RecoveryProposal {
 pub enum DataKey {
     EmergencyProfile(Address),
     CriticalAlerts(Address),
-    EmergencyAccessLog(Address),
+    /// Append-only, bounded break-glass audit log entry, keyed by
+    /// (patient, sequence). Sequence is a per-patient monotonically
+    /// increasing counter so prior entries are never overwritten.
+    EmergencyAccessLog(Address, u32),
+    /// Per-patient counter tracking the next sequence number for the
+    /// break-glass audit log.
+    EmergencyAccessLogSeq(Address),
     DNROrder(Address),
+    /// Patient-authored advance directive hash. Stored separately from
+    /// `DNROrder` so a patient can never overwrite a clinician-recorded
+    /// DNR order.
+    AdvanceDirective(Address),
     EmergencyNotifications(Address),
     RecoveryConfig(Address),
     RecoveryProposal(Address),
@@ -118,10 +128,14 @@ pub enum DataKey {
     /// Registered emergency responder -> active flag. Only a registered,
     /// active responder may invoke the break-glass `emergency_access_request`.
     Responder(Address),
-    /// Break-glass access grant expiry timestamp for a responder.
-    /// A grant is valid only until this ledger timestamp; afterwards the
-    /// responder must issue a fresh `emergency_access_request`.
-    EmergencyAccessGrant(Address),
+    /// Break-glass access grant expiry timestamp, keyed by (responder, patient).
+    /// A grant is valid only until this ledger timestamp and only for the
+    /// specific patient it was requested for; afterwards the responder must
+    /// issue a fresh `emergency_access_request`.
+    EmergencyAccessGrant(Address, Address),
+    /// Configured healthcare proxy authorized to act on a patient's behalf
+    /// for DNR record/revoke decisions, keyed by patient.
+    HealthcareProxy(Address),
 }
 
 /// Maximum number of hashes allowed in `critical_allergy_hashes`.
@@ -256,6 +270,7 @@ impl EmergencyMedicalInfo {
         while alerts.len() >= MAX_CRITICAL_ALERTS {
             alerts.remove(0);
         }
+        Self::require_patient_or_proxy_auth(&env, &patient_id)?;
 
         alerts.push_back(CriticalAlert {
             provider_id: provider.clone(),
