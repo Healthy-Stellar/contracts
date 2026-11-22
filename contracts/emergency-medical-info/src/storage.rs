@@ -1,51 +1,52 @@
-use soroban_sdk::{contracttype, Address, BytesN, Env, Vec};
+use soroban_sdk::{Address, Env, Vec};
 
-use crate::types::{DataKey, EmergencyAccessLog, EmergencyType};
+use crate::types::{DataKey, RecoveryConfig, RecoveryProposal};
 
-/// Maximum number of audit log entries retained per patient.
-/// Older entries are evicted once this bound is reached.
-pub const MAX_AUDIT_LOG_ENTRIES: u32 = 32;
-
-/// Append an audit log entry for a patient, preserving prior entries.
-///
-/// The log is bounded: once `MAX_AUDIT_LOG_ENTRIES` entries exist, the oldest
-/// entry is dropped so the ring buffer never grows without limit.
-pub fn append_audit_log(
-    env: &Env,
-    patient: &Address,
-    responder: &Address,
-    emergency_type: &EmergencyType,
-    justification_hash: &BytesN<32>,
-    timestamp: u64,
-) {
-    let mut log: Vec<EmergencyAccessLog> = env
-        .storage()
-        .persistent()
-        .get(&DataKey::EmergencyAccessLog(patient.clone()))
-        .unwrap_or_else(|| Vec::new(env));
-
-    if log.len() >= MAX_AUDIT_LOG_ENTRIES {
-        // Evict the oldest entry to keep the log bounded.
-        log.remove(0);
-    }
-
-    log.push_back(EmergencyAccessLog {
-        responder: responder.clone(),
-        patient: patient.clone(),
-        emergency_type: emergency_type.clone(),
-        justification_hash: justification_hash.clone(),
-        timestamp,
-    });
-
-    env.storage()
-        .persistent()
-        .set(&DataKey::EmergencyAccessLog(patient.clone()), &log);
+pub fn has_admin(env: &Env) -> bool {
+    env.storage().instance().has(&DataKey::Admin)
 }
 
-/// Read the current audit log for a patient (empty if none).
-pub fn get_audit_log(env: &Env, patient: &Address) -> Vec<EmergencyAccessLog> {
+pub fn get_admin(env: &Env) -> Address {
+    env.storage().instance().get(&DataKey::Admin).unwrap()
+}
+
+pub fn set_admin(env: &Env, admin: &Address) {
+    env.storage().instance().set(&DataKey::Admin, admin);
+}
+
+pub fn get_recovery_config(env: &Env) -> Option<RecoveryConfig> {
+    env.storage().instance().get(&DataKey::RecoveryConfig)
+}
+
+pub fn set_recovery_config(env: &Env, config: &RecoveryConfig) {
+    env.storage().instance().set(&DataKey::RecoveryConfig, config);
+}
+
+pub fn get_recovery_proposal(env: &Env, patient: &Address) -> Option<RecoveryProposal> {
     env.storage()
         .persistent()
-        .get(&DataKey::EmergencyAccessLog(patient.clone()))
-        .unwrap_or_else(|| Vec::new(env))
+        .get(&DataKey::RecoveryProposal(patient.clone()))
+}
+
+pub fn set_recovery_proposal(env: &Env, patient: &Address, proposal: &RecoveryProposal) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::RecoveryProposal(patient.clone()), proposal);
+}
+
+pub fn remove_recovery_proposal(env: &Env, patient: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::RecoveryProposal(patient.clone()));
+}
+
+pub fn get_guardians(env: &Env) -> Vec<Address> {
+    env.storage()
+        .instance()
+        .get(&DataKey::Guardians)
+        .unwrap_or(Vec::new(env))
+}
+
+pub fn set_guardians(env: &Env, guardians: &Vec<Address>) {
+    env.storage().instance().set(&DataKey::Guardians, guardians);
 }
