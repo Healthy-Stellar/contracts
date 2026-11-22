@@ -28,7 +28,10 @@ mod test;
 mod types;
 
 use shared::privacy::{validate_policy_metadata, PolicyMetadata};
-use soroban_sdk::{contract, contractclient, contractimpl, symbol_short, Address, BytesN, Env, String, Vec};
+use soroban_sdk::{
+    contract, contractclient, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
+    Vec,
+};
 use types::{
     ClaimRecord, ClaimReconciledEvent, ClaimStatus, DataKey, DenialInfo, DisputeRecord,
     DisputeStatus, Error, InsurerPaymentRecord,
@@ -36,6 +39,23 @@ use types::{
 };
 
 // ── Cross-contract interface for consent verification (#300) ──────────────────
+//
+// #1118: mirror of access-control's `ConsentPurpose`. Unit variants of a
+// `#[contracttype]` enum are encoded by variant name, so this matches the
+// access-control definition on the wire.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConsentPurpose {
+    Treatment,
+    Payment,
+    Operations,
+    Research,
+    Imaging,
+}
+
+/// #1118: access-control scope bit 0x02 = write. Creating a claim record is a
+/// write, so a read-only consent must not authorize it.
+pub const CONSENT_SCOPE_WRITE: u32 = 0x02;
 //
 // Defines only the one method we need; the generated `AccessControlClient`
 // calls the access-control contract by function name at runtime.
@@ -48,7 +68,7 @@ pub trait AccessControlInterface {
         env: Env,
         subject: Address,
         grantee: Address,
-        purpose_code: String,
+        purpose_code: ConsentPurpose,
         required_scope: u32,
     );
 }
@@ -167,7 +187,10 @@ impl MedicalClaimsSystem {
         // before creating a claim record (HIPAA compliance).
         //
         // We look up the access-control contract stored at initialization time,
-        // then call check_consent(patient, provider, "treatment", 0x01 = read).
+        // then call check_consent(patient, provider, Payment, 0x02 = write).
+        // #1118: billing is a HIPAA *payment* action, distinct from treatment,
+        // and creating a claim is a write — a treatment / read-only consent
+        // must not authorize it.
         // Any failure (ConsentNotFound / ConsentRevoked / ConsentExpired /
         // ConsentDenied) is surfaced as Error::ConsentNotVerified so callers
         // receive a clear, auditable rejection.
@@ -182,8 +205,8 @@ impl MedicalClaimsSystem {
             .try_check_consent(
                 &patient_id,
                 &provider_id,
-                &String::from_str(&env, "treatment"),
-                &1u32, // scope bit 0x01 = read
+                &ConsentPurpose::Payment,
+                &CONSENT_SCOPE_WRITE,
             )
             .map_err(|_| Error::ConsentNotVerified)?;
 

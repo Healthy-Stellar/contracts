@@ -302,9 +302,33 @@ _No `DataKey` enum found; contract may use inline keys or instance storage only.
 | `RecordCounter` | Persistent storage entry |
 | `Consent(Address, Address)` | (patient, provider) -> ConsentScope |
 | `PatientProviders(Address)` | patient -> Vec<Address> of consented providers |
-| `CategoryIndex(RecordCategory)` | category -> Vec<u64> of record ids in that category, for prefix-style queries |
+| `CategoryIndex(RecordCategory, u32)` | (category, page) -> Vec<u64> of record ids in that category |
+| `RecordCategoryLoc(u64)` | record_id -> (RecordCategory, page) |
 | `ProviderRegistry` | Persistent storage entry |
 | `RecordVersion(u64, u32)` | Persistent storage entry |
+| `PatientRecords(Address, u32)` | (patient, page) -> Vec<u64> of the patient's record ids (#1120) |
+| `PatientRecordCount(Address)` | patient -> number of ids appended to `PatientRecords` |
+| `Deregistering(Address)` / `DeregisterCursor(Address)` / `DeregisterVersionCursor(Address)` | Progress of a resumable deregistration; removed on completion |
+| `RecordTombstone(u64)` | record_id -> retained integrity hash after erasure |
+| `CallerNonce(Address)` | caller -> last used nonce |
+
+#### Deregistration / erasure (#1120)
+
+`deregister_patient(patient, nonce, max_items)` is resumable: each call deletes at most
+`max_items` entries and returns the approximate number still remaining; while it is non-zero
+new consents, records and updates for the patient are rejected with `Deregistering`. Callers
+repeat the call (with a fresh nonce) until it returns `0`, at which point a `pat_dreg` event is
+emitted.
+
+| Deleted | Kept for legal retention |
+|---------|--------------------------|
+| `Consent(patient, *)` and `PatientProviders(patient)` | `RecordTombstone(record_id)`: record id, final `integrity_hash`, version count, erasure timestamp — no patient, provider, envelope reference, category, description or policy |
+| `Record(record_id)` for every record of the patient | `CallerNonce(patient)` — kept so previously used nonces can't be replayed |
+| Every prior `RecordVersion(record_id, v)` | `RecordCounter` / `CategoryCount` — global counters with no per-patient data |
+| The record's `CategoryIndex` entry and `RecordCategoryLoc(record_id)` | |
+| `PatientRecords(patient, *)` and `PatientRecordCount(patient)` | |
+
+A provider re-granted consent after deregistration therefore sees no prior history.
 
 ### `healthcare-analytics`
 
@@ -659,7 +683,8 @@ _No `DataKey` enum found; contract may use inline keys or instance storage only.
 | `VitalsHistory(Address)` | map to Vec<VitalReading> |
 | `MonitoringParams(Address, Symbol)` | map to MonitoringParameters |
 | `DeviceReg(Address, String)` | map to DeviceRegistration |
-| `VitalsAlerts(Address, Symbol)` | map to Vec<VitalAlert> |
+| `Alert(Address, Symbol, u32)` | (patient, vital_type, slot) -> VitalAlert; ring buffer capped at `MAX_ALERTS_PER_VITAL` (100) per vital (#1121) |
+| `AlertSeq(Address, Symbol)` | (patient, vital_type) -> total alerts written (ring-buffer cursor) |
 | `RawWindow(Address, u64)` | Persistent storage entry |
 | `AggWindow(Address, u64)` | Persistent storage entry |
 | `LatestRawWindow(Address)` | Persistent storage entry |

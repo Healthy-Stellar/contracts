@@ -79,6 +79,10 @@ pub enum ContractError {
     BatchTooLarge = 26,
     /// #625: grantor or grantee entity has been deactivated via `deactivate_entity`.
     EntityInactive = 27,
+    /// #1118: consent `expires_at` is non-zero and not in the future.
+    InvalidExpiry = 28,
+    /// #1118: consent `legal_basis` is empty.
+    InvalidLegalBasis = 29,
 }
 
 /// Maximum number of access permissions a single grantee may accumulate.
@@ -89,6 +93,14 @@ pub const MAX_RESOURCE_AUTHORIZED: u32 = 200;
 pub const BATCH_SIZE_LIMIT: u32 = 20;
 /// Commit-reveal window: commits older than this many seconds are rejected.
 pub const COMMIT_EXPIRY_SECS: u64 = 3600;
+
+/// #1118: consent scope bits. `check_consent` requires an explicit, non-zero
+/// combination of these; `0` is rejected as `InvalidScopeMask`.
+pub const SCOPE_READ: u32 = 0x01;
+pub const SCOPE_WRITE: u32 = 0x02;
+pub const SCOPE_SHARE: u32 = 0x04;
+/// #1118: maximum byte length of a consent `legal_basis` string.
+pub const MAX_LEGAL_BASIS_LEN: u32 = 64;
 
 /// --------------------
 /// Role Types (RBAC)
@@ -175,12 +187,26 @@ pub enum ConsentStatus {
     Expired,
 }
 
+/// #1118: closed set of consent purposes. HIPAA treats treatment, payment and
+/// health-care operations as separate purposes, so each one needs its own
+/// consent; a free-form string allowed `"Treatment"` and `"treatment"` to be
+/// two different purposes.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConsentPurpose {
+    Treatment,
+    Payment,
+    Operations,
+    Research,
+    Imaging,
+}
+
 /// Index entry for subject's consent list.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConsentIndexEntry {
     pub grantee: Address,
-    pub purpose_code: String,
+    pub purpose_code: ConsentPurpose,
 }
 
 /// #676: index entry recording one (grantee, resource) grant a grantor made,
@@ -202,8 +228,8 @@ pub struct ConsentRecord {
     pub grantee: Address,
     /// Bitmask of permitted operations (e.g. 0x01=read, 0x02=write, 0x04=share).
     pub scope_mask: u32,
-    /// Purpose code (e.g. "treatment", "research", "billing").
-    pub purpose_code: String,
+    /// Purpose of the consent (#1118: closed enum, not a free-form string).
+    pub purpose_code: ConsentPurpose,
     /// Legal basis (e.g. "explicit_consent", "vital_interest", "legal_obligation").
     pub legal_basis: String,
     /// Unix timestamp when consent was granted.
@@ -259,7 +285,7 @@ pub enum DataKey {
     Commit(BytesN<32>),
     // #223: unified consent engine
     // (subject, grantee, purpose_code) -> ConsentRecord
-    Consent(Address, Address, String),
+    Consent(Address, Address, ConsentPurpose),
     // subject -> Vec<(grantee, purpose_code)> for enumeration
     SubjectConsents(Address),
     // #676: grantor -> Vec<GrantorIndexEntry> of every (grantee, resource) it granted access to
@@ -1024,7 +1050,7 @@ impl AccessControl {
                 let consent_key = DataKey::Consent(
                     wallet.clone(),
                     entry.grantee.clone(),
-                    entry.purpose_code.clone(),
+                    entry.purpose_code,
                 );
                 if let Some(mut record) = env
                     .storage()
@@ -1040,7 +1066,7 @@ impl AccessControl {
                                 wallet.clone(),
                                 entry.grantee.clone(),
                             ),
-                            (entry.purpose_code.clone(), record.op_id),
+                            (entry.purpose_code, record.op_id),
                         );
                     }
                     record.status = ConsentStatus::Revoked;
@@ -1088,15 +1114,18 @@ impl AccessControl {
     /// * `subject`      - The data subject granting consent (must auth)
     /// * `grantee`      - The party receiving access
     /// * `scope_mask`   - Bitmask: 0x01=read, 0x02=write, 0x04=share
-    /// * `purpose_code` - e.g. "treatment", "research", "billing"
-    /// * `legal_basis`  - e.g. "explicit_consent", "vital_interest"
-    /// * `expires_at`   - Unix timestamp; 0 = no expiry
+    /// * `purpose_code` - One of [`ConsentPurpose`]
+    /// * `legal_basis`  - e.g. "explicit_consent", "vital_interest" (1..=64 bytes)
+    /// * `expires_at`   - Unix timestamp strictly in the future; 0 = no expiry
+    ///
+    /// #1118: the grantee must be a registered, active entity so that the
+    /// consent can later be centrally suspended via `deactivate_entity`.
     pub fn grant_consent(
         env: Env,
         subject: Address,
         grantee: Address,
         scope_mask: u32,
-        purpose_code: String,
+        purpose_code: ConsentPurpose,
         legal_basis: String,
         expires_at: u64,
     ) -> Result<u64, ContractError> {
@@ -1104,8 +1133,28 @@ impl AccessControl {
 
         Self::check_rate_limit(&env, &subject)?;
 
-        if scope_mask == 0 {
+        if scope_mask == 0 || (scope_mask & !(SCOPE_READ | SCOPE_WRITE | SCOPE_SHARE)) != 0 {
             return Err(ContractError::InvalidScopeMask);
+        }
+
+        if expires_at != 0 && expires_at <= env.ledger().timestamp() {
+            return Err(ContractError::InvalidExpiry);
+        }
+
+        if legal_basis.is_empty() {
+            return Err(ContractError::InvalidLegalBasis);
+        }
+        if legal_basis.len() > MAX_LEGAL_BASIS_LEN {
+            return Err(ContractError::InputTooLarge);
+        }
+
+        let grantee_data: EntityData = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Entity(grantee.clone()))
+            .ok_or(ContractError::GranteeNotRegistered)?;
+        if !grantee_data.active {
+            return Err(ContractError::EntityInactive);
         }
 
         let op_id: u64 = env
@@ -1120,7 +1169,7 @@ impl AccessControl {
             subject: subject.clone(),
             grantee: grantee.clone(),
             scope_mask,
-            purpose_code: purpose_code.clone(),
+            purpose_code,
             legal_basis,
             granted_at: env.ledger().timestamp(),
             expires_at,
@@ -1128,7 +1177,7 @@ impl AccessControl {
             op_id,
         };
 
-        let key = DataKey::Consent(subject.clone(), grantee.clone(), purpose_code.clone());
+        let key = DataKey::Consent(subject.clone(), grantee.clone(), purpose_code);
         env.storage().persistent().set(&key, &record);
 
         // Update subject's consent index.
@@ -1151,7 +1200,7 @@ impl AccessControl {
         if !found {
             index.push_back(ConsentIndexEntry {
                 grantee: grantee.clone(),
-                purpose_code: purpose_code.clone(),
+                purpose_code,
             });
             env.storage().persistent().set(&idx_key, &index);
         }
@@ -1169,13 +1218,13 @@ impl AccessControl {
         env: Env,
         subject: Address,
         grantee: Address,
-        purpose_code: String,
+        purpose_code: ConsentPurpose,
     ) -> Result<u64, ContractError> {
         subject.require_auth();
 
         Self::check_rate_limit(&env, &subject)?;
 
-        let key = DataKey::Consent(subject.clone(), grantee.clone(), purpose_code.clone());
+        let key = DataKey::Consent(subject.clone(), grantee.clone(), purpose_code);
         let mut record: ConsentRecord = env
             .storage()
             .persistent()
@@ -1204,21 +1253,30 @@ impl AccessControl {
     /// Check whether active consent exists for (subject, grantee, purpose_code)
     /// and that the requested scope bits are all covered.
     /// Returns `Ok(())` if access is permitted, or an error otherwise.
+    ///
+    /// #1118: `required_scope` must name at least one explicit scope bit;
+    /// `0` is rejected with `InvalidScopeMask` instead of matching any
+    /// consent. The grantee must be a registered, active entity — an
+    /// unregistered grantee could never be deactivated, so its consent could
+    /// not be centrally suspended.
     pub fn check_consent(
         env: Env,
         subject: Address,
         grantee: Address,
-        purpose_code: String,
+        purpose_code: ConsentPurpose,
         required_scope: u32,
     ) -> Result<(), ContractError> {
-        if let Some(data) = env
+        if required_scope == 0 {
+            return Err(ContractError::InvalidScopeMask);
+        }
+
+        let grantee_data: EntityData = env
             .storage()
             .persistent()
-            .get::<DataKey, EntityData>(&DataKey::Entity(grantee.clone()))
-        {
-            if !data.active {
-                return Err(ContractError::ConsentDenied);
-            }
+            .get(&DataKey::Entity(grantee.clone()))
+            .ok_or(ContractError::ConsentDenied)?;
+        if !grantee_data.active {
+            return Err(ContractError::ConsentDenied);
         }
         if let Some(data) = env
             .storage()
@@ -1248,7 +1306,7 @@ impl AccessControl {
             return Err(ContractError::ConsentExpired);
         }
 
-        if required_scope != 0 && (record.scope_mask & required_scope) != required_scope {
+        if (record.scope_mask & required_scope) != required_scope {
             return Err(ContractError::ConsentDenied);
         }
 
@@ -1260,7 +1318,7 @@ impl AccessControl {
         env: Env,
         subject: Address,
         grantee: Address,
-        purpose_code: String,
+        purpose_code: ConsentPurpose,
     ) -> Result<ConsentRecord, ContractError> {
         env.storage()
             .persistent()
