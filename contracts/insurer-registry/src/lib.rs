@@ -116,12 +116,16 @@ impl InsurerRegistry {
     ) -> Result<(), Error> {
         validate_nonzero_address(&issuer).map_err(|_| Error::InvalidAddress)?;
         Self::require_admin(&env, &admin)?;
-        let key = DataKey::TrustedIssuer(issuer);
+        let key = DataKey::TrustedIssuer(issuer.clone());
         if trusted {
             env.storage().persistent().set(&key, &true);
         } else {
             env.storage().persistent().remove(&key);
         }
+        env.events().publish(
+            (Symbol::new(&env, "issuer_trust"), issuer),
+            trusted,
+        );
         Ok(())
     }
 
@@ -186,6 +190,7 @@ impl InsurerRegistry {
     }
 
     /// Renew an insurer credential using an issuer trusted by the registry admin.
+    /// Revoked credentials cannot be renewed; use `reinstate_insurer` first.
     pub fn renew_credential(
         env: Env,
         wallet: Address,
@@ -202,12 +207,15 @@ impl InsurerRegistry {
         Self::require_trusted_issuer(&env, &issuer)?;
         Self::validate_credential_expiry(&env, expires_at)?;
 
-        let key = DataKey::Insurer(wallet);
+        let key = DataKey::Insurer(wallet.clone());
         let mut insurer: InsurerData = env
             .storage()
             .persistent()
             .get(&key)
             .ok_or(Error::InsurerNotFound)?;
+        if insurer.credential.revoked_at.is_some() {
+            return Err(Error::NotAuthorized);
+        }
         insurer.credential = CredentialAnchor {
             credential_hash,
             issuer,
@@ -219,6 +227,32 @@ impl InsurerRegistry {
             revoked_by: None,
         };
         env.storage().persistent().set(&key, &insurer);
+
+        env.events()
+            .publish((Symbol::new(&env, "cred_renew"), wallet), expires_at);
+        Ok(())
+    }
+
+    /// Clear a credential revocation so the insurer can be renewed and used again.
+    /// Only the registry admin may reinstate an insurer.
+    pub fn reinstate_insurer(env: Env, admin: Address, wallet: Address) -> Result<(), Error> {
+        validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
+        Self::require_admin(&env, &admin)?;
+
+        let key = DataKey::Insurer(wallet.clone());
+        let mut insurer: InsurerData = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::InsurerNotFound)?;
+        insurer.credential.revoked_at = None;
+        insurer.credential.revocation_reason = None;
+        insurer.credential.revoked_by = None;
+        env.storage().persistent().set(&key, &insurer);
+
+        env.events()
+            .publish((symbol_short!("cred_rein"), wallet, admin), ());
         Ok(())
     }
 
@@ -365,10 +399,14 @@ impl InsurerRegistry {
             .ok_or(Error::InsurerNotFound)
     }
 
+    /// An insurer is active only while its credential is unrevoked, unexpired, and its issuer
+    /// is still trusted. Removing issuer trust deactivates every insurer it registered.
     pub fn is_insurer_active(env: Env, wallet: Address) -> bool {
         let now = env.ledger().timestamp();
-        if let Ok(insurer) = Self::get_insurer(env, wallet) {
-            insurer.credential.revoked_at.is_none() && insurer.credential.expires_at > now
+        if let Ok(insurer) = Self::get_insurer(env.clone(), wallet) {
+            insurer.credential.revoked_at.is_none()
+                && insurer.credential.expires_at > now
+                && Self::require_trusted_issuer(&env, &insurer.credential.issuer).is_ok()
         } else {
             false
         }
