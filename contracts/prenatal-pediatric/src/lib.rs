@@ -218,7 +218,16 @@ pub enum DataKey {
     /// (patient/guardian, grantee) -> true when the patient/guardian has
     /// authorized the grantee (e.g. a family member) to read their records.
     AccessGrant(Address, Address),
+    /// child -> guardians allowed to manage the child's records
+    Guardians(Address),
+    /// child placeholder -> real wallet bound via `bind_child_identity`
+    ChildWallet(Address),
+    /// real wallet -> child placeholder it was bound to
+    ChildPlaceholder(Address),
 }
+
+/// Maximum number of guardians per child.
+pub const MAX_GUARDIANS: u32 = 5;
 
 #[contract]
 pub struct MaternalChildHealthContract;
@@ -508,6 +517,13 @@ impl MaternalChildHealthContract {
         }
         provider_id.require_auth();
 
+        // The mother becomes the newborn's first guardian, so she must
+        // consent. The newborn's placeholder address has no key, so without a
+        // guardian nobody could ever read, share or manage the child's records.
+        let pregnancy = Self::get_pregnancy(&env, delivery.pregnancy_id)?;
+        let mother = pregnancy.patient_id;
+        mother.require_auth();
+
         if apgar_1min > 10 || apgar_5min > 10 || gestational_age_weeks > 45 {
             return Err(Error::InvalidData);
         }
@@ -532,6 +548,11 @@ impl MaternalChildHealthContract {
             .persistent()
             .set(&DataKey::Newborn(newborn_id.clone()), &record);
 
+        env.storage().persistent().set(
+            &DataKey::Guardians(newborn_id.clone()),
+            &vec![&env, mother],
+        );
+
         delivery.newborn_ids.push_back(newborn_id.clone());
         env.storage()
             .persistent()
@@ -551,6 +572,7 @@ impl MaternalChildHealthContract {
     ) -> Result<(), Error> {
         provider_id.require_auth();
 
+        let newborn_id = Self::canonical_patient(&env, &newborn_id);
         let newborn: NewbornRecord = env
             .storage()
             .persistent()
@@ -583,10 +605,13 @@ impl MaternalChildHealthContract {
         Ok(())
     }
 
+    /// `authorizer` must be the patient, the wallet bound to a child, or one
+    /// of the child's guardians.
     pub fn track_pediatric_growth(
         env: Env,
         provider_id: Address,
         patient_id: Address,
+        authorizer: Address,
         measurement_date: u64,
         age_months: u32,
         weight_kg_x100: i64,
@@ -595,7 +620,8 @@ impl MaternalChildHealthContract {
         bmi_x100: i64,
     ) -> Result<(), Error> {
         provider_id.require_auth();
-        patient_id.require_auth();
+        let patient_id = Self::canonical_patient(&env, &patient_id);
+        Self::require_patient_or_guardian(&env, &authorizer, &patient_id)?;
 
         if !Self::is_registered_provider(&env, &provider_id) {
             return Err(Error::Unauthorized);
@@ -632,10 +658,13 @@ impl MaternalChildHealthContract {
         Ok(())
     }
 
+    /// `authorizer` must be the patient, the wallet bound to a child, or one
+    /// of the child's guardians.
     pub fn record_developmental_milestone(
         env: Env,
         provider_id: Address,
         patient_id: Address,
+        authorizer: Address,
         assessment_date: u64,
         age_months: u32,
         milestone_category: Symbol,
@@ -643,7 +672,8 @@ impl MaternalChildHealthContract {
         concerns: Vec<Symbol>,
     ) -> Result<(), Error> {
         provider_id.require_auth();
-        patient_id.require_auth();
+        let patient_id = Self::canonical_patient(&env, &patient_id);
+        Self::require_patient_or_guardian(&env, &authorizer, &patient_id)?;
 
         if !Self::is_registered_provider(&env, &provider_id) {
             return Err(Error::Unauthorized);
@@ -669,10 +699,13 @@ impl MaternalChildHealthContract {
         Ok(())
     }
 
+    /// `authorizer` must be the patient, the wallet bound to a child, or one
+    /// of the child's guardians.
     pub fn track_well_child_visit(
         env: Env,
         provider_id: Address,
         patient_id: Address,
+        authorizer: Address,
         visit_date: u64,
         age_months: u32,
         immunizations_given: Vec<Symbol>,
@@ -680,7 +713,8 @@ impl MaternalChildHealthContract {
         anticipatory_guidance_hash: BytesN<32>,
     ) -> Result<(), Error> {
         provider_id.require_auth();
-        patient_id.require_auth();
+        let patient_id = Self::canonical_patient(&env, &patient_id);
+        Self::require_patient_or_guardian(&env, &authorizer, &patient_id)?;
 
         if !Self::is_registered_provider(&env, &provider_id) {
             return Err(Error::Unauthorized);
@@ -744,26 +778,158 @@ impl MaternalChildHealthContract {
         })
     }
 
-    /// Allow `grantee` (e.g. an authorized family member) to read the
-    /// records of `patient_id`. For newborn records the mother acts as
-    /// guardian, so grants from the mother cover her newborns.
-    pub fn grant_record_access(env: Env, patient_id: Address, grantee: Address) {
-        patient_id.require_auth();
+    /// Allow `grantee` (e.g. an authorized family member or a pediatrician
+    /// at another practice) to read the records of `patient_id`.
+    ///
+    /// `caller` must be the patient, or (for a child) one of the child's
+    /// guardians or the wallet bound to the child.
+    pub fn grant_record_access(
+        env: Env,
+        caller: Address,
+        patient_id: Address,
+        grantee: Address,
+    ) -> Result<(), Error> {
+        let patient_id = Self::canonical_patient(&env, &patient_id);
+        Self::require_patient_or_guardian(&env, &caller, &patient_id)?;
         env.storage()
             .persistent()
             .set(&DataKey::AccessGrant(patient_id, grantee), &true);
+        Ok(())
     }
 
     /// Revoke a grant previously made with `grant_record_access`.
-    pub fn revoke_record_access(env: Env, patient_id: Address, grantee: Address) {
-        patient_id.require_auth();
+    pub fn revoke_record_access(
+        env: Env,
+        caller: Address,
+        patient_id: Address,
+        grantee: Address,
+    ) -> Result<(), Error> {
+        let patient_id = Self::canonical_patient(&env, &patient_id);
+        Self::require_patient_or_guardian(&env, &caller, &patient_id)?;
         env.storage()
             .persistent()
             .remove(&DataKey::AccessGrant(patient_id, grantee));
+        Ok(())
     }
 
     pub fn has_record_access(env: Env, patient_id: Address, grantee: Address) -> bool {
+        let patient_id = Self::canonical_patient(&env, &patient_id);
         Self::has_access_grant(&env, &patient_id, &grantee)
+    }
+
+    /// Add `new_guardian` to `child`'s guardians. `caller` must already be a
+    /// guardian (or the wallet bound to the child).
+    pub fn add_guardian(
+        env: Env,
+        caller: Address,
+        child: Address,
+        new_guardian: Address,
+    ) -> Result<(), Error> {
+        let child = Self::canonical_patient(&env, &child);
+        Self::require_patient_or_guardian(&env, &caller, &child)?;
+
+        let mut guardians = Self::load_guardians(&env, &child);
+        if guardians.contains(&new_guardian) {
+            return Err(Error::AlreadyExists);
+        }
+        if guardians.len() >= MAX_GUARDIANS {
+            return Err(Error::InvalidData);
+        }
+        guardians.push_back(new_guardian);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Guardians(child), &guardians);
+        Ok(())
+    }
+
+    /// Remove `guardian` from `child`'s guardians. `caller` must be a
+    /// guardian (or the wallet bound to the child). The last guardian of a
+    /// child that has no bound wallet cannot be removed, otherwise nobody
+    /// could manage the child's records.
+    pub fn remove_guardian(
+        env: Env,
+        caller: Address,
+        child: Address,
+        guardian: Address,
+    ) -> Result<(), Error> {
+        let child = Self::canonical_patient(&env, &child);
+        Self::require_patient_or_guardian(&env, &caller, &child)?;
+
+        let mut guardians = Self::load_guardians(&env, &child);
+        let index = guardians.first_index_of(&guardian).ok_or(Error::NotFound)?;
+        if guardians.len() == 1 && Self::bound_wallet(&env, &child).is_none() {
+            return Err(Error::InvalidData);
+        }
+        guardians.remove(index);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Guardians(child), &guardians);
+        Ok(())
+    }
+
+    /// Return `child`'s guardians. Readable by the child's guardians or the
+    /// wallet bound to the child.
+    pub fn get_guardians(
+        env: Env,
+        requester: Address,
+        child: Address,
+    ) -> Result<Vec<Address>, Error> {
+        let child = Self::canonical_patient(&env, &child);
+        Self::require_patient_or_guardian(&env, &requester, &child)?;
+        Ok(Self::load_guardians(&env, &child))
+    }
+
+    /// Bind a newborn's keyless placeholder address to a real wallet.
+    ///
+    /// Requires the signatures of one of the child's guardians and of the new
+    /// wallet. Records stay stored under the placeholder (aliasing rather than
+    /// migrating). Afterwards the wallet counts as the patient everywhere, and
+    /// passing either the wallet or the placeholder as `patient_id` resolves
+    /// to the same records.
+    pub fn bind_child_identity(
+        env: Env,
+        guardian: Address,
+        child_placeholder: Address,
+        real_wallet: Address,
+    ) -> Result<(), Error> {
+        guardian.require_auth();
+        real_wallet.require_auth();
+
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::Newborn(child_placeholder.clone()))
+        {
+            return Err(Error::NotFound);
+        }
+        if !Self::is_guardian(&env, &child_placeholder, &guardian) {
+            return Err(Error::Unauthorized);
+        }
+        if Self::bound_wallet(&env, &child_placeholder).is_some()
+            || env
+                .storage()
+                .persistent()
+                .has(&DataKey::ChildPlaceholder(real_wallet.clone()))
+        {
+            return Err(Error::AlreadyExists);
+        }
+        // A placeholder cannot be bound to another placeholder.
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Newborn(real_wallet.clone()))
+        {
+            return Err(Error::InvalidData);
+        }
+
+        env.storage().persistent().set(
+            &DataKey::ChildWallet(child_placeholder.clone()),
+            &real_wallet,
+        );
+        env.storage()
+            .persistent()
+            .set(&DataKey::ChildPlaceholder(real_wallet), &child_placeholder);
+        Ok(())
     }
 
     pub fn get_pregnancy_record(
@@ -858,11 +1024,17 @@ impl MaternalChildHealthContract {
         newborn_id: Address,
     ) -> Result<NewbornRecord, Error> {
         requester.require_auth();
+        let newborn_id = Self::canonical_patient(&env, &newborn_id);
         let newborn: NewbornRecord = env
             .storage()
             .persistent()
-            .get(&DataKey::Newborn(newborn_id))
+            .get(&DataKey::Newborn(newborn_id.clone()))
             .ok_or(Error::NotFound)?;
+        if Self::is_patient_or_guardian(&env, &newborn_id, &requester)
+            || Self::has_access_grant(&env, &newborn_id, &requester)
+        {
+            return Ok(newborn);
+        }
         let delivery = Self::get_delivery(&env, newborn.delivery_id)?;
         Self::check_delivery_access(&env, &requester, &delivery)?;
         Ok(newborn)
@@ -875,6 +1047,7 @@ impl MaternalChildHealthContract {
         age_months: u32,
     ) -> Result<PediatricGrowthRecord, Error> {
         requester.require_auth();
+        let patient_id = Self::canonical_patient(&env, &patient_id);
         let growth_id: u64 = env
             .storage()
             .persistent()
@@ -885,13 +1058,64 @@ impl MaternalChildHealthContract {
             .persistent()
             .get(&DataKey::Growth(growth_id))
             .ok_or(Error::NotFound)?;
-        if requester != growth.patient_id
+        if !Self::is_patient_or_guardian(&env, &growth.patient_id, &requester)
             && requester != growth.provider_id
             && !Self::has_access_grant(&env, &growth.patient_id, &requester)
         {
             return Err(Error::Unauthorized);
         }
         Ok(growth)
+    }
+
+    /// Map a wallet bound with `bind_child_identity` back to the child
+    /// placeholder its records are stored under; any other address is
+    /// returned unchanged.
+    fn canonical_patient(env: &Env, id: &Address) -> Address {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ChildPlaceholder(id.clone()))
+            .unwrap_or_else(|| id.clone())
+    }
+
+    fn bound_wallet(env: &Env, child: &Address) -> Option<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ChildWallet(child.clone()))
+    }
+
+    fn load_guardians(env: &Env, child: &Address) -> Vec<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Guardians(child.clone()))
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    fn is_guardian(env: &Env, child: &Address, who: &Address) -> bool {
+        Self::load_guardians(env, child).contains(who)
+    }
+
+    /// `who` is the patient itself, the wallet bound to the patient (for a
+    /// child), or one of the patient's guardians. `patient_id` must already
+    /// be canonical.
+    fn is_patient_or_guardian(env: &Env, patient_id: &Address, who: &Address) -> bool {
+        *who == *patient_id
+            || Self::bound_wallet(env, patient_id).map_or(false, |w| w == *who)
+            || Self::is_guardian(env, patient_id, who)
+    }
+
+    /// Require `caller`'s signature and that it is the patient, the wallet
+    /// bound to the patient, or one of the patient's guardians.
+    fn require_patient_or_guardian(
+        env: &Env,
+        caller: &Address,
+        patient_id: &Address,
+    ) -> Result<(), Error> {
+        caller.require_auth();
+        if Self::is_patient_or_guardian(env, patient_id, caller) {
+            Ok(())
+        } else {
+            Err(Error::Unauthorized)
+        }
     }
 
     fn has_access_grant(env: &Env, patient_id: &Address, grantee: &Address) -> bool {

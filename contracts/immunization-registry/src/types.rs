@@ -8,7 +8,13 @@ pub enum DataKey {
     ImmunizationRecord(u64),
     AdverseEvents(u64),            // List of AdverseEvent
     PatientVaccineSeries(Address), // List of VaccineSeries
-    LotImmunizations(String),      // List of IDs (u64) administered from this lot
+    LotDose(String, u64),          // (normalized lot, seq) -> immunization id
+    LotCount(String),              // normalized lot -> number of LotDose entries
+    LotPatient(String, Address),   // (normalized lot, patient) -> true; de-dup marker
+    LotPatientAt(String, u64),     // (normalized lot, seq) -> distinct patient
+    LotPatientCount(String),       // normalized lot -> number of distinct patients
+    PatientDose(Address, String, u32), // (patient, cvx_code, dose_number) -> immunization id
+    PatientLastDose(Address, String),  // (patient, cvx_code) -> LastDose
     Regulator,                     // Address authorized for public-health/recall queries
     ProviderRegistry,              // Address of the provider-registry contract
 }
@@ -24,6 +30,21 @@ pub enum Error {
     NotInitialized = 5,
     InvalidAdministrationDate = 6,
     VaccineExpired = 7,
+    /// The same (patient, cvx_code, dose_number) is already recorded.
+    DuplicateDose = 8,
+    /// dose_number is not last + 1 (or the dose predates the previous one)
+    /// and no override reason was supplied.
+    OutOfSequenceDose = 9,
+    /// Lot number is empty or too long after normalization.
+    InvalidLotNumber = 10,
+}
+
+/// Most recent dose recorded for a (patient, cvx_code) pair.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LastDose {
+    pub dose_number: u32,
+    pub administration_date: u64,
 }
 
 #[contracttype]
