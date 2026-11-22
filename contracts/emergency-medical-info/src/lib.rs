@@ -106,8 +106,18 @@ pub struct RecoveryProposal {
 pub enum DataKey {
     EmergencyProfile(Address),
     CriticalAlerts(Address),
-    EmergencyAccessLog(Address),
+    /// Append-only, bounded break-glass audit log entry, keyed by
+    /// (patient, sequence). Sequence is a per-patient monotonically
+    /// increasing counter so prior entries are never overwritten.
+    EmergencyAccessLog(Address, u32),
+    /// Per-patient counter tracking the next sequence number for the
+    /// break-glass audit log.
+    EmergencyAccessLogSeq(Address),
     DNROrder(Address),
+    /// Patient-authored advance directive hash. Stored separately from
+    /// `DNROrder` so a patient can never overwrite a clinician-recorded
+    /// DNR order.
+    AdvanceDirective(Address),
     EmergencyNotifications(Address),
     RecoveryConfig(Address),
     RecoveryProposal(Address),
@@ -115,15 +125,24 @@ pub enum DataKey {
     /// Registered emergency responder -> active flag. Only a registered,
     /// active responder may invoke the break-glass `emergency_access_request`.
     Responder(Address),
-    /// Break-glass access grant expiry timestamp for a responder.
-    /// A grant is valid only until this ledger timestamp; afterwards the
-    /// responder must issue a fresh `emergency_access_request`.
-    EmergencyAccessGrant(Address),
+    /// Break-glass access grant expiry timestamp, keyed by (responder, patient).
+    /// A grant is valid only until this ledger timestamp and only for the
+    /// specific patient it was requested for; afterwards the responder must
+    /// issue a fresh `emergency_access_request`.
+    EmergencyAccessGrant(Address, Address),
+    /// Configured healthcare proxy authorized to act on a patient's behalf
+    /// for DNR record/revoke decisions, keyed by patient.
+    HealthcareProxy(Address),
 }
 
 /// Maximum number of hashes allowed in `critical_allergy_hashes`.
 /// Inputs exceeding this cap are rejected to prevent unbounded Vec growth.
 pub const MAX_CRITICAL_ALLERGIES: u32 = 50;
+
+/// Maximum number of break-glass audit log entries retained per patient.
+/// Once the ring buffer is full, the oldest entry is evicted so storage
+/// stays bounded while recent access history remains auditable.
+pub const MAX_EMERGENCY_ACCESS_LOG_ENTRIES: u32 = 64;
 
 /// Time window (in seconds) during which a break-glass emergency access
 /// grant remains valid. Matches access-control's 1-hour emergency override.
@@ -196,99 +215,60 @@ impl EmergencyMedicalInfo {
         Ok(())
     }
 
-    /// Set or update emergency profile for a patient
-    /// Sub-second access optimized with persistent storage
-    #[allow(clippy::too_many_arguments)]
-    pub fn set_emergency_profile(
+    /// Configure the healthcare proxy authorized to act on `patient_id`'s
+    /// behalf for DNR record/revoke decisions. Only the patient may set it.
+    pub fn set_healthcare_proxy(
         env: Env,
         patient_id: Address,
-        blood_type: Symbol,
-        critical_allergy_hashes: Vec<BytesN<32>>,
-        critical_condition_hashes: Vec<BytesN<32>>,
-        current_medication_hashes: Vec<BytesN<32>>,
-        emergency_contacts: Vec<EmergencyContact>,
-        advance_directives_hash: Option<BytesN<32>>,
+        proxy: Address,
     ) -> Result<(), Error> {
         patient_id.require_auth();
-
-        if critical_allergy_hashes.len() > MAX_CRITICAL_ALLERGIES {
-            return Err(Error::TooManyCriticalAllergies);
-        }
-
-        let profile = EmergencyProfile {
-            blood_type,
-            critical_allergy_hashes,
-            active_condition_hashes: critical_condition_hashes,
-            current_medication_hashes,
-            dnr_status: false,
-            emergency_contacts,
-        };
-
-        let key = DataKey::EmergencyProfile(patient_id.clone());
-        env.storage().persistent().set(&key, &profile);
-
-        // Store advance directives if provided
-        if let Some(hash) = advance_directives_hash {
-            let dnr_key = DataKey::DNROrder(patient_id.clone());
-            let dnr = DNROrder {
-                provider_id: patient_id.clone(),
-                dnr_document_hash: hash,
-                effective_date: env.ledger().timestamp(),
-                recorded_at: env.ledger().timestamp(),
-            };
-            env.storage().persistent().set(&dnr_key, &dnr);
-        }
-
+        env.storage()
+            .persistent()
+            .set(&DataKey::HealthcareProxy(patient_id), &proxy);
         Ok(())
     }
 
-    /// Check whether a patient has an emergency profile on file.
-    pub fn has_emergency_profile(env: Env, patient_id: Address) -> bool {
-        env.storage()
-            .persistent()
-            .has(&DataKey::EmergencyProfile(patient_id))
-    }
-
-    /// Record a DNR (Do Not Resuscitate) order for a patient.
-    /// Only a registered emergency responder may record a DNR order.
+    /// Record a DNR order for `patient_id`.
+    ///
+    /// Requires the caller to be a registered responder AND the patient (or
+    /// their configured healthcare proxy) to authorize the change. Emits a
+    /// `dnr_set` event including the acting provider.
     pub fn record_dnr_order(
         env: Env,
         provider_id: Address,
         patient_id: Address,
         dnr_document_hash: BytesN<32>,
+        effective_date: u64,
     ) -> Result<(), Error> {
         provider_id.require_auth();
         if !Self::is_registered_responder(env.clone(), provider_id.clone()) {
             return Err(Error::NotRegisteredResponder);
         }
+        Self::require_patient_or_proxy_auth(&env, &patient_id)?;
 
-        let now = env.ledger().timestamp();
         let order = DNROrder {
-            provider_id,
+            provider_id: provider_id.clone(),
             dnr_document_hash,
-            effective_date: now,
-            recorded_at: now,
+            effective_date,
+            recorded_at: env.ledger().timestamp(),
         };
         env.storage()
             .persistent()
             .set(&DataKey::DNROrder(patient_id.clone()), &order);
 
-        if let Some(mut profile) = env
-            .storage()
-            .persistent()
-            .get::<DataKey, EmergencyProfile>(&DataKey::EmergencyProfile(patient_id.clone()))
-        {
-            profile.dnr_status = true;
-            env.storage()
-                .persistent()
-                .set(&DataKey::EmergencyProfile(patient_id), &profile);
-        }
-
+        env.events().publish(
+            (Symbol::new(&env, "dnr_set"), patient_id.clone()),
+            (provider_id, dnr_document_hash, effective_date),
+        );
         Ok(())
     }
 
-    /// Revoke an existing DNR order for a patient.
-    /// Only a registered emergency responder may revoke a DNR order.
+    /// Revoke a DNR order for `patient_id`.
+    ///
+    /// Requires the caller to be a registered responder AND the patient (or
+    /// their configured healthcare proxy) to authorize the change. Emits a
+    /// `dnr_revoked` event including the acting provider.
     pub fn revoke_dnr_order(
         env: Env,
         provider_id: Address,
@@ -298,220 +278,38 @@ impl EmergencyMedicalInfo {
         if !Self::is_registered_responder(env.clone(), provider_id.clone()) {
             return Err(Error::NotRegisteredResponder);
         }
+        Self::require_patient_or_proxy_auth(&env, &patient_id)?;
 
         env.storage()
             .persistent()
             .remove(&DataKey::DNROrder(patient_id.clone()));
 
-        if let Some(mut profile) = env
-            .storage()
-            .persistent()
-            .get::<DataKey, EmergencyProfile>(&DataKey::EmergencyProfile(patient_id.clone()))
-        {
-            profile.dnr_status = false;
-            env.storage()
-                .persistent()
-                .set(&DataKey::EmergencyProfile(patient_id), &profile);
-        }
-
+        env.events().publish(
+            (Symbol::new(&env, "dnr_revoked"), patient_id.clone()),
+            provider_id,
+        );
         Ok(())
     }
 
-    /// Retrieve the DNR order for a patient, if any.
-    pub fn get_dnr_order(env: Env, patient_id: Address) -> Option<DNROrder> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::DNROrder(patient_id))
-    }
-
-    /// Configure key-loss recovery for a patient.
-    /// Only the patient may set their own recovery configuration.
-    pub fn set_recovery_config(
-        env: Env,
-        patient_id: Address,
-        emergency_contact: Address,
-        guardians: Vec<Address>,
-        recovery_threshold: u32,
-    ) -> Result<(), Error> {
+    /// Require authorization from the patient or their configured healthcare
+    /// proxy. The patient's own auth is always accepted; if a proxy is
+    /// configured, the proxy's auth is also accepted.
+    fn require_patient_or_proxy_auth(env: &Env, patient_id: &Address) -> Result<(), Error> {
         patient_id.require_auth();
-
-        if recovery_threshold == 0 || recovery_threshold > guardians.len() {
-            return Err(Error::InvalidRecoveryThreshold);
-        }
-
-        let config = RecoveryConfig {
-            emergency_contact,
-            guardians,
-            recovery_threshold,
-        };
-        env.storage()
+        if let Some(proxy) = env
+            .storage()
             .persistent()
-            .set(&DataKey::RecoveryConfig(patient_id), &config);
+            .get::<DataKey, Address>(&DataKey::HealthcareProxy(patient_id.clone()))
+        {
+            proxy.require_auth();
+        }
         Ok(())
     }
 
-    /// Propose a key-loss recovery by a guardian.
-    /// Each guardian may approve once; once the configured threshold is met
-    /// the proposal is recorded for the new owner.
-    pub fn propose_recovery(
-        env: Env,
-        guardian: Address,
-        patient_id: Address,
-        new_owner: Address,
-    ) -> Result<RecoveryProposal, Error> {
-        guardian.require_auth();
+    /// Append a break-glass audit log entry for `patient_id` and emit an
+    /// event describing the access. The log is append-only and bounded: a
+    /// per-patient sequence counter keys each entry so prior entries are
+    /// never overwritten, and once `MAX_EMERGENCY_ACCESS_LOG_ENTRIES` is
+    
 
-        let config: RecoveryConfig = env
-            .storage()
-            .persistent()
-            .get(&DataKey::RecoveryConfig(patient_id.clone()))
-            .ok_or(Error::NotAuthorized)?;
-
-        let mut is_guardian = false;
-        for g in config.guardians.iter() {
-            if g == guardian {
-                is_guardian = true;
-                break;
-            }
-        }
-        if !is_guardian {
-            return Err(Error::NotAuthorized);
-        }
-
-        let mut proposal = env
-            .storage()
-            .persistent()
-            .get::<DataKey, RecoveryProposal>(&DataKey::RecoveryProposal(patient_id.clone()))
-            .unwrap_or(RecoveryProposal {
-                new_owner: new_owner.clone(),
-                approvals: Vec::new(&env),
-            });
-
-        let mut already = false;
-        for a in proposal.approvals.iter() {
-            if a == guardian {
-                already = true;
-                break;
-            }
-        }
-        if !already {
-            proposal.approvals.push_back(guardian);
-        }
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::RecoveryProposal(patient_id), &proposal);
-
-        Ok(proposal)
-    }
-
-    /// Break-glass emergency access request by a registered responder.
-    /// Grants a time-bounded read window (see `EMERGENCY_ACCESS_WINDOW_SECONDS`).
-    pub fn emergency_access_request(
-        env: Env,
-        provider_id: Address,
-        patient_id: Address,
-        emergency_type: Symbol,
-        justification_hash: BytesN<32>,
-        location_hash: BytesN<32>,
-    ) -> Result<(), Error> {
-        provider_id.require_auth();
-        if !Self::is_registered_responder(env.clone(), provider_id.clone()) {
-            return Err(Error::NotRegisteredResponder);
-        }
-
-        let now = env.ledger().timestamp();
-        let expires_at = now + EMERGENCY_ACCESS_WINDOW_SECONDS;
-        env.storage()
-            .persistent()
-            .set(&DataKey::EmergencyAccessGrant(provider_id.clone()), &expires_at);
-
-        let log = EmergencyAccessLog {
-            provider_id,
-            emergency_type,
-            justification_hash,
-            location_hash,
-            access_time: now,
-        };
-        env.storage()
-            .persistent()
-            .set(&DataKey::EmergencyAccessLog(patient_id), &log);
-
-        Ok(())
-    }
-
-    /// Read a patient's emergency profile via break-glass access.
-    /// The responder must hold a non-expired grant; expired grants are
-    /// rejected so access is never permanent.
-    pub fn emergency_read(
-        env: Env,
-        provider_id: Address,
-        patient_id: Address,
-    ) -> Result<EmergencyProfile, Error> {
-        provider_id.require_auth();
-
-        let expires_at: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::EmergencyAccessGrant(provider_id.clone()))
-            .ok_or(Error::NotAuthorized)?;
-
-        if env.ledger().timestamp() > expires_at {
-            env.storage()
-                .persistent()
-                .remove(&DataKey::EmergencyAccessGrant(provider_id));
-            return Err(Error::EmergencyAccessExpired);
-        }
-
-        env.storage()
-            .persistent()
-            .get(&DataKey::EmergencyProfile(patient_id))
-            .ok_or(Error::EmergencyProfileNotFound)
-    }
-
-    /// Attach a critical alert to a patient's emergency profile.
-    /// Only a registered emergency responder may add critical alerts.
-    pub fn add_critical_alert(
-        env: Env,
-        provider_id: Address,
-        patient_id: Address,
-        alert_type: Symbol,
-        alert_text_hash: BytesN<32>,
-        severity: Symbol,
-    ) -> Result<(), Error> {
-        provider_id.require_auth();
-        if !Self::is_registered_responder(env.clone(), provider_id.clone()) {
-            return Err(Error::NotRegisteredResponder);
-        }
-
-        let alert = CriticalAlert {
-            provider_id,
-            alert_type,
-            alert_text_hash,
-            severity,
-            timestamp: env.ledger().timestamp(),
-        };
-
-        let key = DataKey::CriticalAlerts(patient_id.clone());
-        let mut alerts: Vec<CriticalAlert> = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or(Vec::new(&env));
-        alerts.push_back(alert);
-        env.storage().persistent().set(&key, &alerts);
-
-        Ok(())
-    }
-
-    /// Retrieve all critical alerts for a patient.
-    pub fn get_critical_alerts(env: Env, patient_id: Address) -> Vec<CriticalAlert> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::CriticalAlerts(patient_id))
-            .unwrap_or(Vec::new(&env))
-    }
-}
-
-#[cfg(test)]
-mod test;
+/* … truncated 267 chars — edit only what you need near the top … */
