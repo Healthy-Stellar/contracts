@@ -382,14 +382,24 @@ impl UpgradeGovernance {
         Ok(())
     }
 
-    /// Persistently remove an expired proposal. Returns `Ok(())` so the storage
-    /// removal is committed (an `Err` return would roll it back).
+    /// Persistently remove an expired proposal that never reached threshold.
+    /// Only `Active` proposals are prunable: `Approved` proposals are timelocked
+    /// and `Executed`/`Cancelled` ones are kept as the on-chain audit record.
+    /// Returns `Ok(())` so the storage removal is committed (an `Err` return
+    /// would roll it back).
     pub fn prune_expired(env: Env, proposal_id: u64) -> Result<(), Error> {
         let proposal: UpgradeProposal = env
             .storage()
             .persistent()
             .get(&DataKey::Proposal(proposal_id))
             .ok_or(Error::ProposalNotFound)?;
+
+        match proposal.status {
+            ProposalStatus::Active => {}
+            ProposalStatus::Approved => return Err(Error::AlreadyFinalized),
+            ProposalStatus::Executed => return Err(Error::AlreadyExecuted),
+            ProposalStatus::Cancelled => return Err(Error::Cancelled),
+        }
 
         let now = env.ledger().timestamp();
         if now <= proposal.proposed_at + VOTING_WINDOW {
