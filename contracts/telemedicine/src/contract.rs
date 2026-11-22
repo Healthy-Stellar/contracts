@@ -73,14 +73,9 @@ impl TelemedicineContract {
         Ok(())
     }
 
-    /// Initialize the telemedicine contract with an admin.
-    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
-        admin.require_auth();
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::NotAuthorized);
-        }
+    /// Set the telemedicine admin at deployment.
+    pub fn __constructor(env: Env, admin: Address) {
         env.storage().instance().set(&DataKey::Admin, &admin);
-        Ok(())
     }
 
     /// Set the rate limit configuration. Callable by the stored admin.
