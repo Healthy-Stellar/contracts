@@ -539,6 +539,7 @@ impl FinancialRecordContract {
     }
 
     fn check_access(e: &Env, caller: &Address, owner: &Address) -> Result<(), ContractError> {
+        caller.require_auth();
         if caller == owner {
             return Ok(());
         }
