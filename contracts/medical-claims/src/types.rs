@@ -198,7 +198,12 @@ pub enum DataKey {
     AccessControlId,
     FinancialRecordsId,
     ReconciliationThreshold, // configurable threshold in seconds for unreconciled claims
-    InsurerUnreconciledClaims(Address), // insurer_id -> Vec<u64> of claim_ids
+    /// insurer_id -> page index -> Vec<u64> of unreconciled claim_ids (bounded page size).
+    InsurerUnreconciledPage(Address, u32),
+    /// insurer_id -> number of allocated unreconciled pages.
+    InsurerUnreconciledPageCount(Address),
+    /// claim_id -> (page, index) of the claim's entry in its insurer's unreconciled index.
+    UnreconciledSlot(u64),
     /// #527: Address of the deployed insurer-registry contract.
     InsurerRegistryId,
     /// #520: Vec<Address> of addresses authorized to resolve disputes.

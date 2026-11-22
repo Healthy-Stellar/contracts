@@ -35,6 +35,9 @@ use types::{
     PatientPaymentRecord, ReconciliationStatus, ServiceLine,
 };
 
+/// Max claim ids stored per insurer unreconciled page (keeps each entry small).
+const UNRECONCILED_PAGE_SIZE: u32 = 100;
+
 // ── Cross-contract interface for consent verification (#300) ──────────────────
 //
 // Defines only the one method we need; the generated `AccessControlClient`
@@ -243,15 +246,7 @@ impl MedicalClaimsSystem {
             .set(&DataKey::PatientClaims(patient_id), &pat_claims);
 
         // Track unreconciled claims by insurer
-        let mut insurer_claims: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::InsurerUnreconciledClaims(insurer_id.clone()))
-            .unwrap_or(Vec::new(&env));
-        insurer_claims.push_back(claim_id);
-        env.storage()
-            .persistent()
-            .set(&DataKey::InsurerUnreconciledClaims(insurer_id), &insurer_claims);
+        Self::add_to_unreconciled_index(&env, &insurer_id, claim_id);
 
         Ok(claim_id)
     }
@@ -319,6 +314,11 @@ impl MedicalClaimsSystem {
                 &DataKey::PatientPayment(claim_id),
                 &Vec::<PatientPaymentRecord>::new(&env),
             );
+        }
+
+        // Fully denied (nothing owed by either party) claims leave the unreconciled set.
+        if claim.reconciliation_status == ReconciliationStatus::FullyReconciled {
+            Self::remove_from_unreconciled_list(&env, &insurer_id, claim_id);
         }
 
         Ok(())
@@ -415,6 +415,10 @@ impl MedicalClaimsSystem {
             .persistent()
             .set(&DataKey::ClaimPayment(claim_id), &payments);
 
+        if claim.status == ClaimStatus::Closed {
+            Self::remove_from_unreconciled_list(&env, &claim.insurer_id, claim_id);
+        }
+
         Ok(())
     }
 
@@ -467,6 +471,10 @@ impl MedicalClaimsSystem {
         env.storage()
             .persistent()
             .set(&DataKey::PatientPayment(claim_id), &payments);
+
+        if claim.status == ClaimStatus::Closed {
+            Self::remove_from_unreconciled_list(&env, &claim.insurer_id, claim_id);
+        }
 
         Ok(())
     }
@@ -762,12 +770,15 @@ impl MedicalClaimsSystem {
         Ok(())
     }
 
-    /// Get all unreconciled claims for a specific insurer that are older than
-    /// the configured threshold.
+    /// Get unreconciled claims for a specific insurer that are older than the
+    /// configured threshold. Scans `limit` index pages starting at page `cursor`
+    /// and returns the matches plus the next cursor (`None` when exhausted).
     pub fn get_unreconciled_claims(
         env: Env,
         insurer_id: Address,
-    ) -> Result<Vec<u64>, Error> {
+        cursor: u32,
+        limit: u32,
+    ) -> Result<(Vec<u64>, Option<u32>), Error> {
         insurer_id.require_auth();
         Self::require_insurer(&env, &insurer_id)?;
 
@@ -780,26 +791,36 @@ impl MedicalClaimsSystem {
         let current_time = env.ledger().timestamp();
         let cutoff_time = current_time.saturating_sub(threshold);
 
-        let all_claims: Vec<u64> = env
+        let page_count: u32 = env
             .storage()
             .persistent()
-            .get(&DataKey::InsurerUnreconciledClaims(insurer_id.clone()))
-            .unwrap_or(Vec::new(&env));
+            .get(&DataKey::InsurerUnreconciledPageCount(insurer_id.clone()))
+            .unwrap_or(0);
+        let end = cursor.saturating_add(limit.max(1)).min(page_count);
 
         let mut unreconciled = Vec::new(&env);
 
-        for claim_id in all_claims.iter() {
-            if let Ok(claim) = Self::load_claim(&env, claim_id) {
-                // Check if claim is still unreconciled and older than threshold
-                if claim.reconciliation_status != ReconciliationStatus::FullyReconciled
-                    && claim.service_date <= cutoff_time
-                {
-                    unreconciled.push_back(claim_id);
+        for page_idx in cursor..end {
+            let page_claims: Vec<u64> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::InsurerUnreconciledPage(insurer_id.clone(), page_idx))
+                .unwrap_or(Vec::new(&env));
+
+            for claim_id in page_claims.iter() {
+                if let Ok(claim) = Self::load_claim(&env, claim_id) {
+                    // Check if claim is still unreconciled and older than threshold
+                    if claim.reconciliation_status != ReconciliationStatus::FullyReconciled
+                        && claim.service_date <= cutoff_time
+                    {
+                        unreconciled.push_back(claim_id);
+                    }
                 }
             }
         }
 
-        Ok(unreconciled)
+        let next = if end < page_count { Some(end) } else { None };
+        Ok((unreconciled, next))
     }
 
     /// Update the reconciliation threshold (admin only).
@@ -824,24 +845,67 @@ impl MedicalClaimsSystem {
         Ok(())
     }
 
-    /// Helper function to remove a claim from the unreconciled list
-    fn remove_from_unreconciled_list(env: &Env, insurer_id: &Address, claim_id: u64) {
-        let claims: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::InsurerUnreconciledClaims(insurer_id.clone()))
-            .unwrap_or(Vec::new(env));
+    /// Helper function to append a claim to the insurer's paged unreconciled index
+    fn add_to_unreconciled_index(env: &Env, insurer_id: &Address, claim_id: u64) {
+        let count_key = DataKey::InsurerUnreconciledPageCount(insurer_id.clone());
+        let mut page_count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
 
-        let mut new_claims = Vec::new(env);
-        for id in claims.iter() {
-            if id != claim_id {
-                new_claims.push_back(id);
-            }
+        let mut page_idx = page_count.saturating_sub(1);
+        let mut page: Vec<u64> = if page_count == 0 {
+            Vec::new(env)
+        } else {
+            env.storage()
+                .persistent()
+                .get(&DataKey::InsurerUnreconciledPage(insurer_id.clone(), page_idx))
+                .unwrap_or(Vec::new(env))
+        };
+
+        if page_count == 0 || page.len() >= UNRECONCILED_PAGE_SIZE {
+            page_idx = page_count;
+            page = Vec::new(env);
+            page_count += 1;
+            env.storage().persistent().set(&count_key, &page_count);
         }
 
+        let slot = page.len();
+        page.push_back(claim_id);
         env.storage()
             .persistent()
-            .set(&DataKey::InsurerUnreconciledClaims(insurer_id.clone()), &new_claims);
+            .set(&DataKey::InsurerUnreconciledPage(insurer_id.clone(), page_idx), &page);
+        env.storage()
+            .persistent()
+            .set(&DataKey::UnreconciledSlot(claim_id), &(page_idx, slot));
+    }
+
+    /// Helper function to remove a claim from the insurer's unreconciled index.
+    /// O(1): the claim's slot is swap-removed and the moved claim's slot updated.
+    fn remove_from_unreconciled_list(env: &Env, insurer_id: &Address, claim_id: u64) {
+        let slot_key = DataKey::UnreconciledSlot(claim_id);
+        let (page_idx, slot): (u32, u32) = match env.storage().persistent().get(&slot_key) {
+            Some(s) => s,
+            None => return, // not in the unreconciled set (already removed)
+        };
+
+        let page_key = DataKey::InsurerUnreconciledPage(insurer_id.clone(), page_idx);
+        let mut page: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&page_key)
+            .unwrap_or(Vec::new(env));
+
+        if let Some(last) = page.len().checked_sub(1) {
+            if slot != last {
+                let moved = page.get(last).unwrap();
+                page.set(slot, moved);
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::UnreconciledSlot(moved), &(page_idx, slot));
+            }
+            page.pop_back();
+        }
+
+        env.storage().persistent().set(&page_key, &page);
+        env.storage().persistent().remove(&slot_key);
     }
 
     // ── Dispute Resolution Functions (Issue #520) ────────────────────────────────
