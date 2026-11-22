@@ -328,6 +328,12 @@ impl MultisigGovernance {
                 return Err(Error::AlreadyVoted);
             }
         }
+        // A signer who abstained cannot also approve; otherwise they count twice toward quorum.
+        for i in 0..proposal.abstentions.len() {
+            if proposal.abstentions.get(i).ok_or(Error::NotASigner)? == signer {
+                return Err(Error::AlreadyVoted);
+            }
+        }
 
         proposal.approvals.push_back(signer.clone());
 
