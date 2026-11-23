@@ -3,7 +3,7 @@ use crate::types::{
     ProviderSessionWindow, RateLimitConfig, SessionRecord, VirtualVisit, VisitStatus,
 };
 use soroban_sdk::{
-    contract, contractclient, contractimpl, panic_with_error, xdr::ToXdr, Address, Bytes, BytesN,
+    contract, contractclient, contractimpl, panic_with_error, xdr::ToXdr, Address, BytesN,
     Env, String, Symbol, Vec,
 };
 use ttl_config::{extend_critical_ttl, extend_critical_ttl_if_exists};
@@ -229,7 +229,7 @@ impl TelemedicineContract {
         session_start_time: u64,
         patient_location_state: String,
         provider_state: String,
-    ) -> Result<BytesN<32>, Error> {
+    ) -> Result<(), Error> {
         provider_id.require_auth();
 
         // Check rate limit: max sessions per provider per window
@@ -270,25 +270,7 @@ impl TelemedicineContract {
         env.storage().persistent().set(&visit_key, &visit);
         extend_critical_ttl(&env, &visit_key);
 
-        let nonce = env
-            .storage()
-            .instance()
-            .get::<_, u64>(&DataKey::SessionNonce)
-            .unwrap_or(0)
-            + 1;
-        env.storage().instance().set(&DataKey::SessionNonce, &nonce);
-
-        let token = compute_session_token(
-            &env,
-            visit_id,
-            &provider_id,
-            &visit.patient_id,
-            session_start_time,
-            nonce,
-        );
-        let token_hash = hash_token(&env, &token);
         let session = SessionRecord {
-            token_hash,
             visit_id,
             caller: provider_id.clone(),
             expires_at: session_start_time + SESSION_TTL_SECONDS,
@@ -301,14 +283,14 @@ impl TelemedicineContract {
         env.events()
             .publish((Symbol::new(&env, "session_started"), visit_id), ());
 
-        Ok(token)
+        Ok(())
     }
 
-    pub fn validate_session_token(
+    /// Consume an active session once, using provider authentication rather than a public token.
+    pub fn consume_session(
         env: Env,
         visit_id: u64,
         caller: Address,
-        token: BytesN<32>,
     ) -> Result<(), Error> {
         caller.require_auth();
 
@@ -318,10 +300,10 @@ impl TelemedicineContract {
             .storage()
             .persistent()
             .get(&session_key)
-            .unwrap_or_else(|| panic_with_error!(&env, Error::InvalidSessionToken));
+            .unwrap_or_else(|| panic_with_error!(&env, Error::SessionRecordNotFound));
 
         if session.visit_id != visit_id || session.caller != caller {
-            panic_with_error!(&env, Error::InvalidSessionToken);
+            panic_with_error!(&env, Error::NotAuthorized);
         }
         if session.used {
             panic_with_error!(&env, Error::SessionAlreadyUsed);
@@ -329,10 +311,6 @@ impl TelemedicineContract {
         if env.ledger().timestamp() > session.expires_at {
             panic_with_error!(&env, Error::SessionExpired);
         }
-        if session.token_hash != hash_token(&env, &token) {
-            panic_with_error!(&env, Error::InvalidSessionToken);
-        }
-
         session.used = true;
         env.storage().persistent().set(&session_key, &session);
         extend_critical_ttl(&env, &session_key);
@@ -718,27 +696,6 @@ impl TelemedicineContract {
             .get(&prescription_key)
             .ok_or(Error::VisitNotFound)
     }
-}
-
-fn compute_session_token(
-    env: &Env,
-    visit_id: u64,
-    provider_id: &Address,
-    patient_id: &Address,
-    session_start_time: u64,
-    nonce: u64,
-) -> BytesN<32> {
-    let mut data = Bytes::new(env);
-    data.extend_from_array(&visit_id.to_be_bytes());
-    data.append(&provider_id.clone().to_xdr(env));
-    data.append(&patient_id.clone().to_xdr(env));
-    data.extend_from_array(&session_start_time.to_be_bytes());
-    data.extend_from_array(&nonce.to_be_bytes());
-    env.crypto().sha256(&data).into()
-}
-
-fn hash_token(env: &Env, token: &BytesN<32>) -> BytesN<32> {
-    env.crypto().sha256(&token.clone().to_xdr(env)).into()
 }
 
 /// Check whether `state` appears as a comma-separated token inside `list`.
