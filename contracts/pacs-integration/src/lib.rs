@@ -247,14 +247,13 @@ impl PacsContract {
 
         let mut results = Vec::new(&env);
         let patient_studies = load_patient_studies(&env, &current.patient_id);
-
-        for id in patient_studies.iter() {
-            if id == current_study_id {
+        for sid in patient_studies.iter() {
+            if sid == current_study_id {
                 continue;
             }
-            if let Some(study) = load_study(&env, id) {
-                if Self::matches_comparison(&study, &current, &comparison_criteria) {
-                    results.push_back(id);
+            if let Some(study) = load_study(&env, sid) {
+                if comparison_criteria.matches(&study) {
+                    results.push_back(sid);
                 }
             }
         }
@@ -262,135 +261,57 @@ impl PacsContract {
         Ok(results)
     }
 
-    /// Retrieve an imaging study by id.
-    ///
-    /// Access is restricted to the study's patient, the ordering provider, or an
-    /// active grantee (same `assert_active_grant` logic as `search_imaging_studies`).
-    pub fn get_imaging_study(
+    /// Grant a viewer access to a study (optionally time-limited).
+    pub fn grant_access(
         env: Env,
-        requester: Address,
         study_id: u64,
-    ) -> Result<ImagingStudy, Error> {
-        requester.require_auth();
-
-        let study = load_study(&env, study_id).ok_or(Error::NotFound)?;
-
-        Self::assert_study_access(&env, &study, &requester)?;
-
-        Ok(study)
-    }
-
-    /// Retrieve the view logs for an imaging study.
-    ///
-    /// Access is restricted to the study's patient, the ordering provider, or an
-    /// active grantee (same `assert_active_grant` logic as `search_imaging_studies`).
-    pub fn get_study_view_logs(
-        env: Env,
-        requester: Address,
-        study_id: u64,
-    ) -> Result<Vec<ViewRecord>, Error> {
-        requester.require_auth();
-
-        let study = load_study(&env, study_id).ok_or(Error::NotFound)?;
-
-        Self::assert_study_access(&env, &study, &requester)?;
-
-        Ok(load_view_logs(&env, study_id))
-    }
-
-    /// Shared access check: the requester must be the study's patient, the
-    /// ordering provider, or hold an active access grant for the study.
-    fn assert_study_access(
-        env: &Env,
-        study: &ImagingStudy,
-        requester: &Address,
+        grantee: Address,
+        purpose: String,
+        expires_at: Option<u64>,
     ) -> Result<(), Error> {
-        if study.patient_id == *requester || study.ordering_provider == *requester {
-            return Ok(());
+        let study = load_study(&env, study_id).ok_or(Error::NotFound)?;
+        study.ordering_provider.require_auth();
+
+        if purpose.is_empty() {
+            return Err(Error::InvalidInput);
         }
 
-        let grants = load_access_list(env, study.study_id);
-        for grant in grants.iter() {
-            if grant.viewer_id == *requester {
-                if Self::assert_active_grant(
-                    env,
-                    study.study_id,
-                    requester,
-                    &grant.purpose,
-                )
-                .is_ok()
-                {
-                    return Ok(());
-                }
-            }
-        }
+        let grant = AccessGrant {
+            grantee: grantee.clone(),
+            study_id: Some(study_id),
+            expires_at,
+            revoked: false,
+        };
+        save_access_grant(&env, study_id, &grantee, &grant);
 
-        Err(Error::Unauthorized)
+        env.events()
+            .publish((symbol_short!("grant"), study_id), grantee);
+
+        Ok(())
     }
 
-    /// Find prior studies for the same patient that match the comparison criteria.
-    pub fn search_imaging_studies(
+    /// Revoke a previously granted access to a study.
+    pub fn revoke_access(
         env: Env,
-        requester: Address,
-        patient_id: Address,
-        modality: Option<Symbol>,
-        body_part: Option<String>,
-        date_from: Option<u64>,
-        date_to: Option<u64>,
-    ) -> Result<Vec<u64>, Error> {
-        requester.require_auth();
+        study_id: u64,
+        grantee: Address,
+    ) -> Result<(), Error> {
+        let study = load_study(&env, study_id).ok_or(Error::NotFound)?;
+        study.ordering_provider.require_auth();
 
-        // Access control: the patient themselves, or an active grantee.
-        if requester != patient_id {
-            let grants = load_access_list(&env, 0);
-            let mut authorized = false;
-            for grant in grants.iter() {
-                if grant.viewer_id == requester {
-                    if Self::assert_active_grant(&env, 0, &requester, &grant.purpose).is_ok() {
-                        authorized = true;
-                        break;
-                    }
-                }
-            }
-            if !authorized {
-                return Err(Error::Unauthorized);
-            }
-        }
+        let mut grant =
+            load_access_grant(&env, study_id, &grantee).ok_or(Error::NotFound)?;
+        grant.revoked = true;
+        save_access_grant(&env, study_id, &grantee, &grant);
 
-        let mut results = Vec::new(&env);
-        let patient_studies = load_patient_studies(&env, &patient_id);
+        env.events()
+            .publish((symbol_short!("revoke"), study_id), grantee);
 
-        for id in patient_studies.iter() {
-            if let Some(study) = load_study(&env, id) {
-                if let Some(ref m) = modality {
-                    if study.modality != *m {
-                        continue;
-                    }
-                }
-                if let Some(ref bp) = body_part {
-                    if study.body_part != *bp {
-                        continue;
-                    }
-                }
-                if let Some(from) = date_from {
-                    if study.study_date < from {
-                        continue;
-                    }
-                }
-                if let Some(to) = date_to {
-                    if study.study_date > to {
-                        continue;
-                    }
-                }
-                results.push_back(id);
-            }
-        }
-
-        Ok(results)
+        Ok(())
     }
 
-    /// Record a view of an imaging study.
-    pub fn record_study_view(
+    /// Record a view-log entry for a study (bounded, hash-chained).
+    pub fn record_view(
         env: Env,
         study_id: u64,
         viewer_id: Address,
@@ -402,22 +323,18 @@ impl PacsContract {
 
         let study = load_study(&env, study_id).ok_or(Error::NotFound)?;
 
-        if purpose.is_empty() {
+        let is_ordering_provider = study.ordering_provider == viewer_id;
+        if !is_ordering_provider {
+            Self::assert_active_grant(&env, study_id, &viewer_id, &purpose)?;
+        }
+
+        let recorded_at = env.ledger().timestamp();
+        if view_timestamp > recorded_at + MAX_VIEW_TIMESTAMP_DRIFT_SECS {
             return Err(Error::InvalidInput);
         }
 
-        let now = env.ledger().timestamp();
-        let drift = if view_timestamp > now {
-            view_timestamp - now
-        } else {
-            now - view_timestamp
-        };
-        if drift > MAX_VIEW_TIMESTAMP_DRIFT_SECS {
-            return Err(Error::InvalidInput);
-        }
-
-        let mut logs = load_view_logs(&env, study_id);
-        let previous_entry_hash = logs.last().map(|r| r.entry_hash.clone());
+        let logs = load_view_logs(&env, study_id);
+        let previous_entry_hash = logs.last().map(|entry| entry.entry_hash);
 
         let entry_hash = compute_view_log_entry_hash(
             &env,
@@ -426,7 +343,7 @@ impl PacsContract {
             &purpose,
             view_timestamp,
             view_duration,
-            now,
+            recorded_at,
             &previous_entry_hash,
         );
 
@@ -436,139 +353,48 @@ impl PacsContract {
             purpose,
             view_timestamp,
             view_duration,
-            recorded_at: now,
+            recorded_at,
             entry_hash,
         };
 
-        logs.push_back(record);
-        save_view_logs(&env, study_id, &logs);
+        save_view_logs(&env, study_id, &logs, &record);
 
         env.events()
-            .publish((symbol_short!("view_rec"), study_id), viewer_id);
+            .publish((symbol_short!("view"), study_id), viewer_id);
 
-        let _ = study;
         Ok(())
     }
 
-    /// Grant a viewer access to a study.
-    pub fn grant_study_access(
-        env: Env,
+    /// Assert that `viewer` holds an active (non-revoked, non-expired) grant for `study_id`.
+    fn assert_active_grant(
+        env: &Env,
         study_id: u64,
-        patient_id: Address,
-        viewer_id: Address,
-        purpose: String,
-        expires_at: u64,
+        viewer: &Address,
+        purpose: &String,
     ) -> Result<(), Error> {
-        patient_id.require_auth();
-
-        let study = load_study(&env, study_id).ok_or(Error::NotFound)?;
-        if study.patient_id != patient_id {
-            return Err(Error::Unauthorized);
-        }
-
         if purpose.is_empty() {
             return Err(Error::InvalidInput);
         }
 
-        let grant = AccessGrant {
-            study_id,
-            viewer_id: viewer_id.clone(),
-            purpose,
-            granted_at: env.ledger().timestamp(),
-            expires_at,
-            revoked: false,
-        };
+        let grant = load_access_grant(env, study_id, viewer).ok_or(Error::Unauthorized)?;
 
-        let mut grants = load_access_list(&env, study_id);
-        grants.push_back(grant);
-        save_access_list(&env, study_id, &grants);
-
-        env.events()
-            .publish((symbol_short!("grant"), study_id), viewer_id);
-
-        Ok(())
-    }
-
-    /// Revoke a previously granted access to a study.
-    pub fn revoke_study_access(
-        env: Env,
-        study_id: u64,
-        patient_id: Address,
-        viewer_id: Address,
-    ) -> Result<(), Error> {
-        patient_id.require_auth();
-
-        let study = load_study(&env, study_id).ok_or(Error::NotFound)?;
-        if study.patient_id != patient_id {
+        if grant.revoked {
             return Err(Error::Unauthorized);
         }
 
-        let mut grants = load_access_list(&env, study_id);
-        let mut found = false;
-        for i in 0..grants.len() {
-            let mut grant = grants.get(i).unwrap();
-            if grant.viewer_id == viewer_id && !grant.revoked {
-                grant.revoked = true;
-                grants.set(i, grant);
-                found = true;
-                break;
+        // A grant scoped to a different study must not unlock this one.
+        if let Some(grant_study) = grant.study_id {
+            if grant_study != study_id {
+                return Err(Error::Unauthorized);
             }
         }
 
-        if !found {
-            return Err(Error::NotFound);
+        if let Some(expires_at) = grant.expires_at {
+            if env.ledger().timestamp() >= expires_at {
+                return Err(Error::Unauthorized);
+            }
         }
-
-        save_access_list(&env, study_id, &grants);
-
-        env.events()
-            .publish((symbol_short!("revoke"), study_id), viewer_id);
 
         Ok(())
-    }
-
-    /// Verify that a grant for `viewer_id` on `study_id` is active and not expired.
-    fn assert_active_grant(
-        env: &Env,
-        study_id: u64,
-        viewer_id: &Address,
-        purpose: &String,
-    ) -> Result<(), Error> {
-        if purpose.is_empty() {
-            return Err(Error::Unauthorized);
-        }
-
-        let grants = load_access_list(env, study_id);
-        let now = env.ledger().timestamp();
-
-        for grant in grants.iter() {
-            if grant.viewer_id == *viewer_id && !grant.revoked && grant.expires_at > now {
-                return Ok(());
-            }
-        }
-
-        Err(Error::Unauthorized)
-    }
-
-    fn matches_comparison(
-        study: &ImagingStudy,
-        current: &ImagingStudy,
-        criteria: &ComparisonCriteria,
-    ) -> bool {
-        if criteria.same_modality && study.modality != current.modality {
-            return false;
-        }
-        if criteria.same_body_part && study.body_part != current.body_part {
-            return false;
-        }
-        if let Some(max_age) = criteria.max_age_days {
-            let max_age_secs = (max_age as u64) * 86_400;
-            if current.study_date > study.study_date
-                && current.study_date - study.study_date > max_age_secs
-            {
-                return false;
-            }
-        }
-        true
     }
 }
