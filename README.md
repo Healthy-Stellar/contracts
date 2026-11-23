@@ -401,3 +401,6 @@ cargo test --test integration_tests
 
 <!-- handsoff-issue-1053 -->
 - #1053: [patient-vitals] get_raw_window_page and get_aggregate_page return raw PHI with no authentication — they bypass the auth in get_vital_trends
+
+<!-- handsoff-issue-1064 -->
+- #1064: [allergy-tracking] Any registered provider can record, downgrade, resolve, verify or soft-delete allergies for any patient — no treating-relationship check
