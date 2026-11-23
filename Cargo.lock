@@ -282,6 +282,7 @@ name = "care-plan"
 version = "0.1.0"
 dependencies = [
  "Contracts",
+ "shared",
  "soroban-sdk",
 ]
 

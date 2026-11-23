@@ -29,22 +29,73 @@ mod types;
 #[cfg(test)]
 mod test;
 
+use shared::privacy::{validate_encrypted_ref, EncryptedEnvelopeRef};
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Symbol, Vec};
 use storage::*;
 use types::*;
 
-/// Returns true if `caller` is the plan's provider or an assigned care-team member.
-fn is_bound_to_plan(env: &Env, plan: &CarePlan, caller: &Address) -> bool {
-    if *caller == plan.provider_id {
-        return true;
-    }
+/// Maximum number of members a single care plan's team may hold.
+pub const MAX_CARE_TEAM_SIZE: u32 = 20;
+
+/// Care-team role allowed to manage the plan and add (non-coordinator) members.
+pub const ROLE_COORDINATOR: &str = "coordinator";
+/// Care-team role allowed to manage goals and reviews, but not the team.
+pub const ROLE_PHYSICIAN: &str = "physician";
+
+/// Classes of action on a care plan, each gated by the caller's role.
+enum PlanAction {
+    /// Adding care-team members.
+    ManageTeam,
+    /// Goals, reviews and plan status changes.
+    ManagePlan,
+    /// Interventions and barriers.
+    Contribute,
+}
+
+/// Returns the role of `caller` on the plan's care team, if they are a member.
+fn team_role(env: &Env, plan: &CarePlan, caller: &Address) -> Option<Symbol> {
     let team = load_care_team(env, plan.care_plan_id);
     for member in team.iter() {
         if member.team_member == *caller {
-            return true;
+            return Some(member.role);
         }
     }
-    false
+    None
+}
+
+/// Returns true if `caller` is the plan's provider or an assigned care-team member.
+fn is_bound_to_plan(env: &Env, plan: &CarePlan, caller: &Address) -> bool {
+    *caller == plan.provider_id || team_role(env, plan, caller).is_some()
+}
+
+/// Returns true if `caller` may perform `action` on the plan.
+///
+/// The plan owner (`provider_id`) may do everything. Care-team members are limited
+/// by their stored role: only a coordinator may add members, only a coordinator or
+/// physician may manage goals, reviews and plan status, and any member may record
+/// interventions and barriers.
+fn can_perform(env: &Env, plan: &CarePlan, caller: &Address, action: PlanAction) -> bool {
+    if *caller == plan.provider_id {
+        return true;
+    }
+    let role = match team_role(env, plan, caller) {
+        Some(role) => role,
+        None => return false,
+    };
+    let coordinator = Symbol::new(env, ROLE_COORDINATOR);
+    match action {
+        PlanAction::ManageTeam => role == coordinator,
+        PlanAction::ManagePlan => role == coordinator || role == Symbol::new(env, ROLE_PHYSICIAN),
+        PlanAction::Contribute => true,
+    }
+}
+
+/// Rejects any condition/goal reference that is not a valid encrypted envelope reference.
+fn validate_refs(refs: &Vec<EncryptedEnvelopeRef>) -> Result<(), Error> {
+    for r in refs.iter() {
+        validate_encrypted_ref(&r).map_err(|_| Error::InvalidEncryptedRef)?;
+    }
+    Ok(())
 }
 
 #[contract]
@@ -53,17 +104,24 @@ pub struct CarePlanContract;
 #[contractimpl]
 impl CarePlanContract {
     /// Create a new care plan for a patient.
+    ///
+    /// Both the provider and the patient must authorize. Conditions and goals are
+    /// stored only as encrypted envelope references, never as plaintext diagnoses.
     pub fn create_care_plan(
         env: Env,
         patient_id: Address,
         provider_id: Address,
         plan_type: Symbol,
-        conditions: Vec<String>,
-        goals: Vec<String>,
+        conditions: Vec<EncryptedEnvelopeRef>,
+        goals: Vec<EncryptedEnvelopeRef>,
         start_date: u64,
         review_frequency_days: u32,
     ) -> Result<u64, Error> {
         provider_id.require_auth();
+        patient_id.require_auth();
+
+        validate_refs(&conditions)?;
+        validate_refs(&goals)?;
 
         let care_plan_id = next_care_plan_id(&env);
         let next_review_date = start_date + (review_frequency_days as u64 * 86_400);
@@ -107,7 +165,7 @@ impl CarePlanContract {
         provider_id.require_auth();
 
         let plan = load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
-        if !is_bound_to_plan(&env, &plan, &provider_id) {
+        if !can_perform(&env, &plan, &provider_id, PlanAction::ManagePlan) {
             return Err(Error::Unauthorized);
         }
         if matches!(
@@ -156,7 +214,7 @@ impl CarePlanContract {
         provider_id.require_auth();
 
         let plan = load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
-        if !is_bound_to_plan(&env, &plan, &provider_id) {
+        if !can_perform(&env, &plan, &provider_id, PlanAction::Contribute) {
             return Err(Error::Unauthorized);
         }
         if matches!(
@@ -249,7 +307,7 @@ impl CarePlanContract {
 
         let mut goal = load_goal(&env, goal_id).ok_or(Error::GoalNotFound)?;
         let plan = load_care_plan(&env, goal.care_plan_id).ok_or(Error::CarePlanNotFound)?;
-        if !is_bound_to_plan(&env, &plan, &provider_id) {
+        if !can_perform(&env, &plan, &provider_id, PlanAction::ManagePlan) {
             return Err(Error::Unauthorized);
         }
 
@@ -286,7 +344,7 @@ impl CarePlanContract {
         reporter.require_auth();
 
         let plan = load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
-        if !is_bound_to_plan(&env, &plan, &reporter) {
+        if !can_perform(&env, &plan, &reporter, PlanAction::Contribute) {
             return Err(Error::Unauthorized);
         }
         if matches!(
@@ -338,7 +396,7 @@ impl CarePlanContract {
 
         let mut barrier = load_barrier(&env, barrier_id).ok_or(Error::BarrierNotFound)?;
         let plan = load_care_plan(&env, barrier.care_plan_id).ok_or(Error::CarePlanNotFound)?;
-        if !is_bound_to_plan(&env, &plan, &provider_id) {
+        if !can_perform(&env, &plan, &provider_id, PlanAction::Contribute) {
             return Err(Error::Unauthorized);
         }
 
@@ -372,7 +430,7 @@ impl CarePlanContract {
         provider_id.require_auth();
 
         let plan = load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
-        if !is_bound_to_plan(&env, &plan, &provider_id) {
+        if !can_perform(&env, &plan, &provider_id, PlanAction::ManagePlan) {
             return Err(Error::Unauthorized);
         }
         if matches!(
@@ -422,7 +480,7 @@ impl CarePlanContract {
 
         let mut review = load_review(&env, review_id).ok_or(Error::ReviewNotFound)?;
         let mut plan = load_care_plan(&env, review.care_plan_id).ok_or(Error::CarePlanNotFound)?;
-        if !is_bound_to_plan(&env, &plan, &provider_id) {
+        if !can_perform(&env, &plan, &provider_id, PlanAction::ManagePlan) {
             return Err(Error::Unauthorized);
         }
 
@@ -459,6 +517,11 @@ impl CarePlanContract {
     }
 
     /// Assign a care team member to a care plan.
+    ///
+    /// Only the plan owner or a member with the `coordinator` role may add members,
+    /// and only the plan owner may add another coordinator, so access cannot grow
+    /// transitively. The patient must authorize every addition. The team is
+    /// de-duplicated and capped at `MAX_CARE_TEAM_SIZE`.
     pub fn assign_care_team_member(
         env: Env,
         care_plan_id: u64,
@@ -470,11 +533,30 @@ impl CarePlanContract {
         coordinating_provider.require_auth();
 
         let plan = load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
-        if !is_bound_to_plan(&env, &plan, &coordinating_provider) {
+        if !can_perform(&env, &plan, &coordinating_provider, PlanAction::ManageTeam) {
+            return Err(Error::Unauthorized);
+        }
+        if role == Symbol::new(&env, ROLE_COORDINATOR) && coordinating_provider != plan.provider_id
+        {
             return Err(Error::Unauthorized);
         }
 
+        // Patient consent is required for every addition to their care team.
+        plan.patient_id.require_auth();
+
+        if team_member == plan.provider_id || team_member == plan.patient_id {
+            return Err(Error::InvalidTeamMember);
+        }
+
         let mut team = load_care_team(&env, care_plan_id);
+        for existing in team.iter() {
+            if existing.team_member == team_member {
+                return Err(Error::AlreadyTeamMember);
+            }
+        }
+        if team.len() >= MAX_CARE_TEAM_SIZE {
+            return Err(Error::CareTeamFull);
+        }
 
         let member = CareTeamMember {
             care_plan_id,
@@ -491,6 +573,42 @@ impl CarePlanContract {
         env.events().publish(
             (Symbol::new(&env, "team_member_assigned"),),
             (care_plan_id, team_member),
+        );
+
+        Ok(())
+    }
+
+    /// Remove a member from a care plan's team, revoking their access to the plan.
+    ///
+    /// Callable by the plan owner or the patient.
+    pub fn remove_care_team_member(
+        env: Env,
+        care_plan_id: u64,
+        caller: Address,
+        team_member: Address,
+    ) -> Result<(), Error> {
+        caller.require_auth();
+
+        let plan = load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
+        if caller != plan.provider_id && caller != plan.patient_id {
+            return Err(Error::Unauthorized);
+        }
+
+        let mut team = load_care_team(&env, care_plan_id);
+        let mut index: Option<u32> = None;
+        for (i, member) in team.iter().enumerate() {
+            if member.team_member == team_member {
+                index = Some(i as u32);
+                break;
+            }
+        }
+        let index = index.ok_or(Error::TeamMemberNotFound)?;
+        team.remove(index);
+        save_care_team(&env, care_plan_id, &team);
+
+        env.events().publish(
+            (Symbol::new(&env, "team_member_removed"),),
+            (care_plan_id, team_member, caller),
         );
 
         Ok(())

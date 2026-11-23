@@ -10,6 +10,7 @@ crate-type = ["lib", "cdylib"]
 doctest = false
 
 [dependencies]
+shared = { workspace = true }
 shared-contracts = { path = "..", package = "Contracts" }
 soroban-sdk = { workspace = true }
 
