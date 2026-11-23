@@ -246,86 +246,28 @@ pub fn load_insurer_reviewers(env: &Env, insurer_id: &Address) -> Vec<Address> {
         .unwrap_or(Vec::new(env))
 }
 
+/// Remove a reviewer from an insurer's reviewer list.
+pub fn remove_insurer_reviewer(env: &Env, insurer_id: &Address, reviewer_id: &Address) {
+    let reviewers: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::InsurerReviewers(insurer_id.clone()))
+        .unwrap_or(Vec::new(env));
+
+    let mut filtered: Vec<Address> = Vec::new(env);
+    for r in reviewers.iter() {
+        if r != *reviewer_id {
+            filtered.push_back(r);
+        }
+    }
+    env.storage()
+        .persistent()
+        .set(&DataKey::InsurerReviewers(insurer_id.clone()), &filtered);
+}
+
 pub fn update_reviewer_case_count(env: &Env, reviewer_id: &Address, delta: i32) -> Result<(), crate::types::Error> {
     let mut reviewer: Reviewer = load_reviewer(env, reviewer_id)
         .ok_or(crate::types::Error::ReviewerNotFound)?;
 
     if delta > 0 {
         if reviewer.current_cases + delta as u32 > reviewer.max_cases {
-            return Err(crate::types::Error::SLAViolation);
-        }
-    } else if delta < 0 {
-        reviewer.current_cases = reviewer.current_cases.saturating_sub((-delta) as u32);
-    } else {
-        return Ok(());
-    }
-
-    reviewer.current_cases += delta as u32;
-    save_reviewer(env, &reviewer);
-    Ok(())
-}
-
-// -----------------------------------------------------------------------
-// SLA Configuration
-// -----------------------------------------------------------------------
-
-pub fn save_sla_config(env: &Env, insurer_id: &Address, config: &SLAConfig) {
-    env.storage().persistent().set(
-        &DataKey::SLAConfig(insurer_id.clone(), config.urgency.clone()),
-        config,
-    );
-}
-
-pub fn load_sla_config(env: &Env, insurer_id: &Address, urgency: &Symbol) -> Option<SLAConfig> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::SLAConfig(insurer_id.clone(), urgency.clone()))
-}
-
-// -----------------------------------------------------------------------
-// SLA Tracking
-// -----------------------------------------------------------------------
-
-pub fn add_overdue_auth(env: &Env, auth_request_id: u64) {
-    let mut overdue: Vec<u64> = env
-        .storage()
-        .persistent()
-        .get(&DataKey::OverdueAuths)
-        .unwrap_or(Vec::new(env));
-
-    // Deduplicate.
-    for id in overdue.iter() {
-        if id == auth_request_id {
-            return;
-        }
-    }
-    overdue.push_back(auth_request_id);
-    env.storage()
-        .persistent()
-        .set(&DataKey::OverdueAuths, &overdue);
-}
-
-pub fn remove_overdue_auth(env: &Env, auth_request_id: u64) {
-    let overdue: Vec<u64> = env
-        .storage()
-        .persistent()
-        .get(&DataKey::OverdueAuths)
-        .unwrap_or(Vec::new(env));
-
-    let mut updated: Vec<u64> = Vec::new(env);
-    for id in overdue.iter() {
-        if id != auth_request_id {
-            updated.push_back(id);
-        }
-    }
-    env.storage()
-        .persistent()
-        .set(&DataKey::OverdueAuths, &updated);
-}
-
-pub fn get_overdue_auths(env: &Env) -> Vec<u64> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::OverdueAuths)
-        .unwrap_or(Vec::new(env))
-}
