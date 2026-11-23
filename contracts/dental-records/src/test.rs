@@ -15,6 +15,10 @@ fn empty_procedures(env: &Env) -> Vec<PlannedProcedure> {
     Vec::new(env)
 }
 
+fn sample_cid(env: &Env) -> String {
+    String::from_str(env, "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi")
+}
+
 #[test]
 fn test_create_dental_chart() {
     let (env, client) = setup();
@@ -208,4 +212,111 @@ fn test_document_procedure_performed_missing_appointment() {
     );
 
     assert_eq!(result, Err(Ok(Error::NotFound)));
+}
+
+#[test]
+fn test_add_radiograph() {
+    let (env, client) = setup();
+    let patient = Address::generate(&env);
+    let dentist = Address::generate(&env);
+
+    let chart_id = client.create_dental_chart(
+        &patient,
+        &dentist,
+        &1_700_000_000,
+        &Symbol::new(&env, "fdi"),
+    );
+
+    let radiograph_id = client.add_radiograph(
+        &chart_id,
+        &dentist,
+        &Symbol::new(&env, "bitewing"),
+        &1_700_000_000,
+        &sample_cid(&env),
+        &None,
+    );
+
+    assert_eq!(radiograph_id, 1);
+}
+
+#[test]
+fn test_get_radiograph() {
+    let (env, client) = setup();
+    let patient = Address::generate(&env);
+    let dentist = Address::generate(&env);
+
+    let chart_id = client.create_dental_chart(
+        &patient,
+        &dentist,
+        &1_700_000_000,
+        &Symbol::new(&env, "fdi"),
+    );
+
+    let radiograph_id = client.add_radiograph(
+        &chart_id,
+        &dentist,
+        &Symbol::new(&env, "bitewing"),
+        &1_700_000_000,
+        &sample_cid(&env),
+        &None,
+    );
+
+    let radiograph = client.get_radiograph(&radiograph_id);
+    assert_eq!(radiograph.id, radiograph_id);
+    assert_eq!(radiograph.dentist_id, dentist);
+    assert_eq!(radiograph.radiograph_type, Symbol::new(&env, "bitewing"));
+    assert_eq!(radiograph.taken_date, 1_700_000_000);
+}
+
+#[test]
+fn test_add_radiograph_unauthorized_dentist() {
+    let (env, client) = setup();
+    let patient = Address::generate(&env);
+    let dentist = Address::generate(&env);
+    let other_dentist = Address::generate(&env);
+
+    let chart_id = client.create_dental_chart(
+        &patient,
+        &dentist,
+        &1_700_000_000,
+        &Symbol::new(&env, "fdi"),
+    );
+
+    let result = client.try_add_radiograph(
+        &chart_id,
+        &other_dentist,
+        &Symbol::new(&env, "bitewing"),
+        &1_700_000_000,
+        &sample_cid(&env),
+        &None,
+    );
+
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_get_radiograph_unauthorized_read() {
+    let (env, client) = setup();
+    let patient = Address::generate(&env);
+    let dentist = Address::generate(&env);
+    let stranger = Address::generate(&env);
+
+    let chart_id = client.create_dental_chart(
+        &patient,
+        &dentist,
+        &1_700_000_000,
+        &Symbol::new(&env, "fdi"),
+    );
+
+    let radiograph_id = client.add_radiograph(
+        &chart_id,
+        &dentist,
+        &Symbol::new(&env, "bitewing"),
+        &1_700_000_000,
+        &sample_cid(&env),
+        &None,
+    );
+
+    let result = client.try_get_radiograph(&radiograph_id, &stranger);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
 }

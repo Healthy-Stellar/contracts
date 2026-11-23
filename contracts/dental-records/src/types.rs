@@ -74,11 +74,13 @@ pub struct Appointment {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Radiograph {
     pub patient_id: Address,
-    pub image_type: Symbol,
-    pub image_date: u64,
+    pub dentist_id: Address,
+    pub radiograph_type: Symbol,
+    pub taken_date: u64,
     pub teeth_included: Vec<String>,
     pub findings: Vec<String>,
-    pub image_hash: BytesN<32>,
+    /// Content hash / CID of the image, validated by the shared CID validator.
+    pub image_cid: BytesN<32>,
 }
 
 #[contracttype]
@@ -114,7 +116,9 @@ pub enum DataKey {
     Appt(u64),         // appointment_id
     ProcedureLog(u64), // appointment_id -> log
     RadiographCount,
-    Radio(u64), // radiograph_id
+    Radiograph(u64), // radiograph_id
+    /// Per-patient radiograph index: patient_id -> Vec<u64> (bounded/paginated)
+    RadiographIndex(Address),
     OrthoCount,
     Ortho(u64),         // ortho_treatment_id
     OrthoAdj(u64, u64), // ortho_treatment_id, adjustment_date
