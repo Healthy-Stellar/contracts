@@ -407,3 +407,6 @@ cargo test --test integration_tests
 
 <!-- handsoff-issue-1092 -->
 - #1092: [nutrition-care-management] order_therapeutic_diet calls a get_patient_active_prescriptions that prescription-management doesn't have — every diet order traps once the int
+
+<!-- handsoff-issue-1093 -->
+- #1093: [workspace] Cleanup writes and alert events placed right before `return Err(...)` are rolled back, in 6 more places (same bug class as #925 / #947 / #982)
