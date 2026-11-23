@@ -45,6 +45,10 @@ pub enum Error {
     ClaimNotDisputable = 20,
     /// #981: Claim already has an open (Open/Escalated) dispute.
     DisputeAlreadyOpen = 21,
+    /// Adjudication lines must be a complete, unique partition of the claim lines.
+    InvalidAdjudicationLines = 22,
+    /// Service-line diagnosis pointers must reference 1-4 submitted diagnoses.
+    InvalidDiagnosisPointers = 23,
 }
 
 #[contracttype]
@@ -123,6 +127,7 @@ pub struct ServiceLine {
     pub procedure_code: String,
     pub modifier: Option<String>,
     pub quantity: u32,
+    /// Total charge for this service line, inclusive of `quantity`.
     pub charge_amount: i128,
     pub diagnosis_pointers: Vec<u32>,
 }
@@ -189,6 +194,7 @@ pub enum DataKey {
     Claim(u64),
     DenialInfos(u64),
     ApprovedLines(u64),
+    LineAllowedAmounts(u64),
     ProviderClaims(Address),
     PatientClaims(Address),
     ClaimPayment(u64),

@@ -321,6 +321,75 @@ fn test_deactivate_entity() {
 }
 
 #[test]
+fn test_deactivate_grantor_revokes_issued_access_and_reactivation_does_not_restore_it() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let (hospital, doctor) = register_two(&env, &client, &admin);
+    let resource = String::from_str(&env, "patient-records");
+    client.grant_access(&hospital, &doctor, &resource, &0, &None);
+
+    client.deactivate_entity(&admin, &hospital);
+    assert!(!client.check_access(&doctor, &resource));
+    assert_eq!(client.get_entity_permissions(&doctor).len(), 0);
+
+    client.reactivate_entity(&admin, &hospital);
+    assert!(client.get_entity(&hospital).active);
+    assert!(!client.check_access(&doctor, &resource));
+
+    // The old composite grant is removed, allowing a deliberate new grant.
+    client.grant_access(&hospital, &doctor, &resource, &0, &None);
+    assert!(client.check_access(&doctor, &resource));
+}
+
+#[test]
+fn test_deactivating_one_grantor_preserves_another_grantors_access() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let (hospital, doctor) = register_two(&env, &client, &admin);
+    let second_hospital = Address::generate(&env);
+    client.register_entity(
+        &second_hospital,
+        &EntityType::Hospital,
+        &String::from_str(&env, "Second Hospital"),
+        &String::from_str(&env, "metadata"),
+    );
+    let resource = String::from_str(&env, "patient-records");
+    client.grant_access(&hospital, &doctor, &resource, &0, &None);
+    client.grant_access(&second_hospital, &doctor, &resource, &0, &None);
+
+    client.deactivate_entity(&admin, &hospital);
+
+    assert!(client.check_access(&doctor, &resource));
+    assert_eq!(client.get_authorized_parties(&resource).len(), 1);
+    let permissions = client.get_entity_permissions(&doctor);
+    assert_eq!(permissions.len(), 1);
+    assert_eq!(permissions.get(0).unwrap().granted_by, second_hospital);
+}
+
+#[test]
+fn test_reactivation_does_not_restore_revoked_consents() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let (hospital, doctor) = register_two(&env, &client, &admin);
+    let purpose = String::from_str(&env, "treatment");
+    client.grant_consent(
+        &hospital,
+        &doctor,
+        &1,
+        &purpose,
+        &String::from_str(&env, "explicit_consent"),
+        &0,
+    );
+
+    client.deactivate_entity(&admin, &hospital);
+    client.reactivate_entity(&admin, &hospital);
+    assert_eq!(
+        client.try_check_consent(&hospital, &doctor, &purpose, &1),
+        Err(Ok(ContractError::ConsentRevoked))
+    );
+}
+
+#[test]
 fn test_deactivate_entity_non_admin() {
     let (env, client) = setup();
     let admin = Address::generate(&env);

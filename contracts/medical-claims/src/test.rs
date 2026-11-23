@@ -38,14 +38,39 @@ fn reference_hash(env: &Env, seed: u8) -> BytesN<32> {
     BytesN::from_array(env, &[seed; 32])
 }
 
+fn diagnosis_hashes(env: &Env) -> Vec<BytesN<32>> {
+    let mut hashes = Vec::new(env);
+    hashes.push_back(reference_hash(env, 42));
+    hashes
+}
+
+fn approved_line(env: &Env) -> Vec<u64> {
+    let mut lines = Vec::new(env);
+    lines.push_back(1);
+    lines
+}
+
+fn denial_info(env: &Env) -> Vec<DenialInfo> {
+    let mut denials = Vec::new(env);
+    denials.push_back(DenialInfo {
+        line_number: 1,
+        denial_code: String::from_str(env, "CO-50"),
+        denial_reason_hash: reference_hash(env, 9),
+        is_appealable: true,
+    });
+    denials
+}
+
 fn build_services(env: &Env, amount: i128) -> Vec<ServiceLine> {
     let mut services = Vec::new(env);
+    let mut diagnosis_pointers = Vec::new(env);
+    diagnosis_pointers.push_back(0);
     services.push_back(ServiceLine {
         procedure_code: String::from_str(env, "99213"),
         modifier: None,
         quantity: 1,
         charge_amount: amount,
-        diagnosis_pointers: Vec::new(env),
+        diagnosis_pointers,
     });
     services
 }
@@ -106,12 +131,14 @@ fn setup(
 
 fn make_services(env: &Env) -> Vec<ServiceLine> {
     let mut s = Vec::new(env);
+    let mut diagnosis_pointers = Vec::new(env);
+    diagnosis_pointers.push_back(0);
     s.push_back(ServiceLine {
         procedure_code: String::from_str(env, "99213"),
         modifier: None,
         quantity: 1,
         charge_amount: 15000,
-        diagnosis_pointers: Vec::new(env),
+        diagnosis_pointers,
     });
     s
 }
@@ -129,7 +156,7 @@ fn test_full_claim_lifecycle() {
         &12345,
         &1690000000,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &15000,
@@ -180,7 +207,7 @@ fn test_unregistered_insurer_cannot_adjudicate() {
         &1,
         &100,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &15000,
@@ -206,7 +233,7 @@ fn test_wrong_insurer_cannot_adjudicate() {
         &1,
         &100,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &15000,
@@ -237,7 +264,7 @@ fn test_unregistered_insurer_cannot_process_payment() {
         &1,
         &100,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &15000,
@@ -246,7 +273,7 @@ fn test_unregistered_insurer_cannot_process_payment() {
     client.adjudicate_claim(
         &claim_id,
         &insurer,
-        &Vec::new(&env),
+        &approved_line(&env),
         &Vec::new(&env),
         &4500,
         &500,
@@ -271,7 +298,7 @@ fn test_submit_claim_with_unregistered_insurer_fails() {
         &1,
         &100,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &15000,
@@ -292,7 +319,7 @@ fn test_appeal_workflow() {
         &12345,
         &1690000000,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[1; 32]),
         &policy(&env),
         &15000,
@@ -376,7 +403,7 @@ fn setup_adjudicated_claim(env: &Env) -> (MedicalClaimsSystemClient<'static>, Ad
         &1,
         &1000,
         &make_services(env),
-        &Vec::new(env),
+        &diagnosis_hashes(env),
         &BytesN::from_array(env, &[0u8; 32]),
         &policy(env),
         &15000,
@@ -387,12 +414,253 @@ fn setup_adjudicated_claim(env: &Env) -> (MedicalClaimsSystemClient<'static>, Ad
         &claim_id,
         &insurer,
         &Vec::new(env),
-        &Vec::new(env),
+        &denial_info(env),
         &0,
         &0,
     );
 
     (client, provider, claim_id)
+}
+
+#[test]
+fn test_adjudication_lines_must_partition_claim_lines() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, provider, patient, insurer) = setup(&env);
+    let claim_id = client.submit_claim(
+        &provider,
+        &patient,
+        &insurer,
+        &1,
+        &1000,
+        &make_services(&env),
+        &diagnosis_hashes(&env),
+        &reference_hash(&env, 1),
+        &policy(&env),
+        &15000,
+    );
+
+    let mut duplicated_approvals = Vec::new(&env);
+    duplicated_approvals.push_back(1);
+    duplicated_approvals.push_back(1);
+    assert_eq!(
+        client.try_adjudicate_claim(
+            &claim_id,
+            &insurer,
+            &duplicated_approvals,
+            &Vec::new(&env),
+            &0,
+            &0,
+        ),
+        Err(Ok(Error::InvalidAdjudicationLines))
+    );
+
+    let mut out_of_range = Vec::new(&env);
+    out_of_range.push_back(2);
+    assert_eq!(
+        client.try_adjudicate_claim(
+            &claim_id,
+            &insurer,
+            &out_of_range,
+            &Vec::new(&env),
+            &0,
+            &0,
+        ),
+        Err(Ok(Error::InvalidAdjudicationLines))
+    );
+    assert_eq!(
+        client.try_adjudicate_claim(
+            &claim_id,
+            &insurer,
+            &Vec::new(&env),
+            &Vec::new(&env),
+            &0,
+            &0,
+        ),
+        Err(Ok(Error::InvalidAdjudicationLines))
+    );
+    assert_eq!(
+        client.try_adjudicate_claim(
+            &claim_id,
+            &insurer,
+            &approved_line(&env),
+            &denial_info(&env),
+            &0,
+            &0,
+        ),
+        Err(Ok(Error::InvalidAdjudicationLines))
+    );
+}
+
+#[test]
+fn test_approved_amount_cannot_exceed_approved_line_charges() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, provider, patient, insurer) = setup(&env);
+    let claim_id = client.submit_claim(
+        &provider,
+        &patient,
+        &insurer,
+        &1,
+        &1000,
+        &make_services(&env),
+        &diagnosis_hashes(&env),
+        &reference_hash(&env, 1),
+        &policy(&env),
+        &15000,
+    );
+    assert_eq!(
+        client.try_adjudicate_claim(
+            &claim_id,
+            &insurer,
+            &approved_line(&env),
+            &Vec::new(&env),
+            &15001,
+            &0,
+        ),
+        Err(Ok(Error::InvalidAmount))
+    );
+}
+
+#[test]
+fn test_adjudication_stores_deterministic_line_allowed_amounts() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, provider, patient, insurer) = setup(&env);
+    let mut services = Vec::new(&env);
+    let mut pointers = Vec::new(&env);
+    pointers.push_back(0);
+    services.push_back(ServiceLine {
+        procedure_code: String::from_str(&env, "99213"),
+        modifier: None,
+        quantity: 1,
+        charge_amount: 100,
+        diagnosis_pointers: pointers.clone(),
+    });
+    services.push_back(ServiceLine {
+        procedure_code: String::from_str(&env, "99214"),
+        modifier: None,
+        quantity: 1,
+        charge_amount: 200,
+        diagnosis_pointers: pointers,
+    });
+    let claim_id = client.submit_claim(
+        &provider,
+        &patient,
+        &insurer,
+        &1,
+        &1000,
+        &services,
+        &diagnosis_hashes(&env),
+        &reference_hash(&env, 1),
+        &policy(&env),
+        &300,
+    );
+    let mut approvals = Vec::new(&env);
+    approvals.push_back(2);
+    approvals.push_back(1);
+    client.adjudicate_claim(
+        &claim_id,
+        &insurer,
+        &approvals,
+        &Vec::new(&env),
+        &250,
+        &0,
+    );
+
+    assert_eq!(
+        client.get_line_allowed_amounts(&insurer, &claim_id),
+        Vec::from_array(&env, [100i128, 150i128])
+    );
+}
+
+#[test]
+fn test_claim_rejects_missing_or_invalid_diagnosis_pointers() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, provider, patient, insurer) = setup(&env);
+
+    let mut services = Vec::new(&env);
+    services.push_back(ServiceLine {
+        procedure_code: String::from_str(&env, "99213"),
+        modifier: None,
+        quantity: 1,
+        charge_amount: 100,
+        diagnosis_pointers: Vec::new(&env),
+    });
+    assert_eq!(
+        client.try_submit_claim(
+            &provider,
+            &patient,
+            &insurer,
+            &1,
+            &1000,
+            &services,
+            &diagnosis_hashes(&env),
+            &reference_hash(&env, 1),
+            &policy(&env),
+            &100,
+        ),
+        Err(Ok(Error::InvalidDiagnosisPointers))
+    );
+
+    let mut pointers = Vec::new(&env);
+    pointers.push_back(1);
+    services.set(
+        0,
+        ServiceLine {
+            procedure_code: String::from_str(&env, "99213"),
+            modifier: None,
+            quantity: 1,
+            charge_amount: 100,
+            diagnosis_pointers: pointers,
+        },
+    );
+    assert_eq!(
+        client.try_submit_claim(
+            &provider,
+            &patient,
+            &insurer,
+            &1,
+            &1000,
+            &services,
+            &diagnosis_hashes(&env),
+            &reference_hash(&env, 1),
+            &policy(&env),
+            &100,
+        ),
+        Err(Ok(Error::InvalidDiagnosisPointers))
+    );
+
+    let mut too_many_pointers = Vec::new(&env);
+    for _ in 0..5 {
+        too_many_pointers.push_back(0);
+    }
+    services.set(
+        0,
+        ServiceLine {
+            procedure_code: String::from_str(&env, "99213"),
+            modifier: None,
+            quantity: 1,
+            charge_amount: 100,
+            diagnosis_pointers: too_many_pointers,
+        },
+    );
+    assert_eq!(
+        client.try_submit_claim(
+            &provider,
+            &patient,
+            &insurer,
+            &1,
+            &1000,
+            &services,
+            &diagnosis_hashes(&env),
+            &reference_hash(&env, 1),
+            &policy(&env),
+            &100,
+        ),
+        Err(Ok(Error::InvalidDiagnosisPointers))
+    );
 }
 
 #[test]
@@ -466,7 +734,7 @@ fn test_reconcile_insurer_payment() {
         &1,
         &1000,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &15000,
@@ -475,7 +743,7 @@ fn test_reconcile_insurer_payment() {
     client.adjudicate_claim(
         &claim_id,
         &insurer,
-        &Vec::new(&env),
+        &approved_line(&env),
         &Vec::new(&env),
         &10000,
         &2000,
@@ -511,7 +779,7 @@ fn test_reconcile_patient_payment() {
         &1,
         &1000,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &15000,
@@ -520,7 +788,7 @@ fn test_reconcile_patient_payment() {
     client.adjudicate_claim(
         &claim_id,
         &insurer,
-        &Vec::new(&env),
+        &approved_line(&env),
         &Vec::new(&env),
         &10000,
         &2000,
@@ -558,7 +826,7 @@ fn test_reconcile_payment_already_reconciled() {
         &1,
         &1000,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &15000,
@@ -567,7 +835,7 @@ fn test_reconcile_payment_already_reconciled() {
     client.adjudicate_claim(
         &claim_id,
         &insurer,
-        &Vec::new(&env),
+        &approved_line(&env),
         &Vec::new(&env),
         &10000,
         &2000,
@@ -602,7 +870,7 @@ fn test_mark_claim_disputed() {
         &1,
         &1000,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &15000,
@@ -611,7 +879,7 @@ fn test_mark_claim_disputed() {
     client.adjudicate_claim(
         &claim_id,
         &insurer,
-        &Vec::new(&env),
+        &approved_line(&env),
         &Vec::new(&env),
         &10000,
         &2000,
@@ -636,7 +904,7 @@ fn test_claim_and_payment_getters_reject_unrelated_requester() {
         &1,
         &1000,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &15000,
@@ -674,7 +942,7 @@ fn test_get_unreconciled_claims() {
         &1,
         &old_timestamp,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &15000,
@@ -683,7 +951,7 @@ fn test_get_unreconciled_claims() {
     client.adjudicate_claim(
         &claim_id,
         &insurer,
-        &Vec::new(&env),
+        &approved_line(&env),
         &Vec::new(&env),
         &10000,
         &2000,
@@ -717,7 +985,7 @@ fn test_unauthorized_cannot_mark_disputed() {
         &1,
         &1000,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &15000,
@@ -745,7 +1013,7 @@ fn test_integration_active_insurer_claim_submission_succeeds() {
         &1,
         &1000,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &15000,
@@ -799,7 +1067,7 @@ fn test_integration_expired_insurer_returns_insurer_not_active() {
         &1,
         &1000,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &15000,
@@ -820,7 +1088,7 @@ fn test_dispute_lifecycle() {
         &1,
         &100,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &5000,
@@ -862,7 +1130,7 @@ fn test_deactivated_reviewer_cannot_resolve_dispute() {
         &1,
         &100,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &5000,
@@ -896,7 +1164,7 @@ fn test_reviewer_lifecycle_register_deactivate_resolve() {
         &1,
         &100,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &5000,
@@ -938,7 +1206,7 @@ fn test_re_registering_deactivated_reviewer_reactivates() {
         &1,
         &100,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &5000,

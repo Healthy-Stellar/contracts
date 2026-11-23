@@ -55,6 +55,8 @@ pub enum Error {
     ThresholdBreached  = 13,
     /// Removing this signer would make the quorum minimum unreachable.
     QuorumBreached     = 14,
+    /// The proposed quorum is outside the current signer-set bounds.
+    InvalidQuorum      = 15,
 }
 
 #[contracttype]
@@ -108,9 +110,11 @@ pub struct Proposal {
 pub enum SignerChangeKind {
     Add,
     Remove,
+    SetThreshold(u32),
+    SetQuorum(u32),
 }
 
-/// A threshold-gated proposal to add or remove a signer.
+/// A threshold-gated proposal to change signer membership, threshold, or quorum.
 /// Only one signer-change proposal may be active at a time.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -505,7 +509,7 @@ impl MultisigGovernance {
             .ok_or(Error::NotInitialized)?;
 
         // Validate the change is meaningful.
-        match kind {
+        match &kind {
             SignerChangeKind::Add => {
                 if is_signer(&env, &signers, &target) {
                     return Err(Error::AlreadySigner);
@@ -535,6 +539,16 @@ impl MultisigGovernance {
                     return Err(Error::NotASigner);
                 }
             }
+            SignerChangeKind::SetThreshold(threshold) => {
+                if *threshold == 0 || *threshold > signers.len() {
+                    return Err(Error::InvalidThreshold);
+                }
+            }
+            SignerChangeKind::SetQuorum(quorum_min) => {
+                if *quorum_min > signers.len() {
+                    return Err(Error::InvalidQuorum);
+                }
+            }
         }
 
         let mut approvals: Vec<Address> = Vec::new(&env);
@@ -554,6 +568,34 @@ impl MultisigGovernance {
         env.events()
             .publish((symbol_short!("sg_prop"), kind), (proposer, target));
         Ok(())
+    }
+
+    /// Propose a new approval threshold through the standard signer-change vote.
+    pub fn propose_threshold_change(
+        env: Env,
+        proposer: Address,
+        threshold: u32,
+    ) -> Result<(), Error> {
+        Self::propose_signer_change(
+            env,
+            proposer.clone(),
+            SignerChangeKind::SetThreshold(threshold),
+            proposer,
+        )
+    }
+
+    /// Propose a new participation quorum through the standard signer-change vote.
+    pub fn propose_quorum_change(
+        env: Env,
+        proposer: Address,
+        quorum_min: u32,
+    ) -> Result<(), Error> {
+        Self::propose_signer_change(
+            env,
+            proposer.clone(),
+            SignerChangeKind::SetQuorum(quorum_min),
+            proposer,
+        )
     }
 
     /// Approve the active signer-change proposal.  Executes immediately when
@@ -605,7 +647,7 @@ impl MultisigGovernance {
                 .get(&DataKey::Signers)
                 .ok_or(Error::NotInitialized)?;
 
-            match proposal.kind {
+            match &proposal.kind {
                 SignerChangeKind::Add => {
                     signers.push_back(proposal.target.clone());
                 }
@@ -621,9 +663,21 @@ impl MultisigGovernance {
                     // Invalidate in-flight approvals from the removed signer (#413).
                     Self::invalidate_signer_votes(&env, &proposal.target);
                 }
+                SignerChangeKind::SetThreshold(new_threshold) => {
+                    env.storage()
+                        .persistent()
+                        .set(&DataKey::Threshold, new_threshold);
+                }
+                SignerChangeKind::SetQuorum(new_quorum_min) => {
+                    env.storage()
+                        .persistent()
+                        .set(&DataKey::QuorumMin, new_quorum_min);
+                }
             }
 
-            env.storage().persistent().set(&DataKey::Signers, &signers);
+            if matches!(&proposal.kind, SignerChangeKind::Add | SignerChangeKind::Remove) {
+                env.storage().persistent().set(&DataKey::Signers, &signers);
+            }
             proposal.status = ProposalStatus::Executed;
             env.storage()
                 .persistent()
@@ -646,6 +700,27 @@ impl MultisigGovernance {
             .persistent()
             .get(&DataKey::SignerProposal)
             .ok_or(Error::ProposalNotFound)
+    }
+
+    pub fn get_threshold(env: Env) -> Result<u32, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Threshold)
+            .ok_or(Error::NotInitialized)
+    }
+
+    pub fn get_quorum_min(env: Env) -> Result<u32, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::QuorumMin)
+            .ok_or(Error::NotInitialized)
+    }
+
+    pub fn get_signers(env: Env) -> Result<Vec<Address>, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Signers)
+            .ok_or(Error::NotInitialized)
     }
 
     // ── internal helpers ──────────────────────────────────────────────────────

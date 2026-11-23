@@ -161,7 +161,7 @@ impl MedicalClaimsSystem {
         }
 
         validate_policy_metadata(&policy).map_err(|_| Error::InvalidPolicyMetadata)?;
-        Self::validate_claim_amounts(&service_codes, total_amount)?;
+        Self::validate_claim_amounts(&service_codes, &diagnosis_hashes, total_amount)?;
 
         // #300: Verify that the patient has granted consent to this provider
         // before creating a claim record (HIPAA compliance).
@@ -282,9 +282,20 @@ impl MedicalClaimsSystem {
         if claim.status != ClaimStatus::Submitted && claim.status != ClaimStatus::Appealed {
             return Err(Error::InvalidStateTransition);
         }
+        let line_allowed_amounts = Self::validate_adjudication_lines(
+            &env,
+            &claim,
+            &approved_lines,
+            &denied_lines,
+            approved_amount,
+        )?;
+        let mut adjudicated_amount = 0_i128;
+        for line_amount in line_allowed_amounts.iter() {
+            adjudicated_amount = Self::checked_add(adjudicated_amount, line_amount)?;
+        }
         Self::validate_adjudication_amounts(
             claim.total_amount,
-            approved_amount,
+            adjudicated_amount,
             patient_responsibility,
         )?;
 
@@ -293,7 +304,7 @@ impl MedicalClaimsSystem {
         let is_reappeal = claim.status == ClaimStatus::Appealed;
 
         claim.status = ClaimStatus::Adjudicated;
-        claim.approved_amount = Some(approved_amount);
+        claim.approved_amount = Some(adjudicated_amount);
         claim.patient_responsibility = Some(patient_responsibility);
         if !is_reappeal {
             claim.insurer_paid_amount = 0;
@@ -310,6 +321,9 @@ impl MedicalClaimsSystem {
         env.storage()
             .persistent()
             .set(&DataKey::DenialInfos(claim_id), &denied_lines);
+        env.storage()
+            .persistent()
+            .set(&DataKey::LineAllowedAmounts(claim_id), &line_allowed_amounts);
         if !is_reappeal {
             env.storage().persistent().set(
                 &DataKey::ClaimPayment(claim_id),
@@ -482,6 +496,21 @@ impl MedicalClaimsSystem {
         Ok(claim)
     }
 
+    pub fn get_line_allowed_amounts(
+        env: Env,
+        requester: Address,
+        claim_id: u64,
+    ) -> Result<Vec<i128>, Error> {
+        requester.require_auth();
+        let claim = Self::load_claim(&env, claim_id)?;
+        Self::authorize_claim_reader(&env, &requester, &claim)?;
+        Ok(env
+            .storage()
+            .persistent()
+            .get(&DataKey::LineAllowedAmounts(claim_id))
+            .unwrap_or(Vec::new(&env)))
+    }
+
     pub fn get_insurer_payments(
         env: Env,
         requester: Address,
@@ -557,6 +586,7 @@ impl MedicalClaimsSystem {
 
     fn validate_claim_amounts(
         service_codes: &Vec<ServiceLine>,
+        diagnosis_hashes: &Vec<BytesN<32>>,
         total_amount: i128,
     ) -> Result<(), Error> {
         if total_amount < 0 || service_codes.is_empty() {
@@ -568,6 +598,14 @@ impl MedicalClaimsSystem {
             if line.quantity == 0 || line.charge_amount < 0 {
                 return Err(Error::InvalidAmount);
             }
+            if line.diagnosis_pointers.is_empty() || line.diagnosis_pointers.len() > 4 {
+                return Err(Error::InvalidDiagnosisPointers);
+            }
+            for pointer in line.diagnosis_pointers.iter() {
+                if pointer as u64 >= diagnosis_hashes.len() as u64 {
+                    return Err(Error::InvalidDiagnosisPointers);
+                }
+            }
             computed_total = Self::checked_add(computed_total, line.charge_amount)?;
         }
 
@@ -575,6 +613,76 @@ impl MedicalClaimsSystem {
             return Err(Error::InvalidAmount);
         }
         Ok(())
+    }
+
+    fn validate_adjudication_lines(
+        env: &Env,
+        claim: &ClaimRecord,
+        approved_lines: &Vec<u64>,
+        denied_lines: &Vec<DenialInfo>,
+        approved_amount: i128,
+    ) -> Result<Vec<i128>, Error> {
+        let line_count = claim.service_codes.len();
+        let mut line_status = Vec::new(env);
+        for _ in 0..line_count {
+            line_status.push_back(0u32);
+        }
+
+        for line_number in approved_lines.iter() {
+            if line_number == 0 || line_number > line_count as u64 {
+                return Err(Error::InvalidAdjudicationLines);
+            }
+            let index = (line_number - 1) as u32;
+            if line_status.get(index).unwrap_or(0) != 0 {
+                return Err(Error::InvalidAdjudicationLines);
+            }
+            line_status.set(index, 1u32);
+        }
+        for denial in denied_lines.iter() {
+            if denial.line_number == 0 || denial.line_number > line_count as u64 {
+                return Err(Error::InvalidAdjudicationLines);
+            }
+            let index = (denial.line_number - 1) as u32;
+            if line_status.get(index).unwrap_or(0) != 0 {
+                return Err(Error::InvalidAdjudicationLines);
+            }
+            line_status.set(index, 2u32);
+        }
+
+        let mut approved_charge_total = 0_i128;
+        for (index, line) in claim.service_codes.iter().enumerate() {
+            match line_status.get(index as u32).unwrap_or(0) {
+                1 => {
+                    approved_charge_total =
+                        Self::checked_add(approved_charge_total, line.charge_amount)?;
+                }
+                2 => {}
+                _ => return Err(Error::InvalidAdjudicationLines),
+            }
+        }
+        if approved_amount > approved_charge_total {
+            return Err(Error::InvalidAmount);
+        }
+
+        let mut remaining_allowed = approved_amount;
+        let mut line_allowed_amounts = Vec::new(env);
+        for (index, line) in claim.service_codes.iter().enumerate() {
+            if line_status.get(index as u32).unwrap_or(0) == 1 {
+                let allowed = if remaining_allowed < line.charge_amount {
+                    remaining_allowed
+                } else {
+                    line.charge_amount
+                };
+                line_allowed_amounts.push_back(allowed);
+                remaining_allowed = Self::checked_sub(remaining_allowed, allowed)?;
+            } else {
+                line_allowed_amounts.push_back(0);
+            }
+        }
+        if remaining_allowed != 0 {
+            return Err(Error::InvalidAmount);
+        }
+        Ok(line_allowed_amounts)
     }
 
     fn validate_adjudication_amounts(

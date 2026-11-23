@@ -378,6 +378,71 @@ fn test_add_signer_executes_at_threshold() {
 }
 
 #[test]
+fn test_raise_threshold_before_adding_signer() {
+    let (env, signers, client) = setup(3, 2);
+    let s0 = signers.get(0).unwrap();
+    let s1 = signers.get(1).unwrap();
+    let s2 = signers.get(2).unwrap();
+    let new_signer = Address::generate(&env);
+
+    client.propose_threshold_change(&s0, &3);
+    client.approve_signer_change(&s1);
+    assert_eq!(client.get_threshold(), 3);
+
+    client.propose_signer_change(&s0, &SignerChangeKind::Add, &new_signer);
+    client.approve_signer_change(&s1);
+    client.approve_signer_change(&s2);
+
+    assert_eq!(client.get_threshold(), 3);
+    let updated_signers = client.get_signers();
+    assert!(updated_signers.contains(&new_signer));
+    assert_eq!(updated_signers.len(), 4);
+}
+
+#[test]
+fn test_lower_threshold_then_remove_signer() {
+    let (_env, signers, client) = setup_with_quorum(3, 3, 2);
+    let s0 = signers.get(0).unwrap();
+    let s1 = signers.get(1).unwrap();
+    let lost_signer = signers.get(2).unwrap();
+
+    client.propose_threshold_change(&s0, &2);
+    client.approve_signer_change(&s1);
+    client.approve_signer_change(&lost_signer);
+    assert_eq!(client.get_threshold(), 2);
+
+    client.propose_signer_change(&s0, &SignerChangeKind::Remove, &lost_signer);
+    client.approve_signer_change(&s1);
+
+    assert_eq!(client.get_threshold(), 2);
+    let updated_signers = client.get_signers();
+    assert_eq!(updated_signers.len(), 2);
+    assert!(!updated_signers.contains(&lost_signer));
+}
+
+#[test]
+fn test_quorum_change_requires_threshold_approval() {
+    let (_env, signers, client) = setup_with_quorum(3, 2, 2);
+    let s0 = signers.get(0).unwrap();
+    let s1 = signers.get(1).unwrap();
+
+    client.propose_quorum_change(&s0, &3);
+    client.approve_signer_change(&s1);
+    assert_eq!(client.get_quorum_min(), 3);
+}
+
+#[test]
+fn test_threshold_change_rejects_out_of_range_value() {
+    let (_env, signers, client) = setup(3, 2);
+    let s0 = signers.get(0).unwrap();
+
+    let zero = client.try_propose_threshold_change(&s0, &0);
+    assert_eq!(zero, Err(Ok(Error::InvalidThreshold)));
+    let too_large = client.try_propose_threshold_change(&s0, &4);
+    assert_eq!(too_large, Err(Ok(Error::InvalidThreshold)));
+}
+
+#[test]
 fn test_add_signer_under_threshold_stays_pending() {
     let (env, signers, client) = setup(3, 3);
     let s0 = signers.get(0).unwrap();
