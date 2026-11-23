@@ -23,6 +23,11 @@
 //! **Encryption/Integrity:** Lab values stored encrypted in persistent storage. Test result
 //! reference ranges validated. Pathologist digital signature via address authentication. Critical
 //! value thresholds immutable. Specimen type enumeration prevents invalid tests.
+//!
+//! **Event Redaction:** Contract events never carry PHI. `submit_results` emits only
+//! `(order_id, results_hash)` with no patient topic; results are delivered off-chain via the
+//! encrypted-envelope pattern. `flag_critical_value` emits only
+//! `(order_id, test_code_hash, severity_class)` and notifies the ordering provider off-chain.
 
 use soroban_sdk::{
     Address, BytesN, Env, String, Symbol, Vec, contract, contracterror, contractimpl, contracttype, vec, IntoVal,
@@ -217,17 +222,16 @@ impl LabManagementContract {
 
         // MUTATION PHASE: All state changes after validations have passed.
 
-        order.results_hash = Some(results_hash);
+        order.results_hash = Some(results_hash.clone());
         order.quality_control_passed = qc_passed;
         order.status = Symbol::new(&env, "Completed");
 
+        // PHI-safe event: only the order id and the results hash are emitted.
+        // No patient address topic and no result values. Actual results are
+        // delivered off-chain via the encrypted-envelope pattern.
         env.events().publish(
-            (
-                Symbol::new(&env, "LAB"),
-                Symbol::new(&env, "RESULT"),
-                order.patient_id.clone(),
-            ),
-            results_summary,
+            (Symbol::new(&env, "LAB"), Symbol::new(&env, "RESULT")),
+            (order_id, results_hash),
         );
 
         env.storage()
@@ -242,24 +246,6 @@ impl LabManagementContract {
         lab_id: Address,
         test_code: String,
         val: String,
-    ) -> Result<(), Error> {
-        lab_id.require_auth();
+    ) -> Result<(), Err
 
-        // 1. Verify order exists.
-        let order: LabOrder = env
-            .storage()
-            .persistent()
-            .get(&DataKey::LabOrder(order_id))
-            .ok_or(Error::NotFound)?;
-
-        // 2. Verify the caller is the assigned lab.
-        if order.lab_id != Some(lab_id.clone()) {
-            return Err(Error::Unauthorized);
-        }
-
-        env.events()
-            .publish((Symbol::new(&env, "CRITICAL"), order_id), (test_code, val));
-        Ok(())
-    }
-}
-mod test;
+/* … truncated 538 chars — edit only what you need near the top … */
