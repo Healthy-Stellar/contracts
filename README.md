@@ -401,3 +401,6 @@ cargo test --test integration_tests
 
 <!-- handsoff-issue-1053 -->
 - #1053: [patient-vitals] get_raw_window_page and get_aggregate_page return raw PHI with no authentication — they bypass the auth in get_vital_trends
+
+<!-- handsoff-issue-1091 -->
+- #1091: [mental-health] A "high" suicide-risk assessment can never be saved once an emergency contract is configured — swapped add_critical_alert arguments make every escalation f
