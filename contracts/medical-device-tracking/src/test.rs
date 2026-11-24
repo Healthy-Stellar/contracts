@@ -10,10 +10,28 @@ fn dummy_hash(env: &Env) -> BytesN<32> {
     BytesN::from_array(env, &[0u8; 32])
 }
 
+#[contract]
+struct TestRegistries;
+
+#[contractimpl]
+impl TestRegistries {
+    pub fn is_provider(_env: Env, _provider: Address) -> bool { true }
+    pub fn is_hospital_active(_env: Env, _facility: Address) -> bool { true }
+    pub fn is_provider_affiliated(_env: Env, provider: Address, facility: Address) -> bool {
+        provider == facility
+    }
+}
+
 fn setup_client(env: &Env) -> MedicalDeviceRegistryClient<'_> {
     let regulator = Address::generate(env);
     let contract_id = env.register(MedicalDeviceRegistry, (&regulator,));
-    MedicalDeviceRegistryClient::new(env, &contract_id)
+    let client = MedicalDeviceRegistryClient::new(env, &contract_id);
+    let registry = env.register(TestRegistries, ());
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&DataKey::ProviderRegistry, &registry);
+        env.storage().instance().set(&DataKey::HospitalRegistry, &registry);
+    });
+    client
 }
 
 fn get_udi(client: &MedicalDeviceRegistryClient, device_id: u64) -> String {
@@ -272,6 +290,7 @@ fn test_notify_affected_patients() {
     let manufacturer = Address::generate(&env);
 
     let device_id = register_device_helper(&env, &client, &manufacturer);
+    let second_device = register_device_helper(&env, &client, &manufacturer);
 
     client.implant_device(
         &patient1,
@@ -283,7 +302,7 @@ fn test_notify_affected_patients() {
     );
     client.implant_device(
         &patient2,
-        &get_udi(&client, device_id),
+        &get_udi(&client, second_device),
         &provider,
         &1700100000u64,
         &String::from_str(&env, "Right Knee"),
@@ -292,6 +311,7 @@ fn test_notify_affected_patients() {
 
     let mut device_ids: Vec<u64> = Vec::new(&env);
     device_ids.push_back(device_id);
+    device_ids.push_back(second_device);
 
     let recall_id = client.issue_device_recall(
         &manufacturer,
@@ -321,6 +341,7 @@ fn test_notify_affected_patients_excludes_removed() {
     let manufacturer = Address::generate(&env);
 
     let device_id = register_device_helper(&env, &client, &manufacturer);
+    let second_device = register_device_helper(&env, &client, &manufacturer);
 
     let implant_id1 = client.implant_device(
         &patient1,
@@ -332,7 +353,7 @@ fn test_notify_affected_patients_excludes_removed() {
     );
     client.implant_device(
         &patient2,
-        &get_udi(&client, device_id),
+        &get_udi(&client, second_device),
         &provider,
         &1700100000u64,
         &String::from_str(&env, "Abdomen"),
@@ -343,6 +364,7 @@ fn test_notify_affected_patients_excludes_removed() {
     client.remove_implant(
         &implant_id1,
         &provider,
+        &provider,
         &1740000000u64,
         &String::from_str(&env, "Elective removal"),
         &None,
@@ -350,6 +372,7 @@ fn test_notify_affected_patients_excludes_removed() {
 
     let mut device_ids: Vec<u64> = Vec::new(&env);
     device_ids.push_back(device_id);
+    device_ids.push_back(second_device);
 
     let recall_id = client.issue_device_recall(
         &manufacturer,
@@ -421,9 +444,8 @@ fn test_notify_affected_patients_allows_configured_regulator() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let regulator = Address::generate(&env);
-    let contract_id = env.register(MedicalDeviceRegistry, (&regulator,));
-    let client = MedicalDeviceRegistryClient::new(&env, &contract_id);
+    let client = setup_client(&env);
+    let regulator = client.get_regulator();
 
     let patient = Address::generate(&env);
     let provider = Address::generate(&env);
@@ -479,9 +501,11 @@ fn test_remove_implant() {
         &dummy_hash(&env),
     );
 
+    let removing_provider = Address::generate(&env);
     client.remove_implant(
         &implant_id,
-        &provider_id,
+        &removing_provider,
+        &removing_provider,
         &1750000000u64,
         &String::from_str(&env, "Device malfunction"),
         &Some(dummy_hash(&env)),
@@ -508,6 +532,7 @@ fn test_remove_implant_not_found() {
     let provider_id = Address::generate(&env);
     let res = client.try_remove_implant(
         &999u64,
+        &provider_id,
         &provider_id,
         &1750000000u64,
         &String::from_str(&env, "Unknown"),
@@ -540,6 +565,7 @@ fn test_remove_implant_already_inactive() {
     client.remove_implant(
         &implant_id,
         &provider_id,
+        &provider_id,
         &1750000000u64,
         &String::from_str(&env, "Scheduled removal"),
         &None,
@@ -548,6 +574,7 @@ fn test_remove_implant_already_inactive() {
     // Attempt duplicate removal
     let res = client.try_remove_implant(
         &implant_id,
+        &provider_id,
         &provider_id,
         &1760000000u64,
         &String::from_str(&env, "Duplicate"),
@@ -582,6 +609,7 @@ fn test_remove_implant_rejects_unauthorized_provider() {
     let res = client.try_remove_implant(
         &implant_id,
         &other_provider,
+        &provider_id,
         &1750000000u64,
         &String::from_str(&env, "Unauthorized removal attempt"),
         &None,
@@ -615,6 +643,7 @@ fn test_falsely_removed_implant_cannot_suppress_recall_notification() {
     let res = client.try_remove_implant(
         &implant_id,
         &other_provider,
+        &provider_id,
         &1740000000u64,
         &String::from_str(&env, "Malicious removal"),
         &None,
@@ -734,6 +763,7 @@ fn test_get_patient_implants_active_only_filter() {
     let manufacturer = Address::generate(&env);
 
     let device_id = register_device_helper(&env, &client, &manufacturer);
+    let second_device = register_device_helper(&env, &client, &manufacturer);
 
     let implant_id1 = client.implant_device(
         &patient_id,
@@ -745,7 +775,7 @@ fn test_get_patient_implants_active_only_filter() {
     );
     client.implant_device(
         &patient_id,
-        &get_udi(&client, device_id),
+        &get_udi(&client, second_device),
         &provider_id,
         &1705000000u64,
         &String::from_str(&env, "Knee"),
@@ -754,6 +784,7 @@ fn test_get_patient_implants_active_only_filter() {
 
     client.remove_implant(
         &implant_id1,
+        &provider_id,
         &provider_id,
         &1750000000u64,
         &String::from_str(&env, "Worn out"),
@@ -1222,3 +1253,26 @@ fn test_regulator_allowlist_management() {
     assert!(!client.is_manufacturer_allowlisted(&manufacturer));
 }
 
+
+
+#[test]
+fn rejects_recalled_devices_and_duplicate_active_implants() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = setup_client(&env);
+    let manufacturer = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let device = register_device_helper(&env, &client, &manufacturer);
+    let implant = |patient: &Address| client.try_implant_device(
+        patient, &get_udi(&client, device), &provider, &1,
+        &String::from_str(&env, "site"), &dummy_hash(&env),
+    );
+    assert!(matches!(implant(&Address::generate(&env)), Ok(Ok(_))));
+    assert_eq!(implant(&Address::generate(&env)), Err(Ok(Error::DeviceAlreadyImplanted)));
+    client.issue_device_recall(
+        &manufacturer, &soroban_sdk::vec![&env, device],
+        &String::from_str(&env, "recall"), &Symbol::new(&env, "HIGH"), &2,
+        &String::from_str(&env, "return"),
+    );
+    assert_eq!(implant(&Address::generate(&env)), Err(Ok(Error::DeviceRecalled)));
+}
