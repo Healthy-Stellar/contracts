@@ -72,20 +72,11 @@ pub struct MedicalProfile {
 /// A do-not-resuscitate directive.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
-pub struct DnrDirective {
-    pub owner: Address,
+pub struct DNROrder {
+    pub patient: Address,
+    pub reason: String,
+    pub recorded_at: u32,
     pub active: bool,
-    pub note: String,
-    pub updated_at: u32,
-}
-
-/// An emergency alert record.
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub struct EmergencyAlert {
-    pub owner: Address,
-    pub message: String,
-    pub created_at: u32,
 }
 
 /// A critical alert record (allergy, condition, etc.) surfaced to responders.
@@ -100,15 +91,10 @@ pub struct CriticalAlert {
     pub created_at: u32,
 }
 
-/// An access log entry.
+/// A break-glass emergency access grant keyed by (responder, patient).
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
-pub struct AccessLog {
-    pub owner: Address,
-    pub actor: Address,
-    pub action: String,
-    pub ledger: u32,
-}
+pub struct EmergencyAccessGrant(pub Address, pub Address);
 
 /// Storage keys for the contract.
 #[contracttype]
@@ -118,8 +104,7 @@ pub enum DataKey {
     RecoveryProposal(Address),
     Profile(Address),
     Dnr(Address),
-    Alerts(Address),
     CriticalAlerts(Address),
-    Logs(Address),
+    AccessGrant(Address, Address),
     KeyHash(Address),
 }
