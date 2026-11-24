@@ -227,6 +227,117 @@ impl ImmunizationRegistry {
         requester: Address,
     ) -> Result<Vec<VaccineRecord>, Error> {
         requester.require_auth();
-        
+        if requester != patient_id {
+            return Err(Error::NotAuthorized);
+        }
 
-/* … truncated 3683 chars — edit only what you need near the top … */
+        let record_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PatientImmunizations(patient_id))
+            .unwrap_or(Vec::new(&env));
+
+        let mut history: Vec<VaccineRecord> = Vec::new(&env);
+        for id in record_ids {
+            if let Some(record) = env
+                .storage()
+                .persistent()
+                .get(&DataKey::ImmunizationRecord(id))
+            {
+                history.push_back(record);
+            }
+        }
+
+        Ok(history)
+    }
+
+    pub fn register_vaccine_series(
+        env: Env,
+        patient_id: Address,
+        series_name: String,
+        cvx_code: String,
+        doses_required: u32,
+        schedule_hash: BytesN<32>,
+    ) -> Result<(), Error> {
+        patient_id.require_auth();
+
+        let series = VaccineSeries {
+            series_name: series_name.clone(),
+            cvx_code: cvx_code.clone(),
+            doses_required,
+            schedule_hash,
+        };
+
+        let mut series_list: Vec<VaccineSeries> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PatientVaccineSeries(patient_id.clone()))
+            .unwrap_or(Vec::new(&env));
+        series_list.push_back(series);
+        env.storage().persistent().set(
+            &DataKey::PatientVaccineSeries(patient_id.clone()),
+            &series_list,
+        );
+
+        env.events().publish(
+            (symbol_short!("vac_ser"), patient_id, cvx_code),
+            (series_name, doses_required),
+        );
+
+        Ok(())
+    }
+
+    pub fn check_due_vaccines(
+        env: Env,
+        patient_id: Address,
+        requester: Address,
+        _current_date: u64,
+    ) -> Result<Vec<VaccineSeries>, Error> {
+        requester.require_auth();
+        if requester != patient_id {
+            return Err(Error::NotAuthorized);
+        }
+        // For the sake of this functionality without complex date logic in the smart contract,
+        // we determine if a series is due by counting the number of records a patient has
+        // for that series (matched by a heuristic, like cvx_code or sequence counting).
+        // A simple approach is returning series that have doses_required > currently administered doses.
+
+        let series_list: Vec<VaccineSeries> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PatientVaccineSeries(patient_id.clone()))
+            .unwrap_or(Vec::new(&env));
+
+        let record_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PatientImmunizations(patient_id.clone()))
+            .unwrap_or(Vec::new(&env));
+
+        let mut due_series: Vec<VaccineSeries> = Vec::new(&env);
+
+        for series in series_list {
+            // Match administered doses to the series by CVX code, not vaccine name, so
+            // brand names and combination vaccines administered under the same CVX code
+            // are counted correctly.
+            let mut administered_doses = 0;
+            for id in record_ids.clone() {
+                if let Some(record) = env
+                    .storage()
+                    .persistent()
+                    .get::<DataKey, VaccineRecord>(&DataKey::ImmunizationRecord(id))
+                {
+                    if record.cvx_code == series.cvx_code {
+                        administered_doses += 1;
+                    }
+                }
+            }
+
+            if administered_doses < series.doses_required {
+                due_series.push_back(series);
+            }
+        }
+
+        Ok(due_series)
+    }
+}

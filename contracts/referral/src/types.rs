@@ -9,6 +9,8 @@ pub enum Error {
     InvalidStatusTransition = 3,
     InvalidAddress = 4,
     ProviderNotRegistered = 5,
+    AlreadyInitialized = 6,
+    NotInitialized = 7,
 }
 
 #[contracttype]
@@ -45,4 +47,5 @@ pub enum DataKey {
     Referral(u64),
     ReferralCount,
     ProviderRegistry,
+    Admin,
 }

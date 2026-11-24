@@ -16,9 +16,9 @@ impl ProviderRegistry {
 
     #[allow(clippy::too_many_arguments)]
     pub fn register_provider(
-        _env: Env,
+        env: Env,
         _admin: Address,
-        _provider: Address,
+        provider: Address,
         _name: String,
         _specialty: String,
         _license: String,
@@ -28,6 +28,11 @@ impl ProviderRegistry {
         _expires_at: u64,
         _credential_hash: BytesN<32>,
     ) {
+        env.storage().persistent().set(&provider, &true);
+    }
+
+    pub fn is_provider(env: Env, provider: Address) -> bool {
+        env.storage().persistent().get(&provider).unwrap_or(false)
     }
 }
 
@@ -98,6 +103,11 @@ fn test_record_immunization() {
     });
 
     assert_eq!(id, 1);
+
+    assert_eq!(
+        client.try_get_immunization_history(&patient_id, &provider_id),
+        Err(Ok(Error::NotAuthorized))
+    );
 
     let history = client.get_immunization_history(&patient_id, &patient_id);
     assert_eq!(history.len(), 1);

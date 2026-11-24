@@ -54,7 +54,6 @@ name = "allergy-tracking"
 version = "0.1.0"
 dependencies = [
  "soroban-sdk",
- "ttl-config",
 ]
 
 [[package]]
@@ -328,8 +327,6 @@ dependencies = [
 name = "clinical-guideline"
 version = "0.1.0"
 dependencies = [
- "provider-registry",
- "shared",
  "soroban-sdk",
 ]
 
@@ -994,6 +991,10 @@ name = "imaging-radiology"
 version = "0.1.0"
 dependencies = [
  "Contracts",
+ "access-control",
+ "healthcare-credentialing",
+ "hospital-registry",
+ "provider-registry",
  "shared",
  "soroban-sdk",
 ]
@@ -1002,7 +1003,6 @@ dependencies = [
 name = "immunization-registry"
 version = "0.0.0"
 dependencies = [
- "provider-registry",
  "soroban-sdk",
 ]
 
@@ -2578,7 +2578,6 @@ name = "zk-eligibility-verifier"
 version = "0.0.0"
 dependencies = [
  "soroban-sdk",
- "zk-eligibility",
 ]
 
 [[package]]
