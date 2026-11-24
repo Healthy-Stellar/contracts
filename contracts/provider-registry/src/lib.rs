@@ -34,7 +34,7 @@
 use shared::privacy::validate_nonzero_address;
 use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror, symbol_short, Address, BytesN, Env,
-    String, Vec,
+    IntoVal, String, Val, Vec,
 };
 
 mod test;
@@ -134,6 +134,8 @@ pub enum DataKey {
     /// Per-caller nonce for replay attack protection: (caller) -> u64
     CallerNonce(Address),
     ProviderHospital(Address, Address),
+    /// Address of the doctor-registry contract consulted by `is_active_provider`.
+    DoctorRegistry,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -211,11 +213,37 @@ impl ProviderRegistry {
         Ok(())
     }
 
+    /// Configure the doctor-registry contract consulted by `is_active_provider`.
+    /// Admin-only. When set, a provider is only considered active if
+    /// doctor-registry also reports the address as active, so a deactivation
+    /// recorded there takes effect for every consumer of this contract.
+    pub fn set_doctor_registry(
+        env: Env,
+        admin: Address,
+        doctor_registry: Address,
+    ) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&doctor_registry).map_err(|_| Error::InvalidAddress)?;
+        Self::assert_admin(&env, &admin)?;
+        env.storage()
+            .persistent()
+            .set(&DataKey::DoctorRegistry, &doctor_registry);
+        env.events().publish(
+            (symbol_short!("set_docreg"), admin),
+            doctor_registry,
+        );
+        Ok(())
+    }
+
     /// Returns true only if the provider is registered, marked active, and its
     /// credential has not expired or been revoked. This is the canonical
     /// "is this address a trusted clinician?" check consumers should use.
+    ///
+    /// If a doctor-registry contract has been configured via
+    /// `set_doctor_registry`, the provider must also be active there.
     pub fn is_active_provider(env: Env, provider: Address) -> bool {
-        let key = DataKey::Provider(provider);
+        let key = DataKey::Provider(provider.clone());
         let profile: ProviderProfile = match env.storage().persistent().get(&key) {
             Some(p) => p,
             None => return false,
@@ -231,7 +259,32 @@ impl ProviderRegistry {
         {
             return false;
         }
+        if let Some(doctor_registry) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&DataKey::DoctorRegistry)
+        {
+            if !Self::doctor_registry_is_active(&env, &doctor_registry, &provider) {
+                return false;
+            }
+        }
         true
+    }
+
+    /// Cross-contract call into doctor-registry's `is_active`. A missing or
+    /// failing doctor-registry is treated as "not active" so a broken
+    /// dependency fails closed.
+    fn doctor_registry_is_active(env: &Env, doctor_registry: &Address, provider: &Address) -> bool {
+        let mut args: Vec<Val> = Vec::new(env);
+        args.push_back(provider.clone().into_val(env));
+        match env.try_invoke_contract::<bool, soroban_sdk::Error>(
+            doctor_registry,
+            &soroban_sdk::Symbol::new(env, "is_active"),
+            args,
+        ) {
+            Ok(Ok(active)) => active,
+            _ => false,
+        }
     }
 
     pub fn register_provider(
@@ -381,10 +434,27 @@ impl ProviderRegistry {
     }
 
     fn is_provider_active(env: &Env, provider: &Address) -> bool {
-        if let Some(profile) = env.storage().persistent().get::<DataKey, ProviderProfile>(&DataKey::Provider(provider.clone())) {
-            profile.active && profile.credential.revoked_at.is_none() && profile.credential.expires_at > env.ledger().timestamp()
+        if let Some(profile) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, ProviderProfile>(&DataKey::Provider(provider.clone()))
+        {
+            if !(profile.active
+                && profile.credential.revoked_at.is_none()
+                && profile.credential.expires_at > env.ledger().timestamp())
+            {
+                return false;
+            }
+            if let Some(doctor_registry) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Address>(&DataKey::DoctorRegistry)
+            {
+                return Self::doctor_registry_is_active(env, &doctor_registry, provider);
+            }
+            true
         } else {
-            Err(Error::NotInitialized)
+            false
         }
     }
 

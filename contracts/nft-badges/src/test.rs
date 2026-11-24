@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{testutils::Address as _, testutils::Events as _, Address, Env, String};
 
 fn setup() -> (Env, NftBadgesContractClient<'static>, Address) {
     let env         = Env::default();
@@ -9,6 +9,11 @@ fn setup() -> (Env, NftBadgesContractClient<'static>, Address) {
     let admin       = Address::generate(&env);
     let contract_id = env.register(NftBadgesContract, (&admin,));
     let client      = NftBadgesContractClient::new(&env, &contract_id);
+    // Allow the badge types used across the tests.
+    client.add_badge_type(&admin, &s(&env, "completion"));
+    client.add_badge_type(&admin, &s(&env, "t"));
+    client.add_badge_type(&admin, &s(&env, "t1"));
+    client.add_badge_type(&admin, &s(&env, "t2"));
     (env, client, admin)
 }
 
@@ -119,4 +124,155 @@ fn revoked_badge_allows_remint_of_same_type() {
     assert!(id2 > id);
     let badge2 = client.get_badge(&id2);
     assert!(!badge2.revoked);
+}
+
+#[test]
+fn is_valid_reflects_revocation() {
+    let (env, client, admin) = setup();
+    let student = Address::generate(&env);
+    let id = client.mint(&admin, &student, &s(&env, "completion"), &s(&env, "A"), &s(&env, "u"));
+
+    assert!(client.is_valid(&id));
+    client.revoke(&admin, &id, &s(&env, "fraud"));
+    assert!(!client.is_valid(&id));
+}
+
+#[test]
+fn has_active_badge_tracks_active_index() {
+    let (env, client, admin) = setup();
+    let student = Address::generate(&env);
+    assert!(!client.has_active_badge(&student, &s(&env, "completion")));
+
+    let id = client.mint(&admin, &student, &s(&env, "completion"), &s(&env, "A"), &s(&env, "u"));
+    assert!(client.has_active_badge(&student, &s(&env, "completion")));
+    assert!(!client.has_active_badge(&student, &s(&env, "t")));
+
+    client.revoke(&admin, &id, &s(&env, "fraud"));
+    assert!(!client.has_active_badge(&student, &s(&env, "completion")));
+
+    // Re-mint restores the active index.
+    client.mint(&admin, &student, &s(&env, "completion"), &s(&env, "A"), &s(&env, "u2"));
+    assert!(client.has_active_badge(&student, &s(&env, "completion")));
+}
+
+#[test]
+fn mint_event_includes_badge_type() {
+    let (env, client, admin) = setup();
+    let student = Address::generate(&env);
+    let id = client.mint(&admin, &student, &s(&env, "completion"), &s(&env, "A"), &s(&env, "u"));
+
+    let events = env.events().all();
+    let mut found = false;
+    for (contract, topics, data) in events.iter() {
+        if contract != client.address {
+            continue;
+        }
+        let (topic0, topic1): (Symbol, Address) = topics.clone().try_into().unwrap();
+        if topic0 == Symbol::new(&env, "MINT") && topic1 == student {
+            let (event_id, badge_type): (u64, String) = data.try_into().unwrap();
+            assert_eq!(event_id, id);
+            assert_eq!(badge_type, s(&env, "completion"));
+            found = true;
+        }
+    }
+    assert!(found, "mint event not found");
+}
+
+#[test]
+fn revoke_event_includes_reason() {
+    let (env, client, admin) = setup();
+    let student = Address::generate(&env);
+    let id = client.mint(&admin, &student, &s(&env, "completion"), &s(&env, "A"), &s(&env, "u"));
+    client.revoke(&admin, &id, &s(&env, "fraudulent credential"));
+
+    let events = env.events().all();
+    let mut found = false;
+    for (contract, topics, data) in events.iter() {
+        if contract != client.address {
+            continue;
+        }
+        let (topic0, topic1): (Symbol, Address) = topics.clone().try_into().unwrap();
+        if topic0 == Symbol::new(&env, "REVOKE") && topic1 == student {
+            let (event_id, reason): (u64, String) = data.try_into().unwrap();
+            assert_eq!(event_id, id);
+            assert_eq!(reason, s(&env, "fraudulent credential"));
+            found = true;
+        }
+    }
+    assert!(found, "revoke event not found");
+}
+
+#[test]
+fn propose_and_accept_admin_rotates_admin() {
+    let (env, client, admin) = setup();
+    let new_admin = Address::generate(&env);
+
+    client.propose_admin(&admin, &new_admin);
+    client.accept_admin(&new_admin);
+
+    // Old admin can no longer mint.
+    let student = Address::generate(&env);
+    let err = client
+        .try_mint(&admin, &student, &s(&env, "completion"), &s(&env, "A"), &s(&env, "u"))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::Unauthorized);
+
+    // New admin can mint.
+    let id = client.mint(&new_admin, &student, &s(&env, "completion"), &s(&env, "A"), &s(&env, "u"));
+    assert_eq!(id, 1);
+}
+
+#[test]
+fn unauthorized_accepter_cannot_accept_admin() {
+    let (env, client, admin) = setup();
+    let new_admin = Address::generate(&env);
+    let attacker  = Address::generate(&env);
+
+    client.propose_admin(&admin, &new_admin);
+    let err = client.try_accept_admin(&attacker).unwrap_err().unwrap();
+    assert_eq!(err, Error::Unauthorized);
+}
+
+#[test]
+fn empty_strings_are_rejected() {
+    let (env, client, admin) = setup();
+    let student = Address::generate(&env);
+
+    let err = client
+        .try_mint(&admin, &student, &s(&env, "completion"), &s(&env, ""), &s(&env, "u"))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::InvalidInput);
+
+    let err = client
+        .try_mint(&admin, &student, &s(&env, "completion"), &s(&env, "A"), &s(&env, ""))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::InvalidInput);
+}
+
+#[test]
+fn oversized_strings_are_rejected() {
+    let (env, client, admin) = setup();
+    let student = Address::generate(&env);
+    let long = String::from_str(&env, &"a".repeat(300));
+
+    let err = client
+        .try_mint(&admin, &student, &s(&env, "completion"), &long, &s(&env, "u"))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::InvalidInput);
+}
+
+#[test]
+fn disallowed_badge_type_is_rejected() {
+    let (env, client, admin) = setup();
+    let student = Address::generate(&env);
+
+    let err = client
+        .try_mint(&admin, &student, &s(&env, "not-allowed"), &s(&env, "A"), &s(&env, "u"))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::InvalidBadgeType);
 }

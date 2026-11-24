@@ -29,6 +29,8 @@ pub enum VerificationKey {
     ProviderRegistry,
     HospitalRegistry,
     InsurerRegistry,
+    /// Optional doctor-registry consulted for provider (clinician) activity checks.
+    DoctorRegistry,
 }
 
 /// Cache duration in ledger seconds (e.g., 24 hours)
@@ -93,7 +95,20 @@ fn verify_provider(env: &Env, address: &Address) -> bool {
         None => return false,
     };
     let args = vec![env, address.clone().into_val(env)];
-    env.invoke_contract(&registry, &Symbol::new(env, "is_provider"), args)
+    if !env.invoke_contract::<bool>(&registry, &Symbol::new(env, "is_provider"), args) {
+        return false;
+    }
+
+    // If a doctor-registry is configured, a provider must also be an active doctor.
+    if let Some(doctor_registry) = env
+        .storage()
+        .instance()
+        .get::<VerificationKey, Address>(&VerificationKey::DoctorRegistry)
+    {
+        return is_doctor_active(env, &doctor_registry, address);
+    }
+
+    true
 }
 
 fn verify_hospital(env: &Env, address: &Address) -> bool {
@@ -128,6 +143,14 @@ pub fn is_provider_registered(env: &Env, provider_registry: &Address, provider: 
     env.invoke_contract(provider_registry, &Symbol::new(env, "is_provider"), args)
 }
 
+/// Helper to check whether a doctor profile is active in the doctor registry.
+/// Consults `doctor-registry`'s `is_active` entry point so that deactivation
+/// in the doctor registry takes effect for provider checks.
+pub fn is_doctor_active(env: &Env, doctor_registry: &Address, doctor: &Address) -> bool {
+    let args = vec![env, doctor.clone().into_val(env)];
+    env.invoke_contract(doctor_registry, &Symbol::new(env, "is_active"), args)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,6 +167,16 @@ mod tests {
         }
     }
 
+    #[contract]
+    pub struct MockDoctorRegistry;
+
+    #[contractimpl]
+    impl MockDoctorRegistry {
+        pub fn is_active(_env: Env, _doctor: Address) -> bool {
+            true
+        }
+    }
+
     #[test]
     fn test_is_provider_registered() {
         let env = Env::default();
@@ -152,5 +185,14 @@ mod tests {
 
         let is_reg = is_provider_registered(&env, &registry_id, &provider);
         assert!(is_reg);
+    }
+
+    #[test]
+    fn test_is_doctor_active() {
+        let env = Env::default();
+        let doctor_registry_id = env.register(MockDoctorRegistry, ());
+        let doctor = Address::generate(&env);
+
+        assert!(is_doctor_active(&env, &doctor_registry_id, &doctor));
     }
 }
