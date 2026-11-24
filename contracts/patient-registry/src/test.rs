@@ -308,8 +308,133 @@ fn test_total_providers_increment_on_register() {
     );
     assert_eq!(client.get_total_providers(), 1);
 
-    client.register_institution(&institution);
+    client.register_institution(&admin, &institution);
     assert_eq!(client.get_total_providers(), 2);
+}
+
+// ── #1169: register_institution is admin-gated and idempotent ────────────────
+
+#[test]
+fn test_register_institution_requires_admin_auth() {
+    let env = Env::default();
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let fee_token = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let institution = Address::generate(&env);
+
+    client
+        .mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "initialize",
+                args: (&admin, &treasury, &fee_token).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .initialize(&admin, &treasury, &fee_token);
+
+    // A non-admin cannot self-register as an institution.
+    let result = client
+        .mock_auths(&[MockAuth {
+            address: &attacker,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "register_institution",
+                args: (&attacker, &institution).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .try_register_institution(&attacker, &institution);
+
+    assert_eq!(result.err(), Some(Ok(ContractError::Unauthorized)));
+    assert_eq!(client.get_total_providers(), 0);
+}
+
+#[test]
+fn test_register_institution_repeat_does_not_inflate_total_providers() {
+    let env = Env::default();
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let fee_token = Address::generate(&env);
+    let institution = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&admin, &treasury, &fee_token);
+
+    assert_eq!(client.get_total_providers(), 0);
+
+    client.register_institution(&admin, &institution);
+    assert_eq!(client.get_total_providers(), 1);
+
+    // Idempotent: re-registering the same wallet must not increment the counter.
+    client.register_institution(&admin, &institution);
+    assert_eq!(client.get_total_providers(), 1);
+}
+
+#[test]
+fn test_revoke_institution_removes_flag_and_decrements_total_providers() {
+    let env = Env::default();
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let fee_token = Address::generate(&env);
+    let institution = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&admin, &treasury, &fee_token);
+
+    client.register_institution(&admin, &institution);
+    assert_eq!(client.get_total_providers(), 1);
+
+    client.revoke_institution(&admin, &institution);
+    assert_eq!(client.get_total_providers(), 0);
+
+    // Revoking again is a no-op and must not underflow the counter.
+    client.revoke_institution(&admin, &institution);
+    assert_eq!(client.get_total_providers(), 0);
+}
+
+#[test]
+fn test_revoke_institution_requires_admin_auth() {
+    let env = Env::default();
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let fee_token = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let institution = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&admin, &treasury, &fee_token);
+    client.register_institution(&admin, &institution);
+    assert_eq!(client.get_total_providers(), 1);
+
+    let result = client
+        .mock_auths(&[MockAuth {
+            address: &attacker,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "revoke_institution",
+                args: (&attacker, &institution).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .try_revoke_institution(&attacker, &institution);
+
+    assert_eq!(result.err(), Some(Ok(ContractError::Unauthorized)));
+    assert_eq!(client.get_total_providers(), 1);
 }
 
 #[test]
