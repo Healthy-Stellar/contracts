@@ -234,6 +234,7 @@ impl PriorAuthorizationContract {
             expedited_deadline_hours: 24, // 1 day default
             auto_approval_threshold: 30,  // 30 days default
             requires_medical_director: false,
+            deemed_approved_on_breach: false,
         });
 
         let is_expedited =
@@ -369,17 +370,33 @@ impl PriorAuthorizationContract {
             return Err(Error::SLAViolation);
         }
 
-        // Check SLA deadline compliance
-        if env.ledger().timestamp() > req.sla_deadline {
-            return Err(Error::DeadlineExceeded);
+        // A missed SLA deadline must never block a decision (#1101): the
+        // breach is the insurer's fault, not the patient's. Record it and
+        // continue so the request can still be approved or denied.
+        let now = env.ledger().timestamp();
+        if now > req.sla_deadline {
+            let breach_duration = now.saturating_sub(req.sla_deadline);
+            add_overdue_auth(&env, auth_request_id);
+            env.events().publish(
+                (Symbol::new(&env, "SLABreached"),),
+                (auth_request_id, req.sla_deadline, now, breach_duration),
+            );
         }
 
-        // Only Submitted, UnderReview, or MoreInfoNeeded can be reviewed
+        // Only Submitted, UnderReview, MoreInfoNeeded, PeerToPeerScheduled, or
+        // Escalated can be reviewed. An escalated request may only be decided
+        // by the reviewer it was assigned to during escalation (#1101).
         match req.status {
             AuthStatus::Submitted
             | AuthStatus::UnderReview
             | AuthStatus::MoreInfoNeeded
             | AuthStatus::PeerToPeerScheduled => {}
+            AuthStatus::Escalated => {
+                match &req.reviewer_id {
+                    Some(assigned) if *assigned == reviewer_id => {}
+                    _ => return Err(Error::ReviewerNotAuthorized),
+                }
+            }
             _ => return Err(Error::InvalidStatusTransition),
         }
 
@@ -888,6 +905,7 @@ impl PriorAuthorizationContract {
             expedited_deadline_hours,
             auto_approval_threshold,
             requires_medical_director,
+            deemed_approved_on_breach: false,
         };
         // Keyed by (insurer_id, urgency) so one insurer's SLA policy cannot
         // overwrite another insurer's requests at the same urgency (#723).
@@ -1050,6 +1068,68 @@ impl PriorAuthorizationContract {
         }
 
         Ok(escalated_count)
+    }
+
+    /// Apply "deemed approved" to an overdue authorization request (#1101).
+    ///
+    /// If the insurer's SLA policy for this request's urgency has
+    /// `deemed_approved_on_breach` enabled and the request is still unresolved
+    /// past its `sla_deadline`, the request is approved automatically. This
+    /// mirrors CMS-0057 PA rules and state "deemed approved" laws: a missed
+    /// deadline favours the patient.
+    ///
+    /// Callable by anyone — the provider, patient, or insurer — so a stalled
+    /// request can always be unblocked. Returns `Ok(false)` when the request is
+    /// not eligible (not overdue, already resolved, or policy not configured).
+    pub fn finalize_overdue(env: Env, auth_request_id: u64) -> Result<bool, Error> {
+        let mut req =
+            load_auth_request(&env, auth_request_id).ok_or(Error::AuthRequestNotFound)?;
+
+        let unresolved = matches!(
+            req.status,
+            AuthStatus::Submitted
+                | AuthStatus::UnderReview
+                | AuthStatus::MoreInfoNeeded
+                | AuthStatus::PeerToPeerScheduled
+                | AuthStatus::Escalated
+        );
+        if !unresolved {
+            remove_overdue_auth(&env, auth_request_id);
+            return Ok(false);
+        }
+
+        let now = env.ledger().timestamp();
+        if now <= req.sla_deadline {
+            return Ok(false);
+        }
+
+        let sla_config = load_sla_config(&env, &req.insurer_id, &req.urgency);
+        let deemed_approved = match sla_config {
+            Some(config) => config.deemed_approved_on_breach,
+            None => false,
+        };
+        if !deemed_approved {
+            return Ok(false);
+        }
+
+        let effective_from = now;
+        let effective_until = now + (30 * 24 * 60 * 60);
+
+        req.status = AuthStatus::Approved;
+        req.decision = Some(Symbol::new(&env, "approved"));
+        req.valid_from = Some(effective_from);
+        req.valid_until = Some(effective_until);
+        req.decision_date = Some(now);
+        save_auth_request(&env, &req);
+
+        remove_overdue_auth(&env, auth_request_id);
+
+        env.events().publish(
+            (Symbol::new(&env, "DeemedApproved"),),
+            (auth_request_id, req.sla_deadline, now),
+        );
+
+        Ok(true)
     }
 
     /// Return the full appeal timeline for an authorization request.

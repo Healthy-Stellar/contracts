@@ -86,6 +86,9 @@ pub struct AuthorizationRequest {
     pub auto_review_eligible: bool,
     /// The insurer this request was submitted against (#684).
     pub insurer_id: Address,
+    /// Whether the SLA deadline has been breached (#1101). A breach is
+    /// recorded but never blocks a reviewer from deciding the request.
+    pub overdue: bool,
 }
 
 /// Summary view returned by get_authorization_status.
@@ -216,6 +219,9 @@ pub struct SLAConfig {
     pub expedited_deadline_hours: u64,
     pub auto_approval_threshold: u32, // days
     pub requires_medical_director: bool,
+    /// When true, a request whose SLA deadline is breached is deemed
+    /// approved via `finalize_overdue` (#1101).
+    pub deemed_approved_on_breach: bool,
 }
 
 /// Reviewer statistics for workload monitoring.

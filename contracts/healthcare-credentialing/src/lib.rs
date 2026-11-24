@@ -213,7 +213,9 @@ pub enum DataKey {
     ProvisionalCounter,
     ProvisionalRequest(u64),
     ProviderFacilityProvisional(Address, Address),
-    ProviderFacilityActivities(Address, Address),
+    ProvisionalStatus(u64),
+    Activities(Address, Address, u32),
+    ActivityPeriods(Address, Address),
     FocusedReviewCounter,
     FocusedReview(u64),
     RecredentialingCounter,
@@ -225,6 +227,15 @@ pub enum DataKey {
     Admin,
     AuthorizedVerifier(Address),
     CommitteeMember(Address),
+    QualityRecorder(Address),
+    HospitalRegistry,
+}
+
+/// Minimal client interface for the hospital-registry contract used to verify
+/// that a facility is a registered healthcare facility.
+#[soroban_sdk::contractclient(name = "HospitalRegistryClient")]
+pub trait HospitalRegistry {
+    fn is_registered_facility(env: Env, facility_id: Address) -> bool;
 }
 
 #[contract]
@@ -280,6 +291,37 @@ impl HealthcareCredentialingSystem {
         env.storage()
             .persistent()
             .remove(&DataKey::CommitteeMember(member));
+        Ok(())
+    }
+
+    /// Register an address as a quality-department role permitted to record
+    /// clinical activity. Admin only.
+    pub fn add_quality_recorder(env: Env, admin: Address, recorder: Address) -> Result<(), Error> {
+        admin.require_auth();
+        require_admin(&env, &admin)?;
+        env.storage()
+            .persistent()
+            .set(&DataKey::QualityRecorder(recorder), &true);
+        Ok(())
+    }
+
+    /// Revoke an address's quality-department role. Admin only.
+    pub fn remove_quality_recorder(env: Env, admin: Address, recorder: Address) -> Result<(), Error> {
+        admin.require_auth();
+        require_admin(&env, &admin)?;
+        env.storage()
+            .persistent()
+            .remove(&DataKey::QualityRecorder(recorder));
+        Ok(())
+    }
+
+    /// Configure the hospital-registry contract used to verify facilities. Admin only.
+    pub fn set_hospital_registry(env: Env, admin: Address, registry: Address) -> Result<(), Error> {
+        admin.require_auth();
+        require_admin(&env, &admin)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::HospitalRegistry, &registry);
         Ok(())
     }
 
@@ -582,6 +624,10 @@ impl HealthcareCredentialingSystem {
         Ok(())
     }
 
+    /// Request provisional privileges. The supervising provider must authorize the
+    /// request (consent to supervise) at creation time. The request must subsequently
+    /// be approved or denied by a committee member via `approve_provisional_privileges`
+    /// or `deny_provisional_privileges`.
     pub fn request_provisional_privileges(
         env: Env,
         provider_id: Address,
@@ -591,6 +637,11 @@ impl HealthcareCredentialingSystem {
         justification: String,
     ) -> Result<u64, Error> {
         provider_id.require_auth();
+        // The named supervisor must consent to supervising this provider.
+        supervising_provider.require_auth();
+        if supervising_provider == provider_id {
+            return Err(Error::NotAuthorized);
+        }
         let current: u64 = env
             .storage()
             .instance()
@@ -612,6 +663,9 @@ impl HealthcareCredentialingSystem {
                 justification,
             },
         );
+        env.storage()
+            .persistent()
+            .set(&DataKey::ProvisionalStatus(request_id), &Symbol::new(&env, "pending"));
 
         let mut ids: Vec<u64> = env
             .storage()
@@ -627,11 +681,92 @@ impl HealthcareCredentialingSystem {
             &ids,
         );
 
+        env.events().publish(
+            (Symbol::new(&env, "provisional_requested"), request_id),
+            provider_id,
+        );
+
         Ok(request_id)
     }
 
+    /// Approve a pending provisional-privilege request. Committee members only.
+    pub fn approve_provisional_privileges(
+        env: Env,
+        request_id: u64,
+        approver: Address,
+    ) -> Result<(), Error> {
+        approver.require_auth();
+        if !is_committee_member(&env, &approver) {
+            return Err(Error::NotAuthorized);
+        }
+        let request: ProvisionalPrivilegeRequest = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProvisionalRequest(request_id))
+            .ok_or(Error::CaseNotFound)?;
+        let status: Symbol = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProvisionalStatus(request_id))
+            .unwrap_or(Symbol::new(&env, "pending"));
+        if status != Symbol::new(&env, "pending") {
+            return Err(Error::InvalidStatusTransition);
+        }
+        env.storage().persistent().set(
+            &DataKey::ProvisionalStatus(request_id),
+            &Symbol::new(&env, "approved"),
+        );
+        env.events().publish(
+            (Symbol::new(&env, "provisional_approved"), request_id),
+            request.provider_id,
+        );
+        Ok(())
+    }
+
+    /// Deny a pending provisional-privilege request. Committee members only.
+    pub fn deny_provisional_privileges(
+        env: Env,
+        request_id: u64,
+        approver: Address,
+    ) -> Result<(), Error> {
+        approver.require_auth();
+        if !is_committee_member(&env, &approver) {
+            return Err(Error::NotAuthorized);
+        }
+        let request: ProvisionalPrivilegeRequest = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProvisionalRequest(request_id))
+            .ok_or(Error::CaseNotFound)?;
+        let status: Symbol = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProvisionalStatus(request_id))
+            .unwrap_or(Symbol::new(&env, "pending"));
+        if status != Symbol::new(&env, "pending") {
+            return Err(Error::InvalidStatusTransition);
+        }
+        env.storage().persistent().set(
+            &DataKey::ProvisionalStatus(request_id),
+            &Symbol::new(&env, "denied"),
+        );
+        env.events().publish(
+            (Symbol::new(&env, "provisional_denied"), request_id),
+            request.provider_id,
+        );
+        Ok(())
+    }
+
+    /// Record a clinical-activity record for OPPE/FPPE review.
+    ///
+    /// The provider under review may not self-report: the caller must be either the
+    /// facility itself (verified against the hospital registry) or a registered
+    /// quality-department role. `activity_date` must not be in the future, and
+    /// `procedure_code` / `outcome` must be coded values. Records are paged per
+    /// calendar month (`yyyymm`) to keep each write bounded.
     pub fn track_clinical_activity(
         env: Env,
+        recorder: Address,
         provider_id: Address,
         facility_id: Address,
         procedure_code: String,
@@ -639,13 +774,28 @@ impl HealthcareCredentialingSystem {
         complications: bool,
         activity_date: u64,
     ) -> Result<(), Error> {
-        provider_id.require_auth();
+        recorder.require_auth();
+        if !is_quality_recorder(&env, &recorder, &facility_id) {
+            return Err(Error::NotAuthorized);
+        }
+        if activity_date > env.ledger().timestamp() {
+            return Err(Error::InvalidInput);
+        }
+        if !is_coded_procedure(&env, &procedure_code) {
+            return Err(Error::InvalidInput);
+        }
+        if !is_coded_outcome(&env, &outcome) {
+            return Err(Error::InvalidInput);
+        }
+
+        let period = period_key(activity_date);
         let mut records: Vec<ClinicalActivityRecord> = env
             .storage()
             .persistent()
-            .get(&DataKey::ProviderFacilityActivities(
+            .get(&DataKey::Activities(
                 provider_id.clone(),
                 facility_id.clone(),
+                period,
             ))
             .unwrap_or(Vec::new(&env));
 
@@ -656,9 +806,25 @@ impl HealthcareCredentialingSystem {
             activity_date,
         });
         env.storage().persistent().set(
-            &DataKey::ProviderFacilityActivities(provider_id, facility_id),
+            &DataKey::Activities(provider_id.clone(), facility_id.clone(), period),
             &records,
         );
+
+        let mut periods: Vec<u32> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ActivityPeriods(
+                provider_id.clone(),
+                facility_id.clone(),
+            ))
+            .unwrap_or(Vec::new(&env));
+        if !period_exists(&periods, period) {
+            periods.push_back(period);
+            env.storage().persistent().set(
+                &DataKey::ActivityPeriods(provider_id, facility_id),
+                &periods,
+            );
+        }
         Ok(())
     }
 
@@ -897,17 +1063,29 @@ impl HealthcareCredentialingSystem {
             .unwrap_or(Vec::new(&env))
     }
 
+    /// Retrieve clinical-activity records for a provider/facility within a single
+    /// calendar month (`yyyymm`).
     pub fn get_clinical_activities(
         env: Env,
         provider_id: Address,
         facility_id: Address,
+        period: u32,
     ) -> Vec<ClinicalActivityRecord> {
         env.storage()
             .persistent()
-            .get(&DataKey::ProviderFacilityActivities(
-                provider_id,
-                facility_id,
-            ))
+            .get(&DataKey::Activities(provider_id, facility_id, period))
+            .unwrap_or(Vec::new(&env))
+    }
+
+    /// List the calendar-month periods (`yyyymm`) that have recorded activity.
+    pub fn get_activity_periods(
+        env: Env,
+        provider_id: Address,
+        facility_id: Address,
+    ) -> Vec<u32> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ActivityPeriods(provider_id, facility_id))
             .unwrap_or(Vec::new(&env))
     }
 
@@ -1164,6 +1342,78 @@ fn is_committee_member(env: &Env, addr: &Address) -> bool {
         .persistent()
         .get(&DataKey::CommitteeMember(addr.clone()))
         .unwrap_or(false)
+}
+
+/// A recorder is authorized to log clinical activity for a facility if it is the
+/// facility itself (verified against the hospital registry) or a registered
+/// quality-department role.
+fn is_quality_recorder(env: &Env, recorder: &Address, facility_id: &Address) -> bool {
+    if recorder == facility_id && is_registered_facility(env, facility_id) {
+        return true;
+    }
+    env.storage()
+        .persistent()
+        .get(&DataKey::QualityRecorder(recorder.clone()))
+        .unwrap_or(false)
+}
+
+/// Verify a facility against the hospital registry contract, if one is configured.
+fn is_registered_facility(env: &Env, facility_id: &Address) -> bool {
+    let registry: Option<Address> = env.storage().instance().get(&DataKey::HospitalRegistry);
+    match registry {
+        Some(registry_id) => {
+            let client = HospitalRegistryClient::new(env, &registry_id);
+            client.is_registered_facility(facility_id)
+        }
+        None => false,
+    }
+}
+
+/// Compute the `yyyymm` period key for a Unix timestamp.
+fn period_key(timestamp: u64) -> u32 {
+    let days = timestamp / 86_400;
+    // Civil-from-days conversion (Howard Hinnant's algorithm).
+    let z = days as i64 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+    (year as u32) * 100 + (m as u32)
+}
+
+fn period_exists(periods: &Vec<u32>, period: u32) -> bool {
+    let mut idx: u32 = 0;
+    while idx < periods.len() {
+        if let Some(p) = periods.get(idx) {
+            if p == period {
+                return true;
+            }
+        }
+        idx += 1;
+    }
+    false
+}
+
+fn is_coded_procedure(env: &Env, code: &String) -> bool {
+    *code == String::from_str(env, "99291")
+        || *code == String::from_str(env, "99292")
+        || *code == String::from_str(env, "99213")
+        || *code == String::from_str(env, "99214")
+        || *code == String::from_str(env, "27447")
+        || *code == String::from_str(env, "47562")
+        || *code == String::from_str(env, "93000")
+}
+
+fn is_coded_outcome(env: &Env, outcome: &Symbol) -> bool {
+    *outcome == Symbol::new(env, "successful")
+        || *outcome == Symbol::new(env, "complication")
+        || *outcome == Symbol::new(env, "mortality")
+        || *outcome == Symbol::new(env, "readmission")
+        || *outcome == Symbol::new(env, "reoperation")
 }
 
 fn is_supported_credential_type(env: &Env, credential_type: &Symbol) -> bool {
@@ -1498,7 +1748,11 @@ mod test {
         );
         assert_eq!(req_id, 1);
 
+        client.approve_provisional_privileges(&req_id, &reviewer);
+
+        client.add_quality_recorder(&admin, &reviewer);
         client.track_clinical_activity(
+            &reviewer,
             &provider,
             &facility,
             &String::from_str(&env, "99291"),
@@ -1520,8 +1774,128 @@ mod test {
             client.schedule_recredentialing(&provider, &facility, &1_800_000_000, &true);
         assert_eq!(schedule_id, 1);
 
-        let activities = client.get_clinical_activities(&provider, &facility);
+        let activities = client.get_clinical_activities(&provider, &facility, &202_311);
         assert_eq!(activities.len(), 1);
+    }
+
+    #[test]
+    fn track_clinical_activity_rejects_self_report() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(HealthcareCredentialingSystem, ());
+        let client = HealthcareCredentialingSystemClient::new(&env, &contract_id);
+
+        let provider = Address::generate(&env);
+        let facility = Address::generate(&env);
+
+        let res = client.try_track_clinical_activity(
+            &provider,
+            &provider,
+            &facility,
+            &String::from_str(&env, "99291"),
+            &Symbol::new(&env, "successful"),
+            &false,
+            &1_700_050_000,
+        );
+        assert_eq!(res, Err(Ok(Error::NotAuthorized)));
+    }
+
+    #[test]
+    fn track_clinical_activity_rejects_future_date() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(HealthcareCredentialingSystem, ());
+        let client = HealthcareCredentialingSystemClient::new(&env, &contract_id);
+
+        let admin = setup_admin(&env, &client);
+        let provider = Address::generate(&env);
+        let facility = Address::generate(&env);
+        let recorder = Address::generate(&env);
+        client.add_quality_recorder(&admin, &recorder);
+
+        let res = client.try_track_clinical_activity(
+            &recorder,
+            &provider,
+            &facility,
+            &String::from_str(&env, "99291"),
+            &Symbol::new(&env, "successful"),
+            &false,
+            &(env.ledger().timestamp() + 1_000),
+        );
+        assert_eq!(res, Err(Ok(Error::InvalidInput)));
+    }
+
+    #[test]
+    fn track_clinical_activity_rejects_uncoded_values() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(HealthcareCredentialingSystem, ());
+        let client = HealthcareCredentialingSystemClient::new(&env, &contract_id);
+
+        let admin = setup_admin(&env, &client);
+        let provider = Address::generate(&env);
+        let facility = Address::generate(&env);
+        let recorder = Address::generate(&env);
+        client.add_quality_recorder(&admin, &recorder);
+
+        let res = client.try_track_clinical_activity(
+            &recorder,
+            &provider,
+            &facility,
+            &String::from_str(&env, "not_a_code"),
+            &Symbol::new(&env, "successful"),
+            &false,
+            &1_700_050_000,
+        );
+        assert_eq!(res, Err(Ok(Error::InvalidInput)));
+
+        let res = client.try_track_clinical_activity(
+            &recorder,
+            &provider,
+            &facility,
+            &String::from_str(&env, "99291"),
+            &Symbol::new(&env, "made_up"),
+            &false,
+            &1_700_050_000,
+        );
+        assert_eq!(res, Err(Ok(Error::InvalidInput)));
+    }
+
+    #[test]
+    fn provisional_request_requires_supervisor_and_approval() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(HealthcareCredentialingSystem, ());
+        let client = HealthcareCredentialingSystemClient::new(&env, &contract_id);
+
+        let admin = setup_admin(&env, &client);
+        let provider = Address::generate(&env);
+        let facility = Address::generate(&env);
+        let supervisor = Address::generate(&env);
+        let committee = Address::generate(&env);
+        client.add_committee_member(&admin, &committee);
+
+        let req_id = client.request_provisional_privileges(
+            &provider,
+            &facility,
+            &Symbol::new(&env, "icu"),
+            &supervisor,
+            &String::from_str(&env, "new hire"),
+        );
+
+        // Non-committee caller cannot approve.
+        let res = client.try_approve_provisional_privileges(&req_id, &provider);
+        assert_eq!(res, Err(Ok(Error::NotAuthorized)));
+
+        client.approve_provisional_privileges(&req_id, &committee);
+
+        // Cannot approve twice.
+        let res = client.try_approve_provisional_privileges(&req_id, &committee);
+        assert_eq!(res, Err(Ok(Error::InvalidStatusTransition)));
     }
 
     #[test]

@@ -19,6 +19,10 @@ pub use interface::{
     ZKProofVerifier,
 };
 
+/// Number of public inputs the eligibility circuit expects, in order:
+/// `[subject_hash, nullifier, contract_address_hash, network_passphrase_hash]`.
+pub const PUBLIC_INPUT_COUNT: u32 = 4;
+
 /// Minimal client for the `zk-eligibility` contract.
 ///
 /// Declared locally (instead of depending on the full `zk-eligibility` contract
@@ -30,6 +34,21 @@ pub use interface::{
 #[contractclient(name = "ZkEligibilityClient")]
 pub trait ZkEligibilityInterface {
     fn is_eligible(env: Env, subject: Address) -> bool;
+
+    /// Submit a proof bound to `subject` and a circuit-level `nullifier`.
+    ///
+    /// The underlying contract must:
+    /// - require `subject.require_auth()`,
+    /// - check `public_inputs[0] == H(subject)`,
+    /// - check `public_inputs[1] == nullifier` and reject a reused nullifier,
+    /// - check the domain-binding inputs against its own address / network.
+    fn verify_eligibility(
+        env: Env,
+        subject: Address,
+        public_inputs: PublicInputs,
+        nullifier: soroban_sdk::BytesN<32>,
+        proof: soroban_sdk::Bytes,
+    ) -> bool;
 }
 
 #[contracttype]
@@ -63,6 +82,36 @@ impl ZkEligibilityVerifier {
         env.storage()
             .persistent()
             .set(&DataKey::ZkEligibilityContract, &zk_eligibility_contract);
+    }
+
+    /// Submit a proof for `subject`, forwarding the circuit public inputs
+    /// (subject hash, nullifier, domain binding) to the zk-eligibility contract.
+    ///
+    /// The caller must supply the full `public_inputs` bundle so the underlying
+    /// contract can verify the subject binding and the circuit-level nullifier.
+    /// Returns `true` only if the underlying contract accepts the proof.
+    pub fn verify_eligibility(
+        env: Env,
+        subject: Address,
+        public_inputs: PublicInputs,
+        nullifier: soroban_sdk::BytesN<32>,
+        proof: soroban_sdk::Bytes,
+    ) -> bool {
+        let zk_contract: Address = match env
+            .storage()
+            .persistent()
+            .get(&DataKey::ZkEligibilityContract)
+        {
+            Some(addr) => addr,
+            None => return false, // Not initialized; cannot verify
+        };
+        // Fail closed: any error from the target (missing, archived, trapping,
+        // interface-incompatible, or proof rejected) answers "not verified".
+        let client = ZkEligibilityClient::new(&env, &zk_contract);
+        match client.try_verify_eligibility(&subject, &public_inputs, &nullifier, &proof) {
+            Ok(Ok(verified)) => verified,
+            _ => false,
+        }
     }
 
     /// Check eligibility by delegating to the configured zk-eligibility contract.

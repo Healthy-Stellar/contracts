@@ -333,3 +333,153 @@ fn test_failed_inclusion_rule_appears_in_disqualifying_factors() {
     assert!(!result.eligible);
     assert_eq!(result.disqualifying_factors.len(), 1);
 }
+
+// ── #1096: DSMB independence, membership locking, and resume flow ─────────────
+
+fn setup_active_trial(
+    env: &Env,
+    client: &ClinicalTrialContractClient,
+    pi: &Address,
+) -> u64 {
+    client.register_clinical_trial(
+        pi,
+        &String::from_str(env, "DSMB-TRIAL-01"),
+        &String::from_str(env, "DSMB Study"),
+        &symbol_short!("phase2"),
+        &create_protocol_hash(env),
+        &1000,
+        &9999,
+        &100,
+        &String::from_str(env, "IRB-2024-300"),
+    )
+}
+
+#[test]
+fn test_appoint_dsmb_by_sponsor_succeeds_and_emits_event() {
+    let (env, admin, pi, _, client) = create_test_env();
+    let trial_id = setup_active_trial(&env, &client, &pi);
+
+    let m1 = Address::generate(&env);
+    let m2 = Address::generate(&env);
+    let m3 = Address::generate(&env);
+    let members = Vec::from_array(&env, [m1.clone(), m2.clone(), m3.clone()]);
+
+    let before = env.events().all().len();
+    client.appoint_dsmb(&trial_id, &admin, &members);
+    let after = env.events().all().len();
+    assert!(after > before, "appoint_dsmb must emit an event");
+
+    let dsmb = client.get_dsmb(&trial_id);
+    assert_eq!(dsmb.members.len(), 3);
+    assert_eq!(dsmb.threshold, 2);
+}
+
+#[test]
+fn test_appoint_dsmb_rejects_principal_investigator() {
+    let (env, admin, pi, _, client) = create_test_env();
+    let trial_id = setup_active_trial(&env, &client, &pi);
+
+    let other = Address::generate(&env);
+    let members = Vec::from_array(&env, [pi.clone(), other]);
+
+    let result = client.try_appoint_dsmb(&trial_id, &admin, &members);
+    assert!(result.is_err(), "PI must not be appointable to the DSMB");
+}
+
+#[test]
+fn test_appoint_dsmb_rejects_duplicate_members() {
+    let (env, admin, pi, _, client) = create_test_env();
+    let trial_id = setup_active_trial(&env, &client, &pi);
+
+    let m1 = Address::generate(&env);
+    let members = Vec::from_array(&env, [m1.clone(), m1.clone()]);
+
+    let result = client.try_appoint_dsmb(&trial_id, &admin, &members);
+    assert!(result.is_err(), "duplicate DSMB members must be rejected");
+}
+
+#[test]
+fn test_appoint_dsmb_rejects_non_admin() {
+    let (env, _, pi, _, client) = create_test_env();
+    let trial_id = setup_active_trial(&env, &client, &pi);
+
+    let m1 = Address::generate(&env);
+    let members = Vec::from_array(&env, [m1]);
+
+    // The PI is not the sponsor/IRB and must not be able to appoint the board.
+    let result = client.try_appoint_dsmb(&trial_id, &pi, &members);
+    assert!(result.is_err(), "only sponsor/IRB may appoint the DSMB");
+}
+
+#[test]
+fn test_dsmb_membership_locked_while_halt_pending() {
+    let (env, admin, pi, _, client) = create_test_env();
+    let trial_id = setup_active_trial(&env, &client, &pi);
+
+    let m1 = Address::generate(&env);
+    let m2 = Address::generate(&env);
+    let m3 = Address::generate(&env);
+    let members = Vec::from_array(&env, [m1.clone(), m2.clone(), m3.clone()]);
+    client.appoint_dsmb(&trial_id, &admin, &members);
+
+    let proposal_id = client.propose_safety_halt(
+        &trial_id,
+        &m1,
+        &String::from_str(&env, "adverse events"),
+    );
+
+    // Membership must be frozen while the halt proposal is pending.
+    let replacement = Address::generate(&env);
+    let new_members = Vec::from_array(&env, [replacement]);
+    let result = client.try_appoint_dsmb(&trial_id, &admin, &new_members);
+    assert!(result.is_err(), "membership must be locked while halt pending");
+
+    // The original board can still approve the halt.
+    client.approve_safety_halt(&trial_id, &proposal_id, &m2);
+    client.approve_safety_halt(&trial_id, &proposal_id, &m3);
+
+    let trial = client.get_trial(&trial_id);
+    assert_eq!(trial.status, symbol_short!("Suspended"));
+}
+
+#[test]
+fn test_propose_and_approve_resume_returns_trial_to_active() {
+    let (env, admin, pi, _, client) = create_test_env();
+    let trial_id = setup_active_trial(&env, &client, &pi);
+
+    let m1 = Address::generate(&env);
+    let m2 = Address::generate(&env);
+    let m3 = Address::generate(&env);
+    let members = Vec::from_array(&env, [m1.clone(), m2.clone(), m3.clone()]);
+    client.appoint_dsmb(&trial_id, &admin, &members);
+
+    let halt_id = client.propose_safety_halt(
+        &trial_id,
+        &m1,
+        &String::from_str(&env, "safety review"),
+    );
+    client.approve_safety_halt(&trial_id, &halt_id, &m2);
+    client.approve_safety_halt(&trial_id, &halt_id, &m3);
+
+    let trial = client.get_trial(&trial_id);
+    assert_eq!(trial.status, symbol_short!("Suspended"));
+
+    let resume_id = client.propose_resume(
+        &trial_id,
+        &m1,
+        &String::from_str(&env, "review complete"),
+    );
+
+    // Still suspended until the DSMB majority approves the resume.
+    let trial = client.get_trial(&trial_id);
+    assert_eq!(trial.status, symbol_short!("Suspended"));
+
+    let before = env.events().all().len();
+    client.approve_resume(&trial_id, &resume_id, &m2);
+    client.approve_resume(&trial_id, &resume_id, &m3);
+    let after = env.events().all().len();
+    assert!(after > before, "resume approval must emit an event");
+
+    let trial = client.get_trial(&trial_id);
+    assert_eq!(trial.status, symbol_short!("Active"));
+}

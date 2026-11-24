@@ -51,10 +51,28 @@ fn expiry_scalar(env: &Env, ts: u64) -> BytesN<32> {
     BytesN::from_array(env, &raw)
 }
 
-/// Build a public inputs vector with `expiry` at index 0.
-fn inputs_with_expiry(env: &Env, expiry: u64) -> Vec<BytesN<32>> {
+/// Compute the subject binding scalar: H(subject_address).
+fn subject_hash(env: &Env, subject: &Address) -> BytesN<32> {
+    ZkEligibility::subject_hash(env, subject)
+}
+
+/// Build a deterministic nullifier scalar for a given subject + context.
+fn nullifier_scalar(env: &Env, subject: &Address, context: u8) -> BytesN<32> {
+    let mut buf = Bytes::new(env);
+    buf.append(&Bytes::from_slice(env, &[context; 8]));
+    buf.append(&Bytes::from_slice(env, &subject_hash(env, subject).to_array()));
+    env.crypto().sha256(&buf).into()
+}
+
+/// Build a public inputs vector with:
+///   index 0: expiry
+///   index 1: subject hash H(subject)
+///   index 2: nullifier
+fn inputs_for(env: &Env, subject: &Address, expiry: u64, context: u8) -> Vec<BytesN<32>> {
     let mut v: Vec<BytesN<32>> = Vec::new(env);
     v.push_back(expiry_scalar(env, expiry));
+    v.push_back(subject_hash(env, subject));
+    v.push_back(nullifier_scalar(env, subject, context));
     v
 }
 
@@ -100,8 +118,6 @@ fn make_invalid_proof(env: &Env) -> Bytes {
     Bytes::from_slice(env, &[0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0xFF, 0xFF, 0xFF, 0xFF])
 }
 
-/// Convenience: a complete, valid ProofBundle for `(vk_tag, schema_version)`.
-
 /// Build a valid migration proof for (new_vk_bytes, old_version, new_version).
 fn migration_proof(env: &Env, new_vk_bytes: &Bytes, old_version: u32, new_version: u32) -> Bytes {
     let mut inputs = Vec::new(env);
@@ -114,8 +130,8 @@ fn migration_proof(env: &Env, new_vk_bytes: &Bytes, old_version: u32, new_versio
     make_proof(env, new_vk_bytes, &inputs)
 }
 
-fn valid_bundle(env: &Env, vk_bytes: &Bytes, schema_version: u32) -> ProofBundle {
-    let inputs = inputs_with_expiry(env, FUTURE_EXPIRY);
+fn valid_bundle(env: &Env, vk_bytes: &Bytes, subject: &Address, schema_version: u32) -> ProofBundle {
+    let inputs = inputs_for(env, subject, FUTURE_EXPIRY, 0);
     let proof = make_proof(env, vk_bytes, &inputs);
     ProofBundle { proof, public_inputs: inputs, schema_version }
 }
@@ -201,7 +217,7 @@ fn test_valid_proof_accepted() {
     let vk_bytes = vk(&env, 0xAA);
     client.register_verifier_key(&admin, &1u32, &vk_bytes);
     let subject = Address::generate(&env);
-    client.verify_eligibility(&subject, &valid_bundle(&env, &vk_bytes, 1));
+    client.verify_eligibility(&subject, &valid_bundle(&env, &vk_bytes, &subject, 1));
 }
 
 #[test]
@@ -211,8 +227,55 @@ fn test_is_eligible_true_after_valid_proof() {
     client.register_verifier_key(&admin, &1u32, &vk_bytes);
     let subject = Address::generate(&env);
     assert!(!client.is_eligible(&subject));
-    client.verify_eligibility(&subject, &valid_bundle(&env, &vk_bytes, 1));
+    client.verify_eligibility(&subject, &valid_bundle(&env, &vk_bytes, &subject, 1));
     assert!(client.is_eligible(&subject));
+}
+
+// ── verify_eligibility: subject binding ──────────────────────────────────────
+
+#[test]
+fn test_proof_for_different_subject_returns_error() {
+    // A valid proof generated for `alice` must not be accepted for `mallory`.
+    let (env, admin, client) = setup();
+    let vk_bytes = vk(&env, 0xAA);
+    client.register_verifier_key(&admin, &1u32, &vk_bytes);
+
+    let alice = Address::generate(&env);
+    let mallory = Address::generate(&env);
+
+    // Proof is well-formed and bound to alice's subject hash.
+    let bundle = valid_bundle(&env, &vk_bytes, &alice, 1);
+
+    // Mallory tries to reuse it for herself → subject binding check fails.
+    let err = client
+        .try_verify_eligibility(&mallory, &bundle)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::SubjectMismatch);
+
+    // Mallory is not eligible.
+    assert!(!client.is_eligible(&mallory));
+}
+
+#[test]
+fn test_missing_subject_input_returns_error() {
+    // A bundle whose public inputs don't include the subject hash must fail.
+    let (env, admin, client) = setup();
+    let vk_bytes = vk(&env, 0xAA);
+    client.register_verifier_key(&admin, &1u32, &vk_bytes);
+    let subject = Address::generate(&env);
+
+    // Only expiry at index 0 — no subject hash at index 1.
+    let mut inputs: Vec<BytesN<32>> = Vec::new(&env);
+    inputs.push_back(expiry_scalar(&env, FUTURE_EXPIRY));
+    let proof = make_proof(&env, &vk_bytes, &inputs);
+    let bad_bundle = ProofBundle { proof, public_inputs: inputs, schema_version: 1 };
+
+    let err = client
+        .try_verify_eligibility(&subject, &bad_bundle)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::SubjectMismatch);
 }
 
 // ── verify_eligibility: failure paths ────────────────────────────────────────
@@ -224,7 +287,7 @@ fn test_invalid_proof_returns_error() {
     client.register_verifier_key(&admin, &1u32, &vk_bytes);
     let subject = Address::generate(&env);
     // Proof whose commitment tag is wrong → VerificationFailed.
-    let inputs = inputs_with_expiry(&env, FUTURE_EXPIRY);
+    let inputs = inputs_for(&env, &subject, FUTURE_EXPIRY, 0);
     let bad_bundle = ProofBundle {
         proof: make_invalid_proof(&env),
         public_inputs: inputs,
@@ -247,11 +310,11 @@ fn test_tampered_public_inputs_returns_error() {
     let subject = Address::generate(&env);
 
     // Build a valid proof bound to FUTURE_EXPIRY inputs.
-    let original_inputs = inputs_with_expiry(&env, FUTURE_EXPIRY);
+    let original_inputs = inputs_for(&env, &subject, FUTURE_EXPIRY, 0);
     let proof = make_proof(&env, &vk_bytes, &original_inputs);
 
     // Submit with a *different* expiry scalar — public inputs no longer match.
-    let tampered_inputs = inputs_with_expiry(&env, FUTURE_EXPIRY + 1);
+    let tampered_inputs = inputs_for(&env, &subject, FUTURE_EXPIRY + 1, 0);
     let bad_bundle = ProofBundle {
         proof,
         public_inputs: tampered_inputs,
@@ -273,7 +336,7 @@ fn test_expired_proof_returns_error() {
 
     // expiry = BASE_TIMESTAMP − 1: already in the past.
     let past_expiry = BASE_TIMESTAMP - 1;
-    let inputs = inputs_with_expiry(&env, past_expiry);
+    let inputs = inputs_for(&env, &subject, past_expiry, 0);
     let proof = make_proof(&env, &vk_bytes, &inputs);
     let bad_bundle = ProofBundle { proof, public_inputs: inputs, schema_version: 1 };
 
@@ -310,7 +373,7 @@ fn test_unknown_schema_returns_error() {
     let vk_bytes = vk(&env, 0xAA);
     let subject = Address::generate(&env);
     let err = client
-        .try_verify_eligibility(&subject, &valid_bundle(&env, &vk_bytes, 99))
+        .try_verify_eligibility(&subject, &valid_bundle(&env, &vk_bytes, &subject, 99))
         .unwrap_err()
         .unwrap();
     assert_eq!(err, Error::SchemaNotFound);
@@ -324,7 +387,7 @@ fn test_deprecated_schema_returns_error() {
     client.deprecate_verifier_key(&admin, &1u32);
     let subject = Address::generate(&env);
     let err = client
-        .try_verify_eligibility(&subject, &valid_bundle(&env, &vk_bytes, 1))
+        .try_verify_eligibility(&subject, &valid_bundle(&env, &vk_bytes, &subject, 1))
         .unwrap_err()
         .unwrap();
     assert_eq!(err, Error::SchemaNotFound);
@@ -336,9 +399,9 @@ fn test_proof_replay_returns_error() {
     let vk_bytes = vk(&env, 0xAA);
     client.register_verifier_key(&admin, &1u32, &vk_bytes);
     let subject = Address::generate(&env);
-    let bundle = valid_bundle(&env, &vk_bytes, 1);
+    let bundle = valid_bundle(&env, &vk_bytes, &subject, 1);
     client.verify_eligibility(&subject, &bundle);
-    // Same proof bytes → same nullifier hash → ProofAlreadyUsed.
+    // Same circuit-level nullifier → ProofAlreadyUsed.
     let err = client
         .try_verify_eligibility(&subject, &bundle)
         .unwrap_err()
@@ -355,7 +418,7 @@ fn test_proof_too_large_returns_error() {
     let big_proof = Bytes::from_slice(&env, &[0xAA; 513]);
     let bad_bundle = ProofBundle {
         proof: big_proof,
-        public_inputs: inputs_with_expiry(&env, FUTURE_EXPIRY),
+        public_inputs: inputs_for(&env, &subject, FUTURE_EXPIRY, 0),
         schema_version: 1,
     };
     let err = client
@@ -396,11 +459,35 @@ fn test_nullifier_recorded_after_valid_proof() {
     let vk_bytes = vk(&env, 0xAA);
     client.register_verifier_key(&admin, &1u32, &vk_bytes);
     let subject = Address::generate(&env);
-    let bundle = valid_bundle(&env, &vk_bytes, 1);
-    let proof_hash: BytesN<32> = env.crypto().sha256(&bundle.proof).into();
-    assert!(!client.is_nullified(&proof_hash));
+    let bundle = valid_bundle(&env, &vk_bytes, &subject, 1);
+    // The nullifier is the circuit-level nullifier public input (index 2),
+    // not a hash of the proof bytes.
+    let nullifier: BytesN<32> = bundle.public_inputs.get(2).unwrap();
+    assert!(!client.is_nullified(&nullifier));
     client.verify_eligibility(&subject, &bundle);
-    assert!(client.is_nullified(&proof_hash));
+    assert!(client.is_nullified(&nullifier));
+}
+
+#[test]
+fn test_rerandomized_proof_still_rejected_as_replay() {
+    // Groth16 proofs are malleable: a re-encoded proof has different bytes but
+    // the same statement. The nullifier must be derived from the circuit, so
+    // the re-encoded proof is still rejected.
+    let (env, admin, client) = setup();
+    let vk_bytes = vk(&env, 0xAA);
+    client.register_verifier_key(&admin, &1u32, &vk_bytes);
+    let subject = Address::generate(&env);
+    let bundle = valid_bundle(&env, &vk_bytes, &subject, 1);
+    client.verify_eligibility(&subject, &bundle);
+
+    // Same public inputs (same nullifier), different proof bytes.
+    let mut rerandomized = bundle.clone();
+    rerandomized.proof = Bytes::from_slice(&env, &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99]);
+    let err = client
+        .try_verify_eligibility(&subject, &rerandomized)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::ProofAlreadyUsed);
 }
 
 // ── schema versioning ─────────────────────────────────────────────────────────
@@ -415,9 +502,13 @@ fn test_multiple_schema_versions_coexist() {
 
     let subject = Address::generate(&env);
     // v1 proof — bound to vk1 + its public inputs.
-    client.verify_eligibility(&subject, &valid_bundle(&env, &vk1, 1));
-    // v2 proof — different VK → different commitment → different proof bytes → different nullifier.
-    client.verify_eligibility(&subject, &valid_bundle(&env, &vk2, 2));
+    client.verify_eligibility(&subject, &valid_bundle(&env, &vk1, &subject, 1));
+    // v2 proof — different VK → different commitment → different proof bytes,
+    // and a different context → different nullifier.
+    let inputs = inputs_for(&env, &subject, FUTURE_EXPIRY, 1);
+    let proof = make_proof(&env, &vk2, &inputs);
+    let bundle = ProofBundle { proof, public_inputs: inputs, schema_version: 2 };
+    client.verify_eligibility(&subject, &bundle);
 }
 
 #[test]
