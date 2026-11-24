@@ -27,7 +27,8 @@
 //! prevents use of expired credentials. Provider address validation via registry.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, Map, String, Symbol,
+    Vec,
 };
 
 const REQUIRED_CREDENTIALS: u32 = 5;
@@ -225,6 +226,10 @@ pub enum DataKey {
     Admin,
     AuthorizedVerifier(Address),
     CommitteeMember(Address),
+    /// Per-case map of credential type -> (verifier, result, timestamp) for the
+    /// most recent verification of that type. Used to derive
+    /// `verifications_complete` from distinct, currently-positive types.
+    VerifiedTypes(u64),
 }
 
 #[contract]
@@ -413,10 +418,28 @@ impl HealthcareCredentialingSystem {
             .persistent()
             .set(&DataKey::CaseVerifications(case_id), &records);
 
+        // Track the latest verification per credential type. Repeated verifications of
+        // the same type overwrite the entry rather than adding to the completed count,
+        // so a single verifier cannot reach committee review by re-verifying one type.
+        let mut verified_types: Map<Symbol, (Address, bool, u64)> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VerifiedTypes(case_id))
+            .unwrap_or(Map::new(&env));
+        verified_types.set(
+            credential_type.clone(),
+            (verifier, verification_result, verification_date),
+        );
+        env.storage()
+            .persistent()
+            .set(&DataKey::VerifiedTypes(case_id), &verified_types);
+
+        // Derive the completed count from distinct required types that currently have a
+        // positive result. A negative result on a required type removes it from the
+        // count and blocks committee review until it is re-verified positively.
+        case.verifications_complete = count_verified_types(&env, &verified_types);
+
         if verification_result {
-            if case.verifications_complete < case.verifications_required {
-                case.verifications_complete += 1;
-            }
             if case.verifications_complete >= case.verifications_required {
                 case.status = CredentialingStatus::CommitteeReview;
             } else {
@@ -1174,6 +1197,22 @@ fn is_supported_credential_type(env: &Env, credential_type: &Symbol) -> bool {
         || *credential_type == Symbol::new(env, "references")
 }
 
+/// Count the distinct supported credential types that currently have a positive
+/// verification result recorded for the case.
+fn count_verified_types(env: &Env, verified_types: &Map<Symbol, (Address, bool, u64)>) -> u32 {
+    let mut count: u32 = 0;
+    let mut idx: u32 = 0;
+    while idx < verified_types.len() {
+        if let Some((key, value)) = verified_types.get(idx) {
+            if is_supported_credential_type(env, &key) && value.1 {
+                count += 1;
+            }
+        }
+        idx += 1;
+    }
+    count
+}
+
 fn document_exists_for_type(docs: &Vec<CredentialDocument>, credential_type: &Symbol) -> bool {
     let mut idx: u32 = 0;
     while idx < docs.len() {
@@ -1418,6 +1457,144 @@ mod test {
             &String::from_str(&env, "Verified"),
         );
         assert_eq!(res, Err(Ok(Error::DocumentNotFound)));
+    }
+
+    #[test]
+    fn repeated_same_type_verification_does_not_reach_committee_review() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(HealthcareCredentialingSystem, ());
+        let client = HealthcareCredentialingSystemClient::new(&env, &contract_id);
+
+        let admin = setup_admin(&env, &client);
+        let provider = Address::generate(&env);
+        let facility = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        client.add_authorized_verifier(&admin, &verifier);
+
+        let case_id = create_case(&env, &client, &provider, &facility);
+        submit_required_docs(&env, &client, case_id, &provider);
+
+        // One verifier re-verifies the same type five times.
+        let mut idx: usize = 0;
+        while idx < 5 {
+            client.verify_credential(
+                &case_id,
+                &Symbol::new(&env, "cv"),
+                &verifier,
+                &Symbol::new(&env, "primary_source"),
+                &true,
+                &1_700_010_000,
+                &String::from_str(&env, "Verified"),
+            );
+            idx += 1;
+        }
+
+        let case = client.get_credentialing_case(&case_id);
+        assert_eq!(case.verifications_complete, 1);
+        assert_ne!(case.status, CredentialingStatus::CommitteeReview);
+    }
+
+    #[test]
+    fn distinct_required_types_reach_committee_review() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(HealthcareCredentialingSystem, ());
+        let client = HealthcareCredentialingSystemClient::new(&env, &contract_id);
+
+        let admin = setup_admin(&env, &client);
+        let provider = Address::generate(&env);
+        let facility = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        client.add_authorized_verifier(&admin, &verifier);
+
+        let case_id = create_case(&env, &client, &provider, &facility);
+        submit_required_docs(&env, &client, case_id, &provider);
+
+        let verify_types = ["medical_license", "dea", "board_cert", "cv", "references"];
+        let mut idx: usize = 0;
+        while idx < verify_types.len() {
+            client.verify_credential(
+                &case_id,
+                &Symbol::new(&env, verify_types[idx]),
+                &verifier,
+                &Symbol::new(&env, "primary_source"),
+                &true,
+                &1_700_010_000,
+                &String::from_str(&env, "Verified"),
+            );
+            idx += 1;
+        }
+
+        let case = client.get_credentialing_case(&case_id);
+        assert_eq!(case.verifications_complete, 5);
+        assert_eq!(case.status, CredentialingStatus::CommitteeReview);
+    }
+
+    #[test]
+    fn negative_result_blocks_committee_review_until_reverified() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(HealthcareCredentialingSystem, ());
+        let client = HealthcareCredentialingSystemClient::new(&env, &contract_id);
+
+        let admin = setup_admin(&env, &client);
+        let provider = Address::generate(&env);
+        let facility = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        client.add_authorized_verifier(&admin, &verifier);
+
+        let case_id = create_case(&env, &client, &provider, &facility);
+        submit_required_docs(&env, &client, case_id, &provider);
+
+        let verify_types = ["medical_license", "dea", "board_cert", "cv", "references"];
+        let mut idx: usize = 0;
+        while idx < verify_types.len() {
+            client.verify_credential(
+                &case_id,
+                &Symbol::new(&env, verify_types[idx]),
+                &verifier,
+                &Symbol::new(&env, "primary_source"),
+                &true,
+                &1_700_010_000,
+                &String::from_str(&env, "Verified"),
+            );
+            idx += 1;
+        }
+
+        // A later negative result on a required type must lower the count and block
+        // committee review.
+        client.verify_credential(
+            &case_id,
+            &Symbol::new(&env, "medical_license"),
+            &verifier,
+            &Symbol::new(&env, "primary_source"),
+            &false,
+            &1_700_020_000,
+            &String::from_str(&env, "Discrepancy found"),
+        );
+
+        let case = client.get_credentialing_case(&case_id);
+        assert_eq!(case.verifications_complete, 4);
+        assert_ne!(case.status, CredentialingStatus::CommitteeReview);
+
+        // Re-verifying positively restores the count and allows committee review.
+        client.verify_credential(
+            &case_id,
+            &Symbol::new(&env, "medical_license"),
+            &verifier,
+            &Symbol::new(&env, "primary_source"),
+            &true,
+            &1_700_030_000,
+            &String::from_str(&env, "Resolved"),
+        );
+
+        let case = client.get_credentialing_case(&case_id);
+        assert_eq!(case.verifications_complete, 5);
+        assert_eq!(case.status, CredentialingStatus::CommitteeReview);
     }
 
     #[test]

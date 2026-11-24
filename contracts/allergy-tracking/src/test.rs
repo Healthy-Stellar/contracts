@@ -1110,3 +1110,141 @@ fn test_batch_record_allergies_allergens_are_trimmed() {
     let rec = client.get_allergy(&ids.get(0).unwrap(), &patient);
     assert_eq!(rec.allergen, String::from_str(&env, "Penicillin"));
 }
+
+// ==================== PATIENT DEREGISTRATION TESTS ====================
+// Re-opens #850: the documented deregistration/deletion path must actually exist.
+
+#[test]
+fn test_deregister_patient_tombstones_allergies_and_clears_access() {
+    let (env, contract_id, patient, provider, _) = create_test_env();
+    let client = AllergyTrackingContractClient::new(&env, &contract_id);
+
+    let mut reactions = Vec::new(&env);
+    reactions.push_back(String::from_str(&env, "rash"));
+
+    let id1 = client.record_allergy(
+        &patient,
+        &provider,
+        &String::from_str(&env, "Penicillin"),
+        &Symbol::new(&env, "medication"),
+        &reactions,
+        &Symbol::new(&env, "moderate"),
+        &None,
+        &true,
+    );
+
+    let id2 = client.record_allergy(
+        &patient,
+        &provider,
+        &String::from_str(&env, "Peanuts"),
+        &Symbol::new(&env, "food"),
+        &reactions,
+        &Symbol::new(&env, "severe"),
+        &None,
+        &true,
+    );
+
+    client.grant_access(&patient, &provider);
+
+    // Patient deregisters (signed by the patient).
+    client.deregister_patient(&patient, &patient);
+
+    // Records are tombstoned: reads either return a Deleted record or an error.
+    match client.try_get_allergy(&id1, &patient) {
+        Ok(record) => assert_eq!(record.status, AllergyStatus::Deleted),
+        Err(_) => {}
+    }
+    match client.try_get_allergy(&id2, &patient) {
+        Ok(record) => assert_eq!(record.status, AllergyStatus::Deleted),
+        Err(_) => {}
+    }
+
+    // Access grants are cleared, so active allergies are empty.
+    let active = client.get_active_allergies(&patient, &provider);
+    assert_eq!(active.len(), 0);
+}
+
+#[test]
+fn test_deregister_patient_blocks_new_records() {
+    let (env, contract_id, patient, provider, _) = create_test_env();
+    let client = AllergyTrackingContractClient::new(&env, &contract_id);
+
+    let mut reactions = Vec::new(&env);
+    reactions.push_back(String::from_str(&env, "rash"));
+
+    client.record_allergy(
+        &patient,
+        &provider,
+        &String::from_str(&env, "Penicillin"),
+        &Symbol::new(&env, "medication"),
+        &reactions,
+        &Symbol::new(&env, "moderate"),
+        &None,
+        &true,
+    );
+
+    client.deregister_patient(&patient, &patient);
+
+    // Writing for a deregistered patient must be rejected.
+    let result = client.try_record_allergy(
+        &patient,
+        &provider,
+        &String::from_str(&env, "Latex"),
+        &Symbol::new(&env, "other"),
+        &reactions,
+        &Symbol::new(&env, "mild"),
+        &None,
+        &true,
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_deregister_patient_by_admin_allowed() {
+    let (env, contract_id, patient, provider, admin) = create_test_env();
+    let client = AllergyTrackingContractClient::new(&env, &contract_id);
+
+    let mut reactions = Vec::new(&env);
+    reactions.push_back(String::from_str(&env, "rash"));
+
+    client.record_allergy(
+        &patient,
+        &provider,
+        &String::from_str(&env, "Penicillin"),
+        &Symbol::new(&env, "medication"),
+        &reactions,
+        &Symbol::new(&env, "moderate"),
+        &None,
+        &true,
+    );
+
+    // Admin can also deregister the patient.
+    client.deregister_patient(&patient, &admin);
+
+    let active = client.get_active_allergies(&patient, &provider);
+    assert_eq!(active.len(), 0);
+}
+
+#[test]
+fn test_deregister_patient_unauthorized_caller_rejected() {
+    let (env, contract_id, patient, provider, _) = create_test_env();
+    let client = AllergyTrackingContractClient::new(&env, &contract_id);
+
+    let mut reactions = Vec::new(&env);
+    reactions.push_back(String::from_str(&env, "rash"));
+
+    client.record_allergy(
+        &patient,
+        &provider,
+        &String::from_str(&env, "Penicillin"),
+        &Symbol::new(&env, "medication"),
+        &reactions,
+        &Symbol::new(&env, "moderate"),
+        &None,
+        &true,
+    );
+
+    // A provider (neither the patient nor the admin) must not be able to deregister.
+    let result = client.try_deregister_patient(&patient, &provider);
+    assert!(result.is_err());
+}

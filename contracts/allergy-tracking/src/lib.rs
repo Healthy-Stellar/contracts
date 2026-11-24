@@ -17,9 +17,13 @@
 //! individual record IDs. Temporal validation prevents invalid date sequences (onset before resolution).
 //! Historical tracking via persistent storage allows audit replay.
 //!
-//! **Data Retention Policy:** Allergies marked as Deleted when patient deregisters. Batch size
-//! limits (configurable) prevent unbounded operations. Duplicate detection ensures consistency.
-//! Resolution date and reason retained with resolved allergies.
+//! **Data Retention Policy:** Patients may deregister via `deregister_patient`, which tombstones
+//! (soft-deletes) every allergy record for the patient, clears the patient's access grants and
+//! allergy index, and sets a `Deregistered` flag. Deregistration is paginated (`start`/`limit`)
+//! so large indexes can be processed across multiple calls; the flag is only set once the whole
+//! index has been consumed. While deregistered, all reads and writes for the patient are rejected
+//! with `PatientDeregistered`. Batch size limits (configurable) prevent unbounded operations.
+//! Duplicate detection ensures consistency. Resolution date and reason retained with resolved allergies.
 //!
 //! **Encryption/Integrity:** SHA256 content hashing used for data integrity. Allergen type
 //! classification (Medication, Food, Environmental, Other) enables category-specific retention rules.
@@ -57,6 +61,8 @@ pub enum Error {
     BatchTooLarge = 14,
     ProviderNotRegistered = 15,
     ProviderRegistryNotSet = 16,
+    PatientDeregistered = 17,
+    InvalidPagination = 18,
 }
 
 /// Allergen types supported by the system
@@ -86,6 +92,7 @@ pub enum AllergyStatus {
     Active,
     Resolved,
     Suspected,
+    Deleted,
 }
 
 /// Comprehensive allergy record
@@ -143,6 +150,7 @@ pub enum DataKey {
     AccessControl(Address, Address),
     GrantedProviders(Address),
     ProviderRegistry,
+    Deregistered(Address),
 }
 
 /// A single entry in a batch allergy recording request.
@@ -164,6 +172,7 @@ const MIN_ALLERGEN_LENGTH: u32 = 1;
 const MAX_REASON_LENGTH: u32 = 500;
 const MAX_REACTION_LENGTH: u32 = 200;
 const MAX_BATCH_SIZE: u32 = 50;
+const MAX_DEREGISTER_PAGE: u32 = 50;
 
 #[contract]
 pub struct AllergyTrackingContract;
@@ -200,6 +209,27 @@ impl AllergyTrackingContract {
         env.storage().instance().get(&DataKey::ProviderRegistry)
     }
 
+    /// Returns true if `patient_id` has been deregistered.
+    pub fn is_deregistered(env: Env, patient_id: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Deregistered(patient_id))
+            .unwrap_or(false)
+    }
+
+    /// Reject operations for deregistered patients.
+    fn require_not_deregistered(env: &Env, patient_id: &Address) -> Result<(), Error> {
+        let deregistered: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Deregistered(patient_id.clone()))
+            .unwrap_or(false);
+        if deregistered {
+            return Err(Error::PatientDeregistered);
+        }
+        Ok(())
+    }
+
     /// Fail-closed check that `provider_id` is a credentialed, active, non-revoked provider.
     fn require_registered_provider(env: &Env, provider_id: &Address) -> Result<(), Error> {
         let registry: Address = env
@@ -228,6 +258,7 @@ impl AllergyTrackingContract {
     ) -> Result<u64, Error> {
         provider_id.require_auth();
         Self::require_registered_provider(&env, &provider_id)?;
+        Self::require_not_deregistered(&env, &patient_id)?;
 
         let allergen = Self::trim_allergen(&allergen);
         Self::validate_allergen(&allergen)?;
@@ -336,6 +367,7 @@ impl AllergyTrackingContract {
     ) -> Result<Vec<u64>, Error> {
         provider_id.require_auth();
         Self::require_registered_provider(&env, &provider_id)?;
+        Self::require_not_deregistered(&env, &patient_id)?;
 
         if entries.is_empty() {
             return Err(Error::BatchEmpty);
@@ -386,6 +418,7 @@ impl AllergyTrackingContract {
         if allergy.is_deleted {
             return Err(Error::AlreadyDeleted);
         }
+        Self::require_not_deregistered(&env, &allergy.patient_id)?;
 
         let new_severity_enum = Self::symbol_to_severity(&env, &new_severity)?;
         let old_severity = allergy.severity.clone();
@@ -445,6 +478,7 @@ impl AllergyTrackingContract {
         if allergy.is_deleted {
             return Err(Error::AlreadyDeleted);
         }
+        Self::require_not_deregistered(&env, &allergy.patient_id)?;
         if allergy.status == AllergyStatus::Resolved {
             return Err(Error::AlreadyResolved);
         }
@@ -484,6 +518,7 @@ impl AllergyTrackingContract {
         if allergy.is_deleted {
             return Err(Error::AlreadyDeleted);
         }
+        Self::require_not_deregistered(&env, &allergy.patient_id)?;
 
         allergy.verified = true;
         if allergy.status == AllergyStatus::Suspected {
@@ -535,13 +570,120 @@ impl AllergyTrackingContract {
         Ok(())
     }
 
-    /// Retrieve an allergy record by ID.
-    pub fn get_allergy(env: Env, allergy_id: u64) -> Option<AllergyRecord> {
-        env.storage().persistent().get(&DataKey::Allergy(allergy_id))
+    /// Deregister a patient: tombstone all allergy records, clear access grants and the
+    /// patient's allergy index, and set the deregistered flag.
+    ///
+    /// Signed by the patient or the contract admin. Paginated: pass `start` (index offset)
+    /// and `limit` (max records per call, capped at `MAX_DEREGISTER_PAGE`). The deregistered
+    /// flag is only set once the entire index has been processed; call repeatedly until
+    /// `is_deregistered` returns true.
+    pub fn deregister_patient(
+        env: Env,
+        caller: Address,
+        patient_id: Address,
+        start: u32,
+        limit: u32,
+    ) -> Result<u32, Error> {
+        caller.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::Unauthorized)?;
+        if caller != patient_id && caller != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+
+        if limit == 0 || limit > MAX_DEREGISTER_PAGE {
+            return Err(Error::InvalidPagination);
+        }
+
+        let patient_key = DataKey::PatientAllergies(patient_id.clone());
+        let patient_allergies: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&patient_key)
+            .unwrap_or(Vec::new(&env));
+
+        let total = patient_allergies.len();
+        if start > total {
+            return Err(Error::InvalidPagination);
+        }
+
+        let end = core::cmp::min(start.saturating_add(limit), total);
+        let now = env.ledger().timestamp();
+        let mut processed: u32 = 0;
+
+        let mut i = start;
+        while i < end {
+            let allergy_id = patient_allergies.get(i).unwrap();
+            if let Some(mut allergy) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, AllergyRecord>(&DataKey::Allergy(allergy_id))
+            {
+                if !allergy.is_deleted {
+                    allergy.is_deleted = true;
+                    allergy.status = AllergyStatus::Deleted;
+                    allergy.last_updated = now;
+                    env.storage()
+                        .persistent()
+                        .set(&DataKey::Allergy(allergy_id), &allergy);
+                }
+            }
+            processed += 1;
+            i += 1;
+        }
+
+        // Clear access grants in both directions for this patient.
+        if let Some(providers) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Vec<Address>>(&DataKey::GrantedProviders(patient_id.clone()))
+        {
+            for provider in providers.iter() {
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey::AccessControl(patient_id.clone(), provider));
+            }
+        }
+        env.storage()
+            .persistent()
+            .remove(&DataKey::GrantedProviders(patient_id.clone()));
+
+        if end >= total {
+            // Whole index consumed: clear it and mark the patient deregistered.
+            env.storage().persistent().remove(&patient_key);
+            env.storage()
+                .persistent()
+                .set(&DataKey::Deregistered(patient_id.clone()), &true);
+        }
+
+        env.events().publish(
+            (symbol_short!("patient"), symbol_short!("dereg")),
+            (patient_id, start, end, end >= total),
+        );
+
+        Ok(processed)
     }
 
-    /// List all allergy IDs for a patient.
+    /// Retrieve an allergy record by ID. Returns `None` for deregistered patients.
+    pub fn get_allergy(env: Env, allergy_id: u64) -> Option<AllergyRecord> {
+        let allergy: AllergyRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Allergy(allergy_id))?;
+        if Self::is_deregistered(env.clone(), allergy.patient_id.clone()) {
+            return None;
+        }
+        Some(allergy)
+    }
+
+    /// List all allergy IDs for a patient. Returns an empty list for deregistered patients.
     pub fn get_patient_allergies(env: Env, patient_id: Address) -> Vec<u64> {
+        if Self::is_deregistered(env.clone(), patient_id.clone()) {
+            return Vec::new(&env);
+        }
         env.storage()
             .persistent()
             .get(&DataKey::PatientAllergies(patient_id))
