@@ -11,6 +11,7 @@ doctest = false
 
 [dependencies]
 shared = { workspace = true }
+shared-contracts = { path = "..", package = "Contracts" }
 soroban-sdk = { workspace = true }
 ttl-config = { path = "../ttl-config" }
 
