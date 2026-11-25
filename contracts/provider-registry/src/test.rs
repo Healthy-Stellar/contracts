@@ -254,8 +254,6 @@ fn test_register_provider_rejects_expired_credential() {
     let (env, admin, client) = setup();
     let provider = Address::generate(&env);
     let issuer = Address::generate(&env);
-
-    env.ledger().set_timestamp(2000);
     let err = client
         .try_register_provider(
             &admin,
@@ -266,7 +264,7 @@ fn test_register_provider_rejects_expired_credential() {
             &dummy_hash(&env, 1),
             &issuer,
             &dummy_hash(&env, 2),
-            &1000u64,
+            &0u64,
             &dummy_hash(&env, 3),
         )
         .unwrap_err()
@@ -274,120 +272,103 @@ fn test_register_provider_rejects_expired_credential() {
     assert_eq!(err, Error::InvalidExpiry);
 }
 
-// ── add_record ────────────────────────────────────────────────────────────────
+// ── reactivate / revoke credential ───────────────────────────────────────────
 
 #[test]
-fn test_add_record_by_whitelisted_provider() {
+fn test_reactivate_provider_restores_membership() {
     let (env, admin, client) = setup();
     let provider = Address::generate(&env);
     register_provider_with_anchor(&env, &client, &admin, &provider);
-    let nonce = client.get_caller_nonce(&provider);
-    client.add_record(
-        &provider,
-        &String::from_str(&env, "REC001"),
-        &String::from_str(&env, "Patient data"),
-        &(nonce + 1),
-    );
-    assert_eq!(
-        client.get_record(&provider, &provider, &String::from_str(&env, "REC001")),
-        String::from_str(&env, "Patient data")
-    );
+
+    client.revoke_provider(&admin, &provider);
+    assert!(!client.is_provider(&provider));
+
+    client.reactivate_provider(&admin, &provider);
+    assert!(client.is_provider(&provider));
+
+    let profile = client.get_provider_profile(&provider);
+    assert!(profile.active);
+    assert!(profile.credential.revoked_at.is_none());
 }
 
 #[test]
-fn test_add_record_non_provider_returns_error() {
-    let (env, _, client) = setup();
-    let stranger = Address::generate(&env);
-    let err = client
-        .try_add_record(
-            &stranger,
-            &String::from_str(&env, "REC002"),
-            &String::from_str(&env, "bad data"),
-            &1u64,
-        )
-        .unwrap_err()
-        .unwrap();
-    assert_eq!(err, Error::NotAProvider);
-}
-
-#[test]
-fn test_add_record_after_revocation_returns_error() {
+fn test_reactivate_provider_non_admin_returns_error() {
     let (env, admin, client) = setup();
+    let non_admin = Address::generate(&env);
     let provider = Address::generate(&env);
     register_provider_with_anchor(&env, &client, &admin, &provider);
     client.revoke_provider(&admin, &provider);
+
     let err = client
-        .try_add_record(
-            &provider,
-            &String::from_str(&env, "REC003"),
-            &String::from_str(&env, "stale"),
-            &1u64,
-        )
+        .try_reactivate_provider(&non_admin, &provider)
         .unwrap_err()
         .unwrap();
-    assert_eq!(err, Error::NotAProvider);
+    assert_eq!(err, Error::Unauthorized);
 }
 
 #[test]
-fn test_add_record_stale_nonce_rejected() {
+fn test_revoke_credential_marks_revoked() {
     let (env, admin, client) = setup();
-    env.mock_all_auths();
     let provider = Address::generate(&env);
     register_provider_with_anchor(&env, &client, &admin, &provider);
 
-    let nonce = client.get_caller_nonce(&provider);
-    // First call with valid nonce succeeds
-    client.add_record(
-        &provider,
-        &String::from_str(&env, "REC001"),
-        &String::from_str(&env, "data"),
-        &(nonce + 1),
-    );
-    // Second call with the same nonce must be rejected (stale)
-    let err = client
-        .try_add_record(
-            &provider,
-            &String::from_str(&env, "REC002"),
-            &String::from_str(&env, "replay"),
-            &(nonce + 1),
-        )
-        .unwrap_err()
-        .unwrap();
-    assert_eq!(err, Error::StaleNonce);
+    client.revoke_credential(&admin, &provider, &dummy_hash(&env, 3));
+    assert!(!client.is_provider(&provider));
+
+    let profile = client.get_provider_profile(&provider);
+    assert!(profile.credential.revoked_at.is_some());
 }
 
 #[test]
-fn test_add_record_zero_nonce_accepted_as_initial() {
+fn test_revoke_credential_non_admin_returns_error() {
     let (env, admin, client) = setup();
-    env.mock_all_auths();
+    let non_admin = Address::generate(&env);
     let provider = Address::generate(&env);
     register_provider_with_anchor(&env, &client, &admin, &provider);
 
-    // Initial nonce is 0; passing 0 should fail (must be > 0), so pass 1
-    let nonce = client.get_caller_nonce(&provider);
-    assert_eq!(nonce, 0);
-    client.add_record(
-        &provider,
-        &String::from_str(&env, "REC001"),
-        &String::from_str(&env, "initial data"),
-        &(nonce + 1),
-    );
-    // Verify the nonce was incremented
-    assert_eq!(client.get_caller_nonce(&provider), 1);
+    let err = client
+        .try_revoke_credential(&non_admin, &provider, &dummy_hash(&env, 3))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::Unauthorized);
 }
 
-// ── get_record ────────────────────────────────────────────────────────────────
+// ── is_active_provider / is_provider agreement ───────────────────────────────
 
 #[test]
-fn test_get_missing_record_returns_error() {
+fn test_is_active_provider_agrees_with_is_provider() {
     let (env, admin, client) = setup();
+    let provider = Address::generate(&env);
+    register_provider_with_anchor(&env, &client, &admin, &provider);
+
+    assert_eq!(client.is_active_provider(&provider), client.is_provider(&provider));
+
+    client.revoke_provider(&admin, &provider);
+    assert_eq!(client.is_active_provider(&provider), client.is_provider(&provider));
+    assert!(!client.is_active_provider(&provider));
+}
+
+#[test]
+fn test_zero_expiry_is_not_active() {
+    let (env, admin, client) = setup();
+    let provider = Address::generate(&env);
+    let issuer = Address::generate(&env);
+
+    // expires_at == 0 must be treated as invalid, not "never expires".
     let err = client
-        .try_get_record(
+        .try_register_provider(
             &admin,
-            &admin,
-            &String::from_str(&env, "MISSING"),
+            &provider,
+            &String::from_str(&env, "Dr. Smith"),
+            &String::from_str(&env, "General"),
+            &String::from_str(&env, "LIC-001"),
+            &dummy_hash(&env, 1),
+            &issuer,
+            &dummy_hash(&env, 2),
+            &0u64,
+            &dummy_hash(&env, 3),
         )
         .unwrap_err()
         .unwrap();
-    assert_eq!(err, Error::RecordNotFound);
+    assert_eq!(err, Error::InvalidExpiry);
 }

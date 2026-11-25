@@ -31,12 +31,58 @@ pub struct DentalChart {
     pub tooth_notation_system: Symbol,
 }
 
+/// Tooth surface a condition applies to. `WholeTooth` is used for findings
+/// that are not surface-specific (missing, implant, crown, ...).
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ToothSurface {
+    WholeTooth,
+    Occlusal,
+    Incisal,
+    Mesial,
+    Distal,
+    Buccal,
+    Facial,
+    Lingual,
+    Palatal,
+}
+
+/// Allow-listed tooth conditions.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ToothConditionKind {
+    Caries,
+    Filling,
+    Crown,
+    Missing,
+    Implant,
+    RootCanal,
+    Fracture,
+    Sealant,
+    Bridge,
+    Veneer,
+}
+
+/// Periodontal probing sites.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum PerioSite {
+    MesioBuccal,
+    Buccal,
+    DistoBuccal,
+    MesioLingual,
+    Lingual,
+    DistoLingual,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ToothCondition {
-    pub surface: Option<Symbol>,
-    pub condition: Symbol,
+    pub surface: ToothSurface,
+    pub condition: ToothConditionKind,
     pub condition_details: Option<String>,
+    pub recorded_by: Address,
+    pub recorded_at: u64,
 }
 
 #[contracttype]
@@ -74,11 +120,13 @@ pub struct Appointment {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Radiograph {
     pub patient_id: Address,
-    pub image_type: Symbol,
-    pub image_date: u64,
+    pub dentist_id: Address,
+    pub radiograph_type: Symbol,
+    pub taken_date: u64,
     pub teeth_included: Vec<String>,
     pub findings: Vec<String>,
-    pub image_hash: BytesN<32>,
+    /// Content hash / CID of the image, validated by the shared CID validator.
+    pub image_cid: BytesN<32>,
 }
 
 #[contracttype]
@@ -106,15 +154,17 @@ pub struct OrthoAdjustment {
 pub enum DataKey {
     ChartCount,
     Chart(u64),                 // chart_id
-    ToothCond(u64, String),     // chart_id, tooth_number
-    Perio(u64, String, Symbol), // chart_id, tooth_number, site
+    ToothCond(u64, String, ToothSurface), // chart_id, tooth_number, surface
+    Perio(u64, String, PerioSite),        // chart_id, tooth_number, site
     PlanCount,
     Plan(u64), // treatment_plan_id
     AppointmentCount,
     Appt(u64),         // appointment_id
     ProcedureLog(u64), // appointment_id -> log
     RadiographCount,
-    Radio(u64), // radiograph_id
+    Radiograph(u64), // radiograph_id
+    /// Per-patient radiograph index: patient_id -> Vec<u64> (bounded/paginated)
+    RadiographIndex(Address),
     OrthoCount,
     Ortho(u64),         // ortho_treatment_id
     OrthoAdj(u64, u64), // ortho_treatment_id, adjustment_date
@@ -164,4 +214,8 @@ pub enum Error {
     InvalidScheduledDate = 4,
     /// procedure_date / image_date must not be in the future
     InvalidPastDate = 5,
+    /// tooth_notation_system is not one of universal, palmer, fdi
+    InvalidNotationSystem = 6,
+    /// tooth_number is not valid for the chart's notation system
+    InvalidToothNumber = 7,
 }

@@ -32,13 +32,25 @@ mod types;
 mod test;
 
 use soroban_sdk::{
-    contract, contractimpl, symbol_short, Address, Bytes, BytesN, Env, String, Symbol, Vec,
+    contract, contractimpl, symbol_short, vec, Address, Bytes, BytesN, Env, IntoVal, String,
+    Symbol, Vec,
 };
 use soroban_sdk::xdr::ToXdr;
 use storage::*;
 use types::*;
 
 const MAX_VIEW_TIMESTAMP_DRIFT_SECS: u64 = 300;
+
+/// Upper bound on the number of items returned by any paged read.
+pub const MAX_PAGE_LIMIT: u32 = 50;
+
+fn clamp_limit(limit: u32) -> u32 {
+    if limit == 0 || limit > MAX_PAGE_LIMIT {
+        MAX_PAGE_LIMIT
+    } else {
+        limit
+    }
+}
 
 fn compute_view_log_entry_hash(
     env: &Env,
@@ -68,8 +80,45 @@ pub struct PacsContract;
 
 #[contractimpl]
 impl PacsContract {
+    /// One-time setup: stores the admin and the provider-registry contract used
+    /// to verify ordering providers.
+    pub fn initialize(env: Env, admin: Address, provider_registry: Address) -> Result<(), Error> {
+        if env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::AlreadyInitialized);
+        }
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::ProviderRegistry, &provider_registry);
+        Ok(())
+    }
+
+    /// Admin-only: point the contract at a different provider-registry.
+    pub fn set_provider_registry(
+        env: Env,
+        admin: Address,
+        provider_registry: Address,
+    ) -> Result<(), Error> {
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        if stored_admin != admin {
+            return Err(Error::Unauthorized);
+        }
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::ProviderRegistry, &provider_registry);
+        Ok(())
+    }
+
     /// Register a new DICOM imaging study and return its on-chain study_id.
-    #[allow(clippy::too_many_arguments)]
+    ///
+    /// The ordering provider must be an active provider in the configured
+    /// provider-registry.
     pub fn register_imaging_study(
         env: Env,
         patient_id: Address,
@@ -83,7 +132,10 @@ impl PacsContract {
         image_count: u32,
         storage_location_hash: BytesN<32>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         ordering_provider.require_auth();
+
+        Self::assert_registered_provider(&env, &ordering_provider)?;
 
         if study_uid.is_empty() || body_part.is_empty() {
             return Err(Error::InvalidInput);
@@ -110,14 +162,12 @@ impl PacsContract {
 
         save_study(&env, &study);
 
-        let mut patient_studies = load_patient_studies(&env, &patient_id);
-        patient_studies.push_back(study_id);
-        save_patient_studies(&env, &patient_id, &patient_studies);
+        push_patient_study(&env, &patient_id, study_id);
 
-        env.events().publish(
-            (symbol_short!("study_reg"), study_id),
-            (patient_id, ordering_provider),
-        );
+        // patient_id is intentionally not published: the event must not link
+        // a study to a patient on a public ledger.
+        env.events()
+            .publish((symbol_short!("study_reg"), study_id), ordering_provider);
 
         Ok(study_id)
     }
@@ -132,6 +182,7 @@ impl PacsContract {
         image_count: u32,
         acquisition_date: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let mut study = load_study(&env, study_id).ok_or(Error::NotFound)?;
         study.ordering_provider.require_auth();
 
@@ -169,6 +220,7 @@ impl PacsContract {
         report_hash: BytesN<32>,
         critical_findings: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         radiologist_id.require_auth();
 
         let mut study = load_study(&env, study_id).ok_or(Error::NotFound)?;
@@ -205,12 +257,18 @@ impl PacsContract {
     }
 
     /// Find prior studies for the same patient that match the comparison criteria.
+    ///
+    /// Scans the patient's study index from `start` over at most `limit`
+    /// entries (capped at `MAX_PAGE_LIMIT`).
     pub fn request_comparison_study(
         env: Env,
         current_study_id: u64,
         radiologist_id: Address,
         comparison_criteria: ComparisonCriteria,
+        start: u64,
+        limit: u32,
     ) -> Result<Vec<u64>, Error> {
+        ttl_config::extend_instance_ttl(&env);
         radiologist_id.require_auth();
 
         let current = load_study(&env, current_study_id).ok_or(Error::NotFound)?;
@@ -255,10 +313,20 @@ impl PacsContract {
                 if comparison_criteria.matches(&study) {
                     results.push_back(sid);
                 }
+                if s.body_part != comparison_criteria.body_part {
+                    continue;
+                }
+                if max_age_secs > 0 && now > s.study_date && now - s.study_date > max_age_secs {
+                    continue;
+                }
+                matches.push_back(sid);
             }
         }
 
-        Ok(results)
+        env.events()
+            .publish((symbol_short!("cmp_req"), current_study_id), radiologist_id);
+
+        Ok(matches)
     }
 
     /// Grant a viewer access to a study (optionally time-limited).
@@ -319,9 +387,11 @@ impl PacsContract {
         view_timestamp: u64,
         view_duration: u32,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         viewer_id.require_auth();
 
         let study = load_study(&env, study_id).ok_or(Error::NotFound)?;
+        let now = env.ledger().timestamp();
 
         let is_ordering_provider = study.ordering_provider == viewer_id;
         if !is_ordering_provider {
@@ -336,6 +406,13 @@ impl PacsContract {
         let logs = load_view_logs(&env, study_id);
         let previous_entry_hash = logs.last().map(|entry| entry.entry_hash);
 
+        if let Some(previous_ts) = load_viewer_last_view_timestamp(&env, study_id, &viewer_id) {
+            if view_timestamp <= previous_ts {
+                return Err(Error::NonMonotonicViewTimestamp);
+            }
+        }
+
+        let previous_entry_hash = load_view_log_head(&env, study_id).last_hash;
         let entry_hash = compute_view_log_entry_hash(
             &env,
             study_id,
@@ -348,9 +425,8 @@ impl PacsContract {
         );
 
         let record = ViewRecord {
-            study_id,
             viewer_id: viewer_id.clone(),
-            purpose,
+            purpose: purpose.clone(),
             view_timestamp,
             view_duration,
             recorded_at,
@@ -397,4 +473,5 @@ impl PacsContract {
 
         Ok(())
     }
+    String::from_bytes(env, &buf)
 }
