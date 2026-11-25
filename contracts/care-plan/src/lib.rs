@@ -117,6 +117,7 @@ impl CarePlanContract {
         start_date: u64,
         review_frequency_days: u32,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         patient_id.require_auth();
 
@@ -162,6 +163,7 @@ impl CarePlanContract {
         target_date: u64,
         priority: Symbol,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let plan = load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
@@ -211,6 +213,7 @@ impl CarePlanContract {
         frequency: String,
         responsible_party: Symbol,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let plan = load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
@@ -257,6 +260,7 @@ impl CarePlanContract {
         progress_note: String,
         recorded_date: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
 
         let mut goal = load_goal(&env, goal_id).ok_or(Error::GoalNotFound)?;
@@ -303,6 +307,7 @@ impl CarePlanContract {
         achievement_date: u64,
         outcome_notes: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let mut goal = load_goal(&env, goal_id).ok_or(Error::GoalNotFound)?;
@@ -341,6 +346,7 @@ impl CarePlanContract {
         description: String,
         identified_date: u64,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         reporter.require_auth();
 
         let plan = load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
@@ -392,6 +398,7 @@ impl CarePlanContract {
         resolution: String,
         resolution_date: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let mut barrier = load_barrier(&env, barrier_id).ok_or(Error::BarrierNotFound)?;
@@ -427,6 +434,7 @@ impl CarePlanContract {
         review_date: u64,
         review_type: Symbol,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let plan = load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
@@ -476,6 +484,7 @@ impl CarePlanContract {
         plan_modifications: Vec<String>,
         continue_plan: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let mut review = load_review(&env, review_id).ok_or(Error::ReviewNotFound)?;
@@ -530,6 +539,7 @@ impl CarePlanContract {
         role: Symbol,
         responsibilities: Vec<String>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         coordinating_provider.require_auth();
 
         let plan = load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
@@ -619,6 +629,7 @@ impl CarePlanContract {
     /// Cancels every active care plan and removes the `PatientPlans` index.
     /// Callable by the patient themselves.
     pub fn deregister_patient(env: Env, patient_id: Address) {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
 
         let plan_ids: Vec<u64> = env

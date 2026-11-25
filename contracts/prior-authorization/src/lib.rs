@@ -189,6 +189,7 @@ impl PriorAuthorizationContract {
     /// so an attacker cannot front-run deployment and point it at a registry
     /// they control.
     pub fn __constructor(env: Env, insurer_registry_id: Address) {
+        ttl_config::extend_instance_ttl(&env);
         env.storage()
             .instance()
             .set(&DataKey::InsurerRegistryId, &insurer_registry_id);
@@ -208,6 +209,7 @@ impl PriorAuthorizationContract {
         clinical_justification_hash: BytesN<32>,
         urgency: Symbol,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let insurer_registry_id: Address = env
@@ -302,6 +304,7 @@ impl PriorAuthorizationContract {
         document_hash: BytesN<32>,
         document_type: Symbol,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let req = load_auth_request(&env, auth_request_id).ok_or(Error::AuthRequestNotFound)?;
@@ -341,6 +344,7 @@ impl PriorAuthorizationContract {
         valid_until: Option<u64>,
         review_notes: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         reviewer_id.require_auth();
 
         let mut req = load_auth_request(&env, auth_request_id).ok_or(Error::AuthRequestNotFound)?;
@@ -496,6 +500,7 @@ impl PriorAuthorizationContract {
         requested_date: u64,
         preferred_times: Vec<String>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let mut req = load_auth_request(&env, auth_request_id).ok_or(Error::AuthRequestNotFound)?;
@@ -544,6 +549,7 @@ impl PriorAuthorizationContract {
         scheduled_time: u64,
         medical_director: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         insurance_admin.require_auth();
 
         load_auth_request(&env, auth_request_id).ok_or(Error::AuthRequestNotFound)?;
@@ -577,6 +583,7 @@ impl PriorAuthorizationContract {
         appeal_reason_hash: BytesN<32>,
         additional_evidence_hash: Option<BytesN<32>>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let mut req = load_auth_request(&env, auth_request_id).ok_or(Error::AuthRequestNotFound)?;
@@ -687,6 +694,7 @@ impl PriorAuthorizationContract {
         urgency_justification: String,
         expected_service_date: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let mut req = load_auth_request(&env, auth_request_id).ok_or(Error::AuthRequestNotFound)?;
@@ -724,6 +732,7 @@ impl PriorAuthorizationContract {
         extension_reason: String,
         requested_additional_units: u32,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let req = load_auth_request(&env, auth_request_id).ok_or(Error::AuthRequestNotFound)?;
@@ -762,6 +771,7 @@ impl PriorAuthorizationContract {
         units_used: u32,
         service_date: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let mut req = load_auth_request(&env, auth_request_id).ok_or(Error::AuthRequestNotFound)?;
@@ -822,6 +832,7 @@ impl PriorAuthorizationContract {
         max_cases: u32,
         expires_at: Option<u64>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         insurer_id.require_auth();
 
         // Cross-check that the insurer is actually registered in the insurer-registry (#684)
@@ -867,6 +878,7 @@ impl PriorAuthorizationContract {
         auto_approval_threshold: u32,
         requires_medical_director: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         insurer_id.require_auth();
 
         // Cross-check that the insurer is actually registered in the insurer-registry (#723).
@@ -960,6 +972,7 @@ impl PriorAuthorizationContract {
         env: Env,
         insurer_id: Address,
     ) -> Result<u32, Error> {
+        ttl_config::extend_instance_ttl(&env);
         insurer_id.require_auth();
 
         // Cross-check that the insurer is actually registered in the insurer-registry (#734)

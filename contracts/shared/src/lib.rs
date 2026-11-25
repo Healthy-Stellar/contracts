@@ -3,7 +3,8 @@
 //! # Shared Library
 //!
 //! Common utilities and modules shared across healthcare smart contracts including incident tracking,
-//! privacy controls, pagination, temporal validation, and actor verification.
+//! privacy controls, pagination, temporal validation, actor verification and overflow-checked
+//! id counters (`counters`).
 //!
 //! ## HIPAA Compliance
 //!
@@ -27,6 +28,7 @@
 
 pub mod access_grant;
 pub mod actor_verification;
+pub mod counters;
 #[cfg(test)]
 pub mod test_utils;
 pub mod error_hints;
