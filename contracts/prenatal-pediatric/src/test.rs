@@ -375,6 +375,7 @@ fn test_pediatric_growth_milestones_well_child() {
     client.track_pediatric_growth(
         &provider,
         &patient,
+        &patient,
         &1_730_000_000,
         &12,
         &980,
@@ -386,6 +387,7 @@ fn test_pediatric_growth_milestones_well_child() {
     client.record_developmental_milestone(
         &provider,
         &patient,
+        &patient,
         &1_730_000_100,
         &12,
         &Symbol::new(&env, "motor"),
@@ -395,6 +397,7 @@ fn test_pediatric_growth_milestones_well_child() {
 
     client.track_well_child_visit(
         &provider,
+        &patient,
         &patient,
         &1_730_000_200,
         &12,
@@ -456,6 +459,7 @@ fn test_invalid_inputs_failures() {
     let patient = Address::generate(&env);
     let bad_growth = client.try_track_pediatric_growth(
         &provider,
+        &patient,
         &patient,
         &1_730_000_000,
         &12,
@@ -587,6 +591,7 @@ fn test_track_pediatric_growth_requires_provider_auth() {
 
     client.track_pediatric_growth(
         &provider,
+        &patient,
         &patient,
         &1_730_000_000,
         &12,
@@ -786,12 +791,12 @@ fn test_family_member_access_grant_and_revoke() {
 
     assert!(client.try_get_newborn_record(&family, &newborn).is_err());
 
-    client.grant_record_access(&patient, &family);
+    client.grant_record_access(&patient, &patient, &family);
     assert!(client.has_record_access(&patient, &family));
     client.get_pregnancy_record(&family, &pregnancy_id);
     client.get_newborn_record(&family, &newborn);
 
-    client.revoke_record_access(&patient, &family);
+    client.revoke_record_access(&patient, &patient, &family);
     assert!(!client.has_record_access(&patient, &family));
     assert_eq!(
         client.try_get_pregnancy_record(&family, &pregnancy_id),
@@ -808,6 +813,7 @@ fn test_growth_record_access_control() {
 
     client.track_pediatric_growth(
         &provider,
+        &patient,
         &patient,
         &1_730_000_000,
         &12,
@@ -832,7 +838,7 @@ fn test_growth_record_access_control() {
         Err(Ok(Error::Unauthorized))
     );
 
-    client.grant_record_access(&patient, &outsider);
+    client.grant_record_access(&patient, &patient, &outsider);
     client.get_growth_record(&outsider, &patient, &12);
 }
 
@@ -853,7 +859,7 @@ fn test_grant_record_access_requires_patient_auth() {
     let patient = Address::generate(&env);
 
     env.set_auths(&[]);
-    client.grant_record_access(&patient, &Address::generate(&env));
+    client.grant_record_access(&patient, &patient, &Address::generate(&env));
 }
 
 // -----------------------------------------------------------------------
@@ -893,5 +899,189 @@ fn test_newborn_screening_allows_registered_pediatric_provider() {
         &1_725_010_500,
         &Symbol::new(&env, "pass"),
         &false,
+    );
+}
+
+// -----------------------------------------------------------------------
+// #1113 — guardians manage newborn records; placeholder binds to a wallet
+// -----------------------------------------------------------------------
+
+fn record_child_growth(
+    client: &MaternalChildHealthContractClient<'static>,
+    provider: &Address,
+    child: &Address,
+    authorizer: &Address,
+) {
+    client.track_pediatric_growth(
+        provider,
+        child,
+        authorizer,
+        &1_730_000_000,
+        &12,
+        &980,
+        &7550,
+        &Some(4600),
+        &1720,
+    );
+}
+
+#[test]
+fn test_mother_is_newborn_guardian() {
+    let (env, client, registry, admin) = setup();
+    let (mother, _provider, _pregnancy_id, _labor_id, _delivery_id, newborn) =
+        seed_full_pregnancy(&env, &client, &registry, &admin);
+
+    let guardians = client.get_guardians(&mother, &newborn);
+    assert_eq!(guardians.len(), 1);
+    assert_eq!(guardians.get(0).unwrap(), mother);
+
+    let outsider = Address::generate(&env);
+    assert_eq!(
+        client.try_get_guardians(&outsider, &newborn).map(|_| ()),
+        Err(Ok(Error::Unauthorized))
+    );
+}
+
+#[test]
+fn test_guardian_authorizes_reads_and_shares_child_records() {
+    let (env, client, registry, admin) = setup();
+    let (mother, _provider, _pregnancy_id, _labor_id, _delivery_id, newborn) =
+        seed_full_pregnancy(&env, &client, &registry, &admin);
+    let pediatrician = Address::generate(&env);
+    register_test_provider(&env, &registry, &admin, &pediatrician);
+
+    record_child_growth(&client, &pediatrician, &newborn, &mother);
+
+    // The mother (guardian) can read the child's post-birth records.
+    client.get_growth_record(&mother, &newborn, &12);
+
+    // A pediatrician at another practice has no access until a guardian grants it.
+    let other_practice = Address::generate(&env);
+    assert_eq!(
+        client
+            .try_get_growth_record(&other_practice, &newborn, &12)
+            .map(|_| ()),
+        Err(Ok(Error::Unauthorized))
+    );
+    client.grant_record_access(&mother, &newborn, &other_practice);
+    assert!(client.has_record_access(&newborn, &other_practice));
+    client.get_growth_record(&other_practice, &newborn, &12);
+    client.get_newborn_record(&other_practice, &newborn);
+
+    client.revoke_record_access(&mother, &newborn, &other_practice);
+    assert!(!client.has_record_access(&newborn, &other_practice));
+}
+
+#[test]
+fn test_non_guardian_cannot_manage_child() {
+    let (env, client, registry, admin) = setup();
+    let (_mother, provider, _pregnancy_id, _labor_id, _delivery_id, newborn) =
+        seed_full_pregnancy(&env, &client, &registry, &admin);
+    let outsider = Address::generate(&env);
+
+    assert_eq!(
+        client.try_grant_record_access(&outsider, &newborn, &outsider),
+        Err(Ok(Error::Unauthorized))
+    );
+    assert_eq!(
+        client.try_add_guardian(&outsider, &newborn, &outsider),
+        Err(Ok(Error::Unauthorized))
+    );
+    assert_eq!(
+        client.try_track_pediatric_growth(
+            &provider,
+            &newborn,
+            &outsider,
+            &1_730_000_000,
+            &12,
+            &980,
+            &7550,
+            &None,
+            &1720,
+        ),
+        Err(Ok(Error::Unauthorized))
+    );
+}
+
+#[test]
+fn test_guardians_can_be_added_and_removed() {
+    let (env, client, registry, admin) = setup();
+    let (mother, _provider, _pregnancy_id, _labor_id, _delivery_id, newborn) =
+        seed_full_pregnancy(&env, &client, &registry, &admin);
+    let father = Address::generate(&env);
+
+    client.add_guardian(&mother, &newborn, &father);
+    assert_eq!(
+        client.try_add_guardian(&mother, &newborn, &father),
+        Err(Ok(Error::AlreadyExists))
+    );
+    assert_eq!(client.get_guardians(&father, &newborn).len(), 2);
+
+    // The new guardian can share records too.
+    let school = Address::generate(&env);
+    client.grant_record_access(&father, &newborn, &school);
+
+    client.remove_guardian(&father, &newborn, &mother);
+    assert_eq!(client.get_guardians(&father, &newborn).len(), 1);
+
+    // The last guardian of an unbound child cannot be removed.
+    assert_eq!(
+        client.try_remove_guardian(&father, &newborn, &father),
+        Err(Ok(Error::InvalidData))
+    );
+}
+
+#[test]
+fn test_bind_child_identity_aliases_records() {
+    let (env, client, registry, admin) = setup();
+    let (mother, provider, _pregnancy_id, _labor_id, _delivery_id, newborn) =
+        seed_full_pregnancy(&env, &client, &registry, &admin);
+    let pediatrician = Address::generate(&env);
+    register_test_provider(&env, &registry, &admin, &pediatrician);
+    record_child_growth(&client, &pediatrician, &newborn, &mother);
+
+    let wallet = Address::generate(&env);
+
+    // Only a guardian may bind.
+    assert_eq!(
+        client.try_bind_child_identity(&provider, &newborn, &wallet),
+        Err(Ok(Error::Unauthorized))
+    );
+
+    client.bind_child_identity(&mother, &newborn, &wallet);
+    assert_eq!(
+        client.try_bind_child_identity(&mother, &newborn, &Address::generate(&env)),
+        Err(Ok(Error::AlreadyExists))
+    );
+
+    // The wallet reads its own pre-binding history, via either identifier.
+    client.get_growth_record(&wallet, &wallet, &12);
+    client.get_growth_record(&wallet, &newborn, &12);
+    client.get_newborn_record(&wallet, &wallet);
+
+    // The wallet can now authorize new records and share them itself.
+    client.record_developmental_milestone(
+        &pediatrician,
+        &wallet,
+        &wallet,
+        &1_760_000_000,
+        &24,
+        &Symbol::new(&env, "language"),
+        &vec![&env, Symbol::new(&env, "two_words")],
+        &vec![&env],
+    );
+    let new_doctor = Address::generate(&env);
+    client.grant_record_access(&wallet, &wallet, &new_doctor);
+    assert!(client.has_record_access(&newborn, &new_doctor));
+    client.get_growth_record(&new_doctor, &wallet, &12);
+}
+
+#[test]
+fn test_bind_child_identity_rejects_unknown_child() {
+    let (env, client, _registry, _admin) = setup();
+    let guardian = Address::generate(&env);
+    assert_eq!(
+        client.try_bind_child_identity(&guardian, &Address::generate(&env), &Address::generate(&env)),
+        Err(Ok(Error::NotFound))
     );
 }

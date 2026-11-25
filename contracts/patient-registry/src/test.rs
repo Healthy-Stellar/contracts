@@ -662,7 +662,7 @@ fn test_revoke_access() {
     client.grant_access(&patient, &patient, &doctor, &0u64);
     client.revoke_access(&patient, &patient, &doctor, &0u64);
 
-    let doctors = client.get_authorized_doctors(&patient);
+    let doctors = client.get_authorized_doctors(&patient, &patient);
     assert_eq!(doctors.len(), 0);
 }
 
@@ -1529,10 +1529,10 @@ fn test_guardian_can_grant_and_revoke_access() {
     client.acknowledge_consent(&patient, &guardian, &v1);
     client.grant_access(&patient, &guardian, &doctor, &0u64);
 
-    assert_eq!(client.get_authorized_doctors(&patient).len(), 1);
+    assert_eq!(client.get_authorized_doctors(&patient, &patient).len(), 1);
 
     client.revoke_access(&patient, &guardian, &doctor, &0u64);
-    assert_eq!(client.get_authorized_doctors(&patient).len(), 0);
+    assert_eq!(client.get_authorized_doctors(&patient, &patient).len(), 0);
 }
 
 #[test]
@@ -3266,7 +3266,7 @@ fn test_validate_export_ticket_rejects_tampered_ticket() {
 
     let ticket = client.request_data_export(&patient);
     let tampered = ExportTicket {
-        signature: BytesN::from_array(&env, &[0xabu8; 32]),
+        nonce: BytesN::from_array(&env, &[0xabu8; 32]),
         ..ticket
     };
 
@@ -3320,11 +3320,11 @@ fn test_deregister_revokes_all_access_grants() {
     let env = Env::default();
     let (client, _admin, patient, _doctor) = setup_for_dereg(&env);
 
-    assert_eq!(client.get_authorized_doctors(&patient).len(), 1);
+    assert_eq!(client.get_authorized_doctors(&patient, &patient).len(), 1);
 
     client.deregister_patient(&patient);
 
-    assert_eq!(client.get_authorized_doctors(&patient).len(), 0);
+    assert_eq!(client.get_authorized_doctors(&patient, &patient).len(), 0);
 }
 
 #[test]
@@ -4412,7 +4412,7 @@ fn test_grant_access_allows_registered_provider() {
     );
 
     client.grant_access(&patient, &patient, &doctor, &0u64);
-    let authorized = client.get_authorized_doctors(&patient);
+    let authorized = client.get_authorized_doctors(&patient, &patient);
     assert_eq!(authorized.len(), 1);
 }
 
@@ -4502,7 +4502,7 @@ fn test_nonce_replay_protection_grant_access() {
 
     let nonce: u64 = 1;
     client.grant_access(&patient, &patient, &doctor, &nonce);
-    let authorized = client.get_authorized_doctors(&patient);
+    let authorized = client.get_authorized_doctors(&patient, &patient);
     assert_eq!(authorized.len(), 1);
 
     let stale_nonce: u64 = 1;
@@ -4673,11 +4673,11 @@ fn test_guardian_can_revoke_access() {
 
     // Guardian grants access.
     client.grant_access(&patient, &guardian, &doctor, &0u64);
-    assert_eq!(client.get_authorized_doctors(&patient).len(), 1);
+    assert_eq!(client.get_authorized_doctors(&patient, &patient).len(), 1);
 
     // Guardian revokes access — guardian cannot exceed patient's explicit consent preferences.
     client.revoke_access(&patient, &guardian, &doctor, &0u64);
-    assert_eq!(client.get_authorized_doctors(&patient).len(), 0);
+    assert_eq!(client.get_authorized_doctors(&patient, &patient).len(), 0);
 }
 
 #[test]

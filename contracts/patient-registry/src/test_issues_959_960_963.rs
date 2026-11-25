@@ -101,7 +101,7 @@ fn test_patient_can_revoke_doctor_access_while_on_hold() {
     client.acknowledge_consent(&patient, &patient, &v1);
     client.grant_access(&patient, &patient, &doctor, &1u64);
 
-    assert_eq!(client.get_authorized_doctors(&patient).len(), 1);
+    assert_eq!(client.get_authorized_doctors(&patient, &patient).len(), 1);
 
     // Place a legal/regulatory hold on patient
     let reason = BytesN::from_array(&env, &[99u8; 32]);
@@ -110,7 +110,7 @@ fn test_patient_can_revoke_doctor_access_while_on_hold() {
     // Revocation MUST succeed even during active hold (Issue #959)
     let revoke_res = client.try_revoke_access(&patient, &patient, &doctor, &2u64);
     assert!(revoke_res.is_ok());
-    assert_eq!(client.get_authorized_doctors(&patient).len(), 0);
+    assert_eq!(client.get_authorized_doctors(&patient, &patient).len(), 0);
 }
 
 #[test]

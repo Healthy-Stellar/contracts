@@ -2,7 +2,9 @@
 #![allow(deprecated)]
 
 use crate::contract::{PatientVitalsContract, PatientVitalsContractClient};
-use crate::types::{AlertThresholds, DeviceReading, Range, VitalSigns, ALERT_COOLDOWN_SECONDS};
+use crate::types::{
+    AlertThresholds, DeviceReading, Range, Severity, VitalSigns, ALERT_COOLDOWN_SECONDS,
+};
 use soroban_sdk::{
     testutils::{Address as _, MockAuth, MockAuthInvoke},
     Address, Env, IntoVal, String, Symbol, Vec,
@@ -282,9 +284,8 @@ fn test_trigger_vital_alert() {
         &patient_id,
         &patient_id,
         &Symbol::new(&env, "heart_rate"),
-        &String::from_str(&env, "135"),
-        &Symbol::new(&env, "critical_hi"),
-        &1672531200,
+        &135u32,
+        &Severity::CriticalHigh,
     );
 }
 
@@ -372,12 +373,12 @@ fn test_threshold_breach_creates_alert() {
 
     let alerts = client.get_alerts(&patient_id, &patient_id, &Symbol::new(&env, "heart_rate"));
     assert_eq!(alerts.len(), 1);
-    assert_eq!(alerts.get(0).unwrap().severity, Symbol::new(&env, "high"));
+    assert_eq!(alerts.get(0).unwrap().severity, Severity::High);
     assert_eq!(alerts.get(0).unwrap().alert_time, 1_000_000);
 }
 
 /// A reading that breaches the critical_high threshold must produce a
-/// "critical_hi" severity alert.
+/// `Severity::CriticalHigh` alert.
 #[test]
 fn test_critical_threshold_severity() {
     let env = Env::default();
@@ -402,7 +403,7 @@ fn test_critical_threshold_severity() {
 
     let alerts = client.get_alerts(&patient_id, &patient_id, &Symbol::new(&env, "heart_rate"));
     assert_eq!(alerts.len(), 1);
-    assert_eq!(alerts.get(0).unwrap().severity, Symbol::new(&env, "critical_hi"));
+    assert_eq!(alerts.get(0).unwrap().severity, Severity::CriticalHigh);
 }
 
 /// A normal reading (within range) must not create any alert.
@@ -651,9 +652,8 @@ fn test_deregister_patient_clears_alerts() {
         &patient_id,
         &patient_id,
         &vital_type,
-        &String::from_str(&env, "150"),
-        &Symbol::new(&env, "high"),
-        &1_000_000u64,
+        &150u32,
+        &Severity::High,
     );
 
     assert_eq!(client.get_alerts(&patient_id, &patient_id, &vital_type).len(), 1);
@@ -846,14 +846,13 @@ fn test_provider_can_trigger_vital_alert() {
         &provider_id,
         &patient_id,
         &vital_type,
-        &String::from_str(&env, "200"),
-        &Symbol::new(&env, "critical_hi"),
-        &2_000_000,
+        &200u32,
+        &Severity::CriticalHigh,
     );
 
     let alerts = client.get_alerts(&provider_id, &patient_id, &vital_type);
     assert_eq!(alerts.len(), 1, "provider-triggered alert must be recorded");
-    assert_eq!(alerts.get(0).unwrap().severity, Symbol::new(&env, "critical_hi"));
+    assert_eq!(alerts.get(0).unwrap().severity, Severity::CriticalHigh);
 }
 
 /// An unrelated third party must not be able to trigger an alert for a patient.
@@ -874,9 +873,8 @@ fn test_third_party_cannot_trigger_vital_alert() {
         &stranger,
         &patient_id,
         &vital_type,
-        &String::from_str(&env, "200"),
-        &Symbol::new(&env, "critical_hi"),
-        &2_000_000,
+        &200u32,
+        &Severity::CriticalHigh,
     );
     assert!(result.is_err(), "third party must not trigger a vital alert");
 }
@@ -909,14 +907,13 @@ fn test_device_can_trigger_vital_alert() {
         &device_address,
         &patient_id,
         &vital_type,
-        &String::from_str(&env, "185"),
-        &Symbol::new(&env, "critical_hi"),
-        &4_000_000,
+        &185u32,
+        &Severity::CriticalHigh,
     );
 
     let alerts = client.get_alerts(&patient_id, &patient_id, &vital_type);
     assert_eq!(alerts.len(), 1, "device-triggered alert must be recorded");
-    assert_eq!(alerts.get(0).unwrap().severity, Symbol::new(&env, "critical_hi"));
+    assert_eq!(alerts.get(0).unwrap().severity, Severity::CriticalHigh);
 }
 
 // ── #728: provider self-appointment requires patient consent ─────────────────
@@ -1047,9 +1044,8 @@ fn test_patient_can_trigger_own_vital_alert() {
         &patient_id,
         &patient_id,
         &vital_type,
-        &String::from_str(&env, "150"),
-        &Symbol::new(&env, "high"),
-        &3_000_000,
+        &150u32,
+        &Severity::High,
     );
 
     let alerts = client.get_alerts(&patient_id, &patient_id, &vital_type);

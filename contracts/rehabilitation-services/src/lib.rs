@@ -346,6 +346,7 @@ impl RehabilitationServicesContract {
         prior_level_of_function: String,
         evaluation_findings_hash: BytesN<32>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         therapist_id.require_auth();
 
         let eval_id = env
@@ -391,6 +392,7 @@ impl RehabilitationServicesContract {
         pain_level: Option<u32>,
         limitation: Option<String>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let eval: PTEvaluation = env
             .storage()
             .persistent()
@@ -433,6 +435,7 @@ impl RehabilitationServicesContract {
         manual_muscle_test_grade: String,
         side: Symbol,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let eval: PTEvaluation = env
             .storage()
             .persistent()
@@ -473,6 +476,7 @@ impl RehabilitationServicesContract {
         score: u32,
         fall_risk: Symbol,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let eval: PTEvaluation = env
             .storage()
             .persistent()
@@ -518,6 +522,7 @@ impl RehabilitationServicesContract {
         duration_weeks: u32,
         prognosis: Symbol,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         therapist_id.require_auth();
 
         let _eval: PTEvaluation = env
@@ -586,6 +591,7 @@ impl RehabilitationServicesContract {
         patient_response: String,
         homework_assigned: Option<String>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let plan: RehabTreatmentPlan = env
             .storage()
             .persistent()
@@ -635,6 +641,7 @@ impl RehabilitationServicesContract {
         location: String,
         quality: Vec<String>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let plan: RehabTreatmentPlan = env
             .storage()
             .persistent()
@@ -679,6 +686,7 @@ impl RehabilitationServicesContract {
         score: u32,
         minimal_detectable_change: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let plan: RehabTreatmentPlan = env
             .storage()
             .persistent()
@@ -720,6 +728,7 @@ impl RehabilitationServicesContract {
         requested_visits: u32,
         justification_hash: BytesN<32>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         let plan: RehabTreatmentPlan = env
             .storage()
             .persistent()
@@ -891,6 +900,7 @@ impl RehabilitationServicesContract {
         assessment: String,
         plan_modifications: Vec<String>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let plan: RehabTreatmentPlan = env
             .storage()
             .persistent()
@@ -1031,6 +1041,7 @@ impl RehabilitationServicesContract {
         prognosis: Symbol,
         ipfs_hash: String,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         therapist_id.require_auth();
 
         let mut plan: RehabTreatmentPlan = env
@@ -1366,6 +1377,7 @@ impl RehabilitationServicesContract {
         target_value: u32,
         target_date: u64,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         let plan: RehabTreatmentPlan = env
             .storage()
             .persistent()
@@ -1434,6 +1446,7 @@ impl RehabilitationServicesContract {
         current_value: u32,
         measured_at: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let plan: RehabTreatmentPlan = env
             .storage()
             .persistent()

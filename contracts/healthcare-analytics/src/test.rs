@@ -9,7 +9,8 @@ fn setup() -> (Env, HealthcareAnalyticsClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
     let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let id = env.register(HealthcareAnalytics, (&admin,));
+    let client = HealthcareAnalyticsClient::new(&env, &id);
     client.set_minimum_cohort_size(&admin, &1);
     env.ledger().set_timestamp(1700000000);
     let recorder = Address::generate(&env);
@@ -206,6 +207,7 @@ fn test_record_metric_rejects_unregistered_provider() {
 fn test_authorize_provider_rejects_non_admin() {
     let (env, client, admin) = setup_with_admin();
 
+    env.ledger().set_timestamp(1700000000);
     let non_admin = Address::generate(&env);
     let provider = Address::generate(&env);
 
@@ -334,7 +336,7 @@ fn test_get_statistics_time_and_category_filter() {
         &symbol_short!("bp"),
         &130,
         &symbol_short!("vitals"),
-        &1700050000,
+        &1700005000,
         &None,
     );
 
@@ -931,7 +933,7 @@ fn test_cpu_quota_accumulates_across_jobs() {
         &DegradationPolicy::Fail,
     ).unwrap().unwrap().job_id;
     client.execute_next_report(&admin).unwrap();
-    client.complete_report(&admin, &job1, &400, &50);
+    client.complete_report(&admin, &job1, &400, &50, &0);
 
     // Second job: another 400 CPU — still below threshold (total 800, not > 800)
     let job2 = client.try_request_report(
@@ -943,7 +945,7 @@ fn test_cpu_quota_accumulates_across_jobs() {
         &DegradationPolicy::Fail,
     ).unwrap().unwrap().job_id;
     client.execute_next_report(&admin).unwrap();
-    client.complete_report(&admin, &job2, &400, &50);
+    client.complete_report(&admin, &job2, &400, &50, &0);
 
     // Now TotalCpuUsed = 800; 800*100/1000 = 80, which is NOT > 80, so one more is still ok.
     // Push it over: complete a tiny job that adds 1 more CPU unit.
@@ -956,7 +958,7 @@ fn test_cpu_quota_accumulates_across_jobs() {
         &DegradationPolicy::Fail,
     ).unwrap().unwrap().job_id;
     client.execute_next_report(&admin).unwrap();
-    client.complete_report(&admin, &job3, &1, &1);
+    client.complete_report(&admin, &job3, &1, &1, &0);
 
     // TotalCpuUsed = 801; 801*100/1000 = 80 (integer), still not > 80.
     // Add one more to make it 901 total.
@@ -1234,4 +1236,24 @@ fn test_accept_admin_rotation_rejects_wrong_pending_admin() {
     // An address that is not the pending admin cannot accept.
     let result = client.try_accept_admin_rotation(&other);
     assert_eq!(result, Err(Ok(Error::NotPendingAdmin)));
+}
+
+
+#[test]
+fn running_job_failure_requires_executor_and_retains_admission_charge() {
+    let (env, client, admin) = setup_with_admin();
+    let requester = Address::generate(&env);
+    client.set_requester_limits(&admin, &10, &10);
+    let request = || client.try_request_report(
+        &requester, &String::from_str(&env, "bounded"), &JobPriority::Normal,
+        &10, &10, &DegradationPolicy::Fail,
+    );
+    let job = request().unwrap().unwrap().job_id;
+    assert_eq!(request(), Err(Ok(Error::RequesterThrottled)));
+    assert_eq!(client.execute_next_report(&admin), Some(job));
+    let message = String::from_str(&env, "executor failure");
+    assert_eq!(client.try_fail_report(&job, &message, &requester), Err(Ok(Error::Unauthorized)));
+    client.fail_report(&job, &message, &admin);
+    assert_eq!(client.try_fail_report(&job, &message, &admin), Err(Ok(Error::JobNotFound)));
+    assert_eq!(request(), Err(Ok(Error::RequesterThrottled)));
 }

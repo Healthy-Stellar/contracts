@@ -46,6 +46,9 @@ pub enum Error {
     RotationExpired = 11,
     NotPendingAdmin = 12,
     DeadlineExceeded = 13,
+    Paused = 14,
+    IdenticalTokens = 15,
+    AlreadyInitialized = 16,
 }
 
 const ADMIN_ROTATION_WINDOW: u64 = 86_400;
@@ -109,7 +112,6 @@ impl LiquidityPoolContract {
     }
 
     /// Deposit token_a and token_b amounts; mint LP shares proportionally.
-    /// Deposit token_a and token_b amounts; mint LP shares proportionally.
     /// For non-initial deposits, computes optimal amounts to maintain pool ratio.
     pub fn add_liquidity(
         env: Env,
@@ -160,8 +162,14 @@ impl LiquidityPoolContract {
             let shares = s_a.min(s_b);
 
             // Compute optimal amounts to mint exactly 'shares' shares
-            let optimal_a = shares.checked_mul(reserve_a).ok_or(Error::ArithmeticOverflow)? / total;
-            let optimal_b = shares.checked_mul(reserve_b).ok_or(Error::ArithmeticOverflow)? / total;
+            let optimal_a = div_ceil(
+                shares.checked_mul(reserve_a).ok_or(Error::ArithmeticOverflow)?,
+                total,
+            )?;
+            let optimal_b = div_ceil(
+                shares.checked_mul(reserve_b).ok_or(Error::ArithmeticOverflow)?,
+                total,
+            )?;
 
             (shares, optimal_a, optimal_b, total + shares)
         };
@@ -225,7 +233,7 @@ impl LiquidityPoolContract {
         min_b: i128,
         deadline: u64,
     ) -> Result<(i128, i128), Error> {
-        Self::assert_not_paused(&env)?;
+        // Pausing blocks new exposure, but must never trap existing LP capital.
         env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         provider.require_auth();
         if env.ledger().timestamp() > deadline {
@@ -474,7 +482,7 @@ impl LiquidityPoolContract {
         Ok(())
     }
 
-    /// Pause or unpause pool trading and liquidity modification.
+    /// Pause or unpause swaps and liquidity additions. LP withdrawals remain available.
     pub fn set_paused(env: Env, paused: bool) -> Result<(), Error> {
         let admin = Self::get_admin(&env)?;
         admin.require_auth();
@@ -533,6 +541,15 @@ fn sqrt(value: i128) -> i128 {
         y = (x + value / x) / 2;
     }
     x
+}
+
+fn div_ceil(numerator: i128, denominator: i128) -> Result<i128, Error> {
+    let quotient = numerator / denominator;
+    if numerator % denominator == 0 {
+        Ok(quotient)
+    } else {
+        quotient.checked_add(1).ok_or(Error::ArithmeticOverflow)
+    }
 }
 
 #[cfg(test)]
