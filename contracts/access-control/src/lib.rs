@@ -79,10 +79,8 @@ pub enum ContractError {
     BatchTooLarge = 26,
     /// #625: grantor or grantee entity has been deactivated via `deactivate_entity`.
     EntityInactive = 27,
-    /// #1118: consent `expires_at` is non-zero and not in the future.
-    InvalidExpiry = 28,
-    /// #1118: consent `legal_basis` is empty.
-    InvalidLegalBasis = 29,
+    /// The entity is already active.
+    EntityAlreadyActive = 28,
 }
 
 /// Maximum number of access permissions a single grantee may accumulate.
@@ -1021,13 +1019,11 @@ impl AccessControl {
     /// Deactivate an entity (admin only).
     ///
     /// In addition to marking the entity inactive, this actually revokes the
-    /// entity's held access permissions (cleaning up the symmetric
-    /// `ResourceAccess`/`GrantIndex` entries the same way `revoke_access`
-    /// does) and marks every `ConsentRecord` where the entity is the subject
-    /// as `Revoked`, emitting an `acc_rev`/`cst_rev` event for each. As a
-    /// second line of defense, `check_access`/`check_consent` also refuse a
-    /// deactivated entity outright, even if a stale permission record were
-    /// ever left behind.
+    /// entity's held permissions and every permission it issued, cleaning up
+    /// the symmetric indexes and reverse grantor indexes. It also marks every
+    /// `ConsentRecord` where the entity is the subject as `Revoked`, emitting
+    /// an `acc_rev`/`cst_rev` event for each. Reactivation does not restore
+    /// revoked grants or consents.
     pub fn deactivate_entity(
         env: Env,
         admin: Address,
@@ -1068,6 +1064,7 @@ impl AccessControl {
             .unwrap_or(Vec::new(&env));
 
         let now = env.ledger().timestamp();
+        env.storage().persistent().remove(&access_key);
         for i in 0..access_list.len() {
             if let Some(permission) = access_list.get(i) {
                 // Only emit for non-expired permissions — expired ones were
@@ -1085,7 +1082,9 @@ impl AccessControl {
                     );
                 }
 
-                // Symmetric ResourceAccess cleanup.
+                // Symmetric ResourceAccess cleanup: this entity's entire
+                // AccessList is being removed, so it no longer has any grant
+                // for this resource, regardless of grantor.
                 let resource_key = DataKey::ResourceAccess(permission.resource_id.clone());
                 let authorized: Vec<Address> = env
                     .storage()
@@ -1110,9 +1109,113 @@ impl AccessControl {
                     wallet.clone(),
                     permission.resource_id.clone(),
                 ));
+
+                // Remove this grantee from the original grantor's reverse
+                // index, otherwise later deregistration walks stale entries.
+                let granted_key = DataKey::GrantedByIndex(permission.granted_by.clone());
+                let granted_index: Vec<GrantorIndexEntry> = env
+                    .storage()
+                    .persistent()
+                    .get(&granted_key)
+                    .unwrap_or(Vec::new(&env));
+                let mut new_granted_index: Vec<GrantorIndexEntry> = Vec::new(&env);
+                for j in 0..granted_index.len() {
+                    if let Some(entry) = granted_index.get(j) {
+                        if !(entry.grantee == wallet
+                            && entry.resource_id == permission.resource_id)
+                        {
+                            new_granted_index.push_back(entry);
+                        }
+                    }
+                }
+                env.storage()
+                    .persistent()
+                    .set(&granted_key, &new_granted_index);
             }
         }
-        env.storage().persistent().remove(&access_key);
+
+        // ── Revoke every AccessPermission issued by this entity ──────────────
+        let granted_key = DataKey::GrantedByIndex(wallet.clone());
+        let granted_index: Vec<GrantorIndexEntry> = env
+            .storage()
+            .persistent()
+            .get(&granted_key)
+            .unwrap_or(Vec::new(&env));
+        for i in 0..granted_index.len() {
+            if let Some(entry) = granted_index.get(i) {
+                let grantee_key = DataKey::AccessList(entry.grantee.clone());
+                let grantee_list: Vec<AccessPermission> = env
+                    .storage()
+                    .persistent()
+                    .get(&grantee_key)
+                    .unwrap_or(Vec::new(&env));
+                let mut new_grantee_list: Vec<AccessPermission> = Vec::new(&env);
+                let mut revoked_op_id: Option<u64> = None;
+                for j in 0..grantee_list.len() {
+                    if let Some(permission) = grantee_list.get(j) {
+                        let is_this_grant = permission.resource_id == entry.resource_id
+                            && permission.granted_by == wallet;
+                        if is_this_grant {
+                            let is_active =
+                                permission.expires_at == 0 || permission.expires_at > now;
+                            if is_active {
+                                revoked_op_id = Some(permission.op_id);
+                            }
+                        } else {
+                            new_grantee_list.push_back(permission);
+                        }
+                    }
+                }
+                env.storage()
+                    .persistent()
+                    .set(&grantee_key, &new_grantee_list);
+
+                if let Some(op_id) = revoked_op_id {
+                    env.events().publish(
+                        (
+                            symbol_short!("acc_rev"),
+                            entry.grantee.clone(),
+                            entry.resource_id.clone(),
+                        ),
+                        op_id,
+                    );
+                }
+
+                let mut still_authorized = false;
+                for permission in new_grantee_list.iter() {
+                    if permission.resource_id == entry.resource_id {
+                        still_authorized = true;
+                        break;
+                    }
+                }
+                if !still_authorized {
+                    let resource_key = DataKey::ResourceAccess(entry.resource_id.clone());
+                    let authorized: Vec<Address> = env
+                        .storage()
+                        .persistent()
+                        .get(&resource_key)
+                        .unwrap_or(Vec::new(&env));
+                    let mut new_authorized: Vec<Address> = Vec::new(&env);
+                    for j in 0..authorized.len() {
+                        if let Some(addr) = authorized.get(j) {
+                            if addr != entry.grantee {
+                                new_authorized.push_back(addr);
+                            }
+                        }
+                    }
+                    env.storage()
+                        .persistent()
+                        .set(&resource_key, &new_authorized);
+                }
+
+                env.storage().persistent().remove(&DataKey::GrantIndex(
+                    wallet.clone(),
+                    entry.grantee.clone(),
+                    entry.resource_id.clone(),
+                ));
+            }
+        }
+        env.storage().persistent().remove(&granted_key);
 
         // ── Revoke every ConsentRecord where this entity is the subject ───────
         // Walk the subject's consent index, mark each still-Active record as
@@ -1159,6 +1262,39 @@ impl AccessControl {
         // signal can listen for this event alone.
         env.events()
             .publish((symbol_short!("deact"), wallet), symbol_short!("success"));
+        Ok(())
+    }
+
+    /// Reactivate an entity previously deactivated by the administrator.
+    /// Revoked consents remain revoked and must be granted again by their subjects.
+    pub fn reactivate_entity(
+        env: Env,
+        admin: Address,
+        wallet: Address,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .ok_or(ContractError::ContractNotInitialized)?;
+        if admin != stored_admin {
+            return Err(ContractError::OnlyAdminCanDeactivate);
+        }
+
+        let key = DataKey::Entity(wallet.clone());
+        let mut entity: EntityData = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::EntityNotFound)?;
+        if entity.active {
+            return Err(ContractError::EntityAlreadyActive);
+        }
+        entity.active = true;
+        env.storage().persistent().set(&key, &entity);
+        env.events()
+            .publish((symbol_short!("reactiv"), wallet), symbol_short!("success"));
         Ok(())
     }
 
