@@ -1,3 +1,4 @@
+[Cargo.toml]
 [package]
 lints = { workspace = true }
 name = "rehabilitation-services"

@@ -260,10 +260,23 @@ deploy_contract() {
     # as part of contract creation (they no longer expose `initialize`). Pass
     # their constructor arguments after `--`, e.g.:
     #   DEPLOY_CONSTRUCTOR_ARGS="--admin G..." ./scripts/deploy_all.sh
+    #
+    # Per-contract constructor arguments can be supplied via
+    # DEPLOY_CONSTRUCTOR_ARGS_<CONTRACT> (contract name upper-cased with `-`
+    # replaced by `_`), e.g.:
+    #   DEPLOY_CONSTRUCTOR_ARGS_REHABILITATION_SERVICES="--admin G... --provider_registry C..."
+    # These take precedence over the global DEPLOY_CONSTRUCTOR_ARGS.
     local -a ctor_args=()
-    if [[ -n "${DEPLOY_CONSTRUCTOR_ARGS:-}" ]]; then
+    local contract_ctor_var
+    contract_ctor_var="DEPLOY_CONSTRUCTOR_ARGS_${contract//-/_}"
+    contract_ctor_var="${contract_ctor_var^^}"
+    local contract_ctor_args="${!contract_ctor_var:-}"
+    if [[ -z "$contract_ctor_args" ]]; then
+        contract_ctor_args="${DEPLOY_CONSTRUCTOR_ARGS:-}"
+    fi
+    if [[ -n "$contract_ctor_args" ]]; then
         # shellcheck disable=SC2206
-        ctor_args=(${DEPLOY_CONSTRUCTOR_ARGS})
+        ctor_args=(${contract_ctor_args})
     fi
 
     "$CLI_BIN" contract deploy \
@@ -292,6 +305,13 @@ for contract in "${CONTRACTS[@]}"; do
     RESULTS+=("$contract" "$contract_id")
     write_manifest "$MANIFEST" "in_progress" "${RESULTS[@]}"
 done
+
+# doctor-registry is consulted by provider-registry / actor_verification for
+# provider authorization. rehabilitation-services now binds its admin and
+# provider-registry via `__constructor(admin, provider_registry)`. Both are
+# deployed above in dependency order; supply their constructor arguments via
+# DEPLOY_CONSTRUCTOR_ARGS_DOCTOR_REGISTRY and
+# DEPLOY_CONSTRUCTOR_ARGS_REHABILITATION_SERVICES respectively.
 
 write_manifest "$MANIFEST" "COMPLETE" "${RESULTS[@]}"
 log "deployment complete: ${MANIFEST}"

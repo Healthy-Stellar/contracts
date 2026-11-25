@@ -62,10 +62,13 @@ pub struct PTEvaluation {
     pub patient_id: Address,
     pub therapist_id: Address,
     pub evaluation_date: u64,
-    pub diagnosis: String,
-    pub chief_complaint: String,
+    /// Off-chain reference (hash) to the diagnosis text. Plaintext is never stored on-chain.
+    pub diagnosis_hash: BytesN<32>,
+    /// Off-chain reference (hash) to the chief complaint text.
+    pub chief_complaint_hash: BytesN<32>,
     pub functional_limitations: Vec<String>,
-    pub prior_level_of_function: String,
+    /// Off-chain reference (hash) to the prior level of function text.
+    pub prior_level_of_function_hash: BytesN<32>,
     pub evaluation_findings_hash: BytesN<32>,
 }
 
@@ -203,6 +206,17 @@ pub struct NotePage {
     pub has_more: bool,
 }
 
+/// Direction in which a goal's measurement improves.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum GoalDirection {
+    /// Larger values are better (e.g. range of motion, FIM, strength).
+    HigherIsBetter = 0,
+    /// Smaller values are better (e.g. pain scale, time-up-and-go, assistance level).
+    LowerIsBetter = 1,
+}
+
 /// A measurable rehabilitation goal with a numeric target value.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -210,10 +224,21 @@ pub struct MeasurableGoal {
     pub goal_id: u64,
     pub plan_id: u64,
     pub goal_type: Symbol,
+    /// Direction in which the measurement improves; drives achievement comparison.
+    pub direction: GoalDirection,
     pub target_value: u32,
     pub target_date: u64,
+    /// True while the most recent measurement satisfies the target.
     pub achieved: bool,
-    /// Snapshot of the plan's version count when this goal was set.
+    /// True once the goal has ever been met (sticky; survives regressions).
+    pub ever_achieved: bool,
+    /// True if the goal was first met on or before `target_date`.
+    pub met_by_target_date: bool,
+    /// Ledger timestamp of the first measurement that met the target, if any.
+    pub achieved_at: Option<u64>,
+    /// True once the target date has passed without the goal ever being met.
+    pub missed: bool,
+    /// Snapshot of the plan's version (`PlanVersion`) when this goal was set.
     pub plan_version: u64,
 }
 
@@ -262,10 +287,16 @@ pub enum DataKey {
     PlanVersion(u64),
     /// plan_id -> Vec<PlanVersionEntry>
     PlanVersionHistory(u64),
-    /// plan_id -> u64 (number of goals set for this plan, used as plan_version)
+    /// plan_id -> u64 (number of goals set for this plan)
     PlanGoalCount(u64),
-    /// auth_id -> Address (payer authorized to decide the authorization)
-    AuthorizationPayer(u64),
+    /// Contract admin (set via constructor).
+    Admin,
+    /// Address of the provider-registry contract (set via constructor).
+    ProviderRegistry,
+    /// evaluation_id -> patient consent to open the evaluation.
+    EvaluationConsent(u64),
+    /// evaluation_id -> therapist the evaluation was handed off to.
+    EvaluationHandoff(u64),
 }
 
 #[contracttype]
@@ -281,6 +312,35 @@ pub enum Error {
 impl From<Error> for soroban_sdk::Error {
     fn from(e: Error) -> Self {
         soroban_sdk::Error::from_contract_error(e as u32)
+    }
+}
+
+/// Returns the improvement direction for a goal type. Lower-is-better measures
+/// (pain, timed mobility tests, assistance level) must not be "achieved" by a
+/// high baseline reading.
+fn direction_for_goal_type(env: &Env, goal_type: &Symbol) -> GoalDirection {
+    let lower = Symbol::new(env, "pain_scale");
+    let tug = Symbol::new(env, "time_up_and_go");
+    let tug_short = Symbol::new(env, "tug");
+    let assistance = Symbol::new(env, "assistance_level");
+    let fall_risk = Symbol::new(env, "fall_risk");
+    if *goal_type == lower
+        || *goal_type == tug
+        || *goal_type == tug_short
+        || *goal_type == assistance
+        || *goal_type == fall_risk
+    {
+        GoalDirection::LowerIsBetter
+    } else {
+        GoalDirection::HigherIsBetter
+    }
+}
+
+/// Returns true if `value` satisfies `target` given the goal's direction.
+fn meets_target(direction: GoalDirection, value: u32, target: u32) -> bool {
+    match direction {
+        GoalDirection::HigherIsBetter => value >= target,
+        GoalDirection::LowerIsBetter => value <= target,
     }
 }
 
@@ -335,19 +395,116 @@ pub struct RehabilitationServicesContract;
 
 #[contractimpl]
 impl RehabilitationServicesContract {
+    /// Initialize the contract with an admin and the provider-registry contract address.
+    pub fn __constructor(env: Env, admin: Address, provider_registry: Address) {
+        env.storage().persistent().set(&DataKey::Admin, &admin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ProviderRegistry, &provider_registry);
+    }
+
+    /// Returns the configured provider-registry address.
+    fn provider_registry(env: &Env) -> Result<Address, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ProviderRegistry)
+            .ok_or(Error::NotFound)
+    }
+
+    /// Require that `therapist_id` is a registered, active provider in the provider registry.
+    fn require_registered_provider(env: &Env, therapist_id: &Address) -> Result<(), Error> {
+        let registry = Self::provider_registry(env)?;
+        if !shared::actor_verification::is_provider_registered(env, &registry, therapist_id) {
+            return Err(Error::Unauthorized);
+        }
+        Ok(())
+    }
+
+    /// Record consent from the patient (or their proxy) to open an evaluation for them.
+    pub fn consent_to_evaluation(
+        env: Env,
+        patient_id: Address,
+        evaluation_id: u64,
+    ) -> Result<(), Error> {
+        patient_id.require_auth();
+
+        let eval: PTEvaluation = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Evaluation(evaluation_id))
+            .ok_or(Error::NotFound)?;
+        if eval.patient_id != patient_id {
+            return Err(Error::Unauthorized);
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::EvaluationConsent(evaluation_id), &true);
+        env.storage().persistent().extend_ttl(
+            &DataKey::EvaluationConsent(evaluation_id),
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_BUMP,
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "evaluation_consented"), evaluation_id),
+            patient_id,
+        );
+
+        Ok(())
+    }
+
+    /// Hand off an evaluation to another registered therapist. Must be signed by the
+    /// evaluating therapist. The hand-off allows the target therapist to create a plan.
+    pub fn handoff_evaluation(
+        env: Env,
+        evaluation_id: u64,
+        therapist_id: Address,
+        to_therapist: Address,
+    ) -> Result<(), Error> {
+        therapist_id.require_auth();
+
+        let eval: PTEvaluation = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Evaluation(evaluation_id))
+            .ok_or(Error::NotFound)?;
+        if eval.therapist_id != therapist_id {
+            return Err(Error::Unauthorized);
+        }
+        Self::require_registered_provider(&env, &to_therapist)?;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::EvaluationHandoff(evaluation_id), &to_therapist);
+        env.storage().persistent().extend_ttl(
+            &DataKey::EvaluationHandoff(evaluation_id),
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_BUMP,
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "evaluation_handoff"), evaluation_id),
+            (therapist_id, to_therapist),
+        );
+
+        Ok(())
+    }
+
     pub fn conduct_pt_evaluation(
         env: Env,
         patient_id: Address,
         therapist_id: Address,
         evaluation_date: u64,
-        diagnosis: String,
-        chief_complaint: String,
+        diagnosis_hash: BytesN<32>,
+        chief_complaint_hash: BytesN<32>,
         functional_limitations: Vec<String>,
-        prior_level_of_function: String,
+        prior_level_of_function_hash: BytesN<32>,
         evaluation_findings_hash: BytesN<32>,
     ) -> Result<u64, Error> {
         ttl_config::extend_instance_ttl(&env);
         therapist_id.require_auth();
+        Self::require_registered_provider(&env, &therapist_id)?;
 
         let eval_id = env
             .storage()
@@ -361,10 +518,10 @@ impl RehabilitationServicesContract {
             patient_id,
             therapist_id,
             evaluation_date,
-            diagnosis,
-            chief_complaint,
+            diagnosis_hash,
+            chief_complaint_hash,
             functional_limitations,
-            prior_level_of_function,
+            prior_level_of_function_hash,
             evaluation_findings_hash,
         };
 
@@ -524,12 +681,36 @@ impl RehabilitationServicesContract {
     ) -> Result<u64, Error> {
         ttl_config::extend_instance_ttl(&env);
         therapist_id.require_auth();
+        Self::require_registered_provider(&env, &therapist_id)?;
 
-        let _eval: PTEvaluation = env
+        let eval: PTEvaluation = env
             .storage()
             .persistent()
             .get(&DataKey::Evaluation(evaluation_id))
             .ok_or(Error::NotFound)?;
+
+        // Only the evaluating therapist (or an explicitly handed-off therapist) may
+        // create a plan on this evaluation.
+        if eval.therapist_id != therapist_id {
+            let handoff: Option<Address> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::EvaluationHandoff(evaluation_id));
+            match handoff {
+                Some(to) if to == therapist_id => {}
+                _ => return Err(Error::Unauthorized),
+            }
+        }
+
+        // The patient must have consented to the evaluation before a plan is opened.
+        let consented: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::EvaluationConsent(evaluation_id))
+            .unwrap_or(false);
+        if !consented {
+            return Err(Error::Unauthorized);
+        }
 
         let plan_id = env
             .storage()
@@ -1365,11 +1546,13 @@ impl RehabilitationServicesContract {
 
     /// Define a measurable outcome goal for an existing treatment plan.
     ///
-    /// Returns the new `goal_id`. Goals are versioned against the plan snapshot
-    /// counter stored alongside each plan's treatment-plan counter.
+    /// Returns the new `goal_id`. `plan_version` snapshots the plan's actual
+    /// `PlanVersion` so goals can be tied to the plan revision they belong to.
     ///
     /// Supported `goal_type` symbols: `range_of_motion`, `pain_scale`, `fim`,
     /// `strength`, `balance`, `endurance` (open-ended — any Symbol is accepted).
+    /// `pain_scale`, `time_up_and_go`/`tug`, `assistance_level` and `fall_risk`
+    /// are treated as lower-is-better; all others as higher-is-better.
     pub fn set_rehabilitation_goal(
         env: Env,
         plan_id: u64,
@@ -1394,21 +1577,27 @@ impl RehabilitationServicesContract {
             .unwrap_or(0u64)
             + 1;
 
-        // plan_version is the number of goals already set for this plan.
-        // Read a per-plan counter directly — O(1), no global scan.
+        // Snapshot the plan's real version so the goal is tied to the revision it belongs to.
         let plan_version: u64 = env
             .storage()
             .persistent()
-            .get(&DataKey::PlanGoalCount(plan_id))
-            .unwrap_or(0u64);
+            .get(&DataKey::PlanVersion(plan_id))
+            .unwrap_or(1);
+
+        let direction = direction_for_goal_type(&env, &goal_type);
 
         let goal = MeasurableGoal {
             goal_id,
             plan_id,
             goal_type: goal_type.clone(),
+            direction,
             target_value,
             target_date,
             achieved: false,
+            ever_achieved: false,
+            met_by_target_date: false,
+            achieved_at: None,
+            missed: false,
             plan_version,
         };
 
@@ -1423,9 +1612,14 @@ impl RehabilitationServicesContract {
         env.storage()
             .persistent()
             .set(&DataKey::GoalCounter, &goal_id);
+        let goal_count: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PlanGoalCount(plan_id))
+            .unwrap_or(0u64);
         env.storage()
             .persistent()
-            .set(&DataKey::PlanGoalCount(plan_id), &(plan_version + 1));
+            .set(&DataKey::PlanGoalCount(plan_id), &(goal_count + 1));
 
         env.events().publish(
             (Symbol::new(&env, "goal_set"), plan_id),
@@ -1437,8 +1631,12 @@ impl RehabilitationServicesContract {
 
     /// Record a progress measurement for a measurable goal.
     ///
-    /// Emits a `GoalAchieved` event when `current_value` reaches or exceeds
-    /// `target_value` for the first time.
+    /// The measurement is compared against `target_value` according to the goal's
+    /// direction (higher-is-better vs lower-is-better). `achieved` is re-evaluated on
+    /// every measurement so regressions are visible, while `ever_achieved` stays set.
+    /// Emits a `GoalAchieved` event the first time the target is met.
+    ///
+    /// `measured_at` must not be in the future.
     pub fn record_progress(
         env: Env,
         plan_id: u64,
@@ -1455,6 +1653,11 @@ impl RehabilitationServicesContract {
 
         plan.therapist_id.require_auth();
         require_active(&plan)?;
+
+        let now = env.ledger().timestamp();
+        if measured_at > now {
+            return Err(Error::InvalidInput);
+        }
 
         let mut goal: MeasurableGoal = env
             .storage()
@@ -1487,18 +1690,32 @@ impl RehabilitationServicesContract {
             PERSISTENT_TTL_BUMP,
         );
 
-        // Detect first achievement.
-        if !goal.achieved && current_value >= goal.target_value {
-            goal.achieved = true;
-            env.storage()
-                .persistent()
-                .set(&DataKey::MeasurableGoal(goal_id), &goal);
-            env.storage().persistent().extend_ttl(
-                &DataKey::MeasurableGoal(goal_id),
-                PERSISTENT_TTL_THRESHOLD,
-                PERSISTENT_TTL_BUMP,
-            );
+        // Re-evaluate achievement on every measurement, honouring the goal direction.
+        let met_now = meets_target(goal.direction, current_value, goal.target_value);
+        let first_achievement = met_now && !goal.ever_achieved;
 
+        goal.achieved = met_now;
+        if first_achievement {
+            goal.ever_achieved = true;
+            goal.achieved_at = Some(measured_at);
+            goal.met_by_target_date = measured_at <= goal.target_date;
+        }
+
+        // Mark the goal missed once the target date has passed without ever being met.
+        if !goal.ever_achieved && now > goal.target_date {
+            goal.missed = true;
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::MeasurableGoal(goal_id), &goal);
+        env.storage().persistent().extend_ttl(
+            &DataKey::MeasurableGoal(goal_id),
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_BUMP,
+        );
+
+        if first_achievement {
             env.events().publish(
                 (Symbol::new(&env, "GoalAchieved"), plan_id),
                 (goal_id, current_value, measured_at),
