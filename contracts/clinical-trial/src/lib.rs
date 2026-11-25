@@ -170,6 +170,7 @@ impl ClinicalTrialContract {
     /// Runs atomically as part of contract creation and cannot be called again,
     /// so an attacker cannot front-run deployment and elect themselves admin.
     pub fn __constructor(env: Env, admin: Address, patient_registry: Address) {
+        ttl_config::extend_instance_ttl(&env);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
@@ -194,6 +195,7 @@ impl ClinicalTrialContract {
         enrollment_target: u32,
         irb_approval_number: String,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         principal_investigator.require_auth();
 
         // Validate inputs
@@ -239,6 +241,7 @@ impl ClinicalTrialContract {
         inclusion_criteria: Vec<CriteriaRule>,
         exclusion_criteria: Vec<CriteriaRule>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         principal_investigator.require_auth();
         if inclusion_criteria.len() > MAX_CRITERIA_RULES {
             return Err(Error::InputTooLarge);
@@ -272,6 +275,7 @@ impl ClinicalTrialContract {
         patient_data_hash: BytesN<32>,
         claim_evidence: Vec<EligibilityClaimEvidence>,
     ) -> Result<EligibilityResult, Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
         if claim_evidence.len() > MAX_EVIDENCE_ITEMS {
             return Err(Error::InputTooLarge);
@@ -348,6 +352,7 @@ impl ClinicalTrialContract {
         informed_consent_hash: BytesN<32>,
         participant_id: String,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
 
         // Validate date
@@ -422,6 +427,7 @@ impl ClinicalTrialContract {
         trial_record_id: u64,
         consent_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         principal_investigator.require_auth();
 
         let trial = storage::get_trial(&env, trial_record_id)?;
@@ -457,6 +463,7 @@ impl ClinicalTrialContract {
         data_collected_hash: BytesN<32>,
         adverse_events: Vec<AdverseEvent>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         if adverse_events.len() > MAX_ADVERSE_EVENTS_PER_VISIT {
             return Err(Error::InputTooLarge);
         }
@@ -497,6 +504,7 @@ impl ClinicalTrialContract {
         resolution_date: Option<u64>,
         causality_assessment: Symbol,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         // Verify enrollment exists
         let enrollment = storage::get_enrollment(&env, enrollment_id)?;
 
@@ -552,6 +560,7 @@ impl ClinicalTrialContract {
         withdrawal_reason: Symbol,
         data_retention_consent: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         // Verify enrollment exists
         let mut enrollment = storage::get_enrollment(&env, enrollment_id)?;
         enrollment.patient_id.require_auth();
@@ -624,6 +633,7 @@ impl ClinicalTrialContract {
         corrective_action_hash: BytesN<32>,
         reported_to_irb: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         // Verify enrollment exists
         let enrollment = storage::get_enrollment(&env, enrollment_id)?;
 
@@ -655,6 +665,7 @@ impl ClinicalTrialContract {
         safety_data_hash: BytesN<32>,
         serious_adverse_events: u32,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         principal_investigator.require_auth();
 
         // Verify trial exists and PI is authorized
@@ -692,6 +703,7 @@ impl ClinicalTrialContract {
         principal_investigator: Address,
         data_filters: DataFilters,
     ) -> Result<BytesN<32>, Error> {
+        ttl_config::extend_instance_ttl(&env);
         principal_investigator.require_auth();
 
         // Verify trial exists and PI is authorized
@@ -787,6 +799,7 @@ impl ClinicalTrialContract {
         principal_investigator: Address,
         members: Vec<Address>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         principal_investigator.require_auth();
         if members.len() > MAX_DSMB_MEMBERS {
             return Err(Error::InputTooLarge);
@@ -810,6 +823,7 @@ impl ClinicalTrialContract {
         dsmb_member: Address,
         reason_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         dsmb_member.require_auth();
 
         let members = storage::get_dsmb_members(&env, trial_record_id)
@@ -855,6 +869,7 @@ impl ClinicalTrialContract {
         trial_record_id: u64,
         dsmb_member: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         dsmb_member.require_auth();
 
         let members = storage::get_dsmb_members(&env, trial_record_id)
@@ -918,6 +933,7 @@ impl ClinicalTrialContract {
         coordinator: Address,
         max_enrollment: u32,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         principal_investigator.require_auth();
 
         let trial = storage::get_trial(&env, trial_record_id)?;
@@ -955,6 +971,7 @@ impl ClinicalTrialContract {
         informed_consent_hash: BytesN<32>,
         participant_id: String,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         coordinator.require_auth();
 
         // Validate date
@@ -1056,6 +1073,7 @@ impl ClinicalTrialContract {
         enrollment_date: u64,
         participant_id: String,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
 
         validation::validate_date_not_future(&env, enrollment_date)?;
@@ -1162,6 +1180,7 @@ impl ClinicalTrialContract {
         new_phase: Symbol,
         new_protocol_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         principal_investigator.require_auth();
 
         validation::validate_study_phase(&new_phase)?;
@@ -1203,6 +1222,7 @@ impl ClinicalTrialContract {
         new_hash: BytesN<32>,
         reason_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         principal_investigator.require_auth();
 
         let mut trial = storage::get_trial(&env, trial_record_id)?;

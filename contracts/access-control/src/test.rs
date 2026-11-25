@@ -144,7 +144,7 @@ fn test_revoke_returns_op_id() {
 
     let resource = String::from_str(&env, "patient-records");
     let grant_op = client.grant_access(&hospital, &doctor, &resource, &0, &None);
-    let revoke_op = client.revoke_access(&hospital, &doctor, &resource);
+    let revoke_op = client.revoke_access(&hospital, &doctor, &resource, &None);
     assert!(revoke_op > grant_op);
 }
 
@@ -163,7 +163,7 @@ fn test_revoke_access_clears_both_indexes() {
     assert!(client.check_access(&doctor, &resource_id));
     assert_eq!(client.get_authorized_parties(&resource_id).len(), 1);
 
-    client.revoke_access(&hospital, &doctor, &resource_id);
+    client.revoke_access(&hospital, &doctor, &resource_id, &None);
 
     // Both indexes must be empty after revocation
     assert!(!client.check_access(&doctor, &resource_id));
@@ -179,7 +179,7 @@ fn test_revoke_access_re_grant_allowed_after_revoke() {
 
     let resource = String::from_str(&env, "patient-records");
     client.grant_access(&hospital, &doctor, &resource, &0, &None);
-    client.revoke_access(&hospital, &doctor, &resource);
+    client.revoke_access(&hospital, &doctor, &resource, &None);
 
     // Re-grant must succeed (composite index was cleaned up)
     let op = client.grant_access(&hospital, &doctor, &resource, &0, &None);
@@ -262,7 +262,7 @@ fn test_commit_reveal_replay_rejected() {
 
     // Attempting to re-use the same commit (replay) must fail
     // First revoke so the grant itself doesn't block
-    client.revoke_access(&hospital, &doctor, &resource);
+    client.revoke_access(&hospital, &doctor, &resource, &None);
 
     let result = client.try_grant_access(&hospital, &doctor, &resource, &0, &Some(nonce));
     assert_eq!(result, Err(Ok(ContractError::CommitAlreadyUsed)));
@@ -577,6 +577,7 @@ fn test_revoke_access_permission_not_found() {
         &hospital,
         &doctor,
         &String::from_str(&env, "nonexistent-resource"),
+        &None,
     );
     assert_eq!(result, Err(Ok(ContractError::AccessPermissionNotFound)));
 }
@@ -598,7 +599,7 @@ fn test_revoke_access_not_authorized() {
     let resource = String::from_str(&env, "patient-records");
     client.grant_access(&hospital, &doctor, &resource, &0, &None);
 
-    let result = client.try_revoke_access(&other, &doctor, &resource);
+    let result = client.try_revoke_access(&other, &doctor, &resource, &None);
     assert_eq!(result, Err(Ok(ContractError::NotAuthorizedToRevoke)));
 }
 
@@ -862,7 +863,7 @@ fn test_revoke_access_by_payer_reviewer_role() {
     client.grant_role(&admin, &payer, &Role::PayerReviewer, &0);
 
     // Payer (not the original grantor) can revoke.
-    client.revoke_access(&payer, &doctor, &resource);
+    client.revoke_access(&payer, &doctor, &resource, &None);
     assert!(!client.check_access(&doctor, &resource));
 }
 
@@ -899,7 +900,7 @@ fn test_revoke_access_by_unprivileged_non_grantor_rejected() {
     client.grant_access(&hospital, &doctor, &resource, &0, &None);
 
     // `other` has no role and is not the grantor.
-    let result = client.try_revoke_access(&other, &doctor, &resource);
+    let result = client.try_revoke_access(&other, &doctor, &resource, &None);
     assert_eq!(result, Err(Ok(ContractError::NotAuthorizedToRevoke)));
 
     // Silence unused-variable warning for admin.
@@ -940,7 +941,7 @@ proptest! {
 
         let resource = String::from_str(&env, &resource_id);
         client.grant_access(&grantor, &grantee, &resource, &0, &None);
-        client.revoke_access(&grantor, &grantee, &resource);
+        client.revoke_access(&grantor, &grantee, &resource, &None);
 
         assert!(!client.check_access(&grantee, &resource));
     }
@@ -1112,13 +1113,13 @@ fn test_revoke_access_multiple_grantors_same_resource() {
     assert!(client.check_access(&grantee, &resource_id));
 
     // Grantor2 revokes their own grant
-    client.revoke_access(&grantor2, &grantee, &resource_id);
+    client.revoke_access(&grantor2, &grantee, &resource_id, &None);
 
     // Grantee should still have access because grantor1's grant remains
     assert!(client.check_access(&grantee, &resource_id));
 
     // Grantor1 revokes their grant
-    client.revoke_access(&grantor1, &grantee, &resource_id);
+    client.revoke_access(&grantor1, &grantee, &resource_id, &None);
 
     // Now grantee has no access
     assert!(!client.check_access(&grantee, &resource_id));

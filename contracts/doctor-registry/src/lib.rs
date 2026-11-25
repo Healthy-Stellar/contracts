@@ -89,6 +89,7 @@ impl DoctorRegistry {
         specialization: String,
         institution_wallet: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&registrar).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&institution_wallet).map_err(|_| Error::InvalidAddress)?;
@@ -131,6 +132,7 @@ impl DoctorRegistry {
         specialization: String,
         metadata: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&registrar).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         require_admin(&env, &registrar)?;
@@ -172,6 +174,7 @@ impl DoctorRegistry {
         registrar: Address,
         wallet: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&registrar).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         require_admin(&env, &registrar)?;
@@ -204,6 +207,7 @@ impl DoctorRegistry {
         registrar: Address,
         wallet: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&registrar).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         require_admin(&env, &registrar)?;

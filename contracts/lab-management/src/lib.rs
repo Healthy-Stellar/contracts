@@ -99,6 +99,7 @@ impl LabManagementContract {
     /// arguments and visible to operators, but the binding is enforced by the
     /// atomic constructor rather than by an authorization check.
     pub fn __constructor(env: Env, admin: Address, provider_registry: Address) {
+        ttl_config::extend_instance_ttl(&env);
         let _ = admin;
 
         env.storage()
@@ -136,6 +137,7 @@ impl LabManagementContract {
         patient_id: Address,
         req: OrderRequest,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         if !Self::is_provider_registered(&env, &provider_id) {
@@ -174,6 +176,7 @@ impl LabManagementContract {
     }
 
     pub fn assign_lab(env: Env, order_id: u64, lab_id: Address, _eta: u64) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let mut order: LabOrder = env
             .storage()
             .persistent()
@@ -196,6 +199,7 @@ impl LabManagementContract {
         results_summary: Vec<TestResult>,
         qc_passed: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         lab_id.require_auth();
 
         // VALIDATION PHASE: All validations must pass before any storage writes.
@@ -243,6 +247,7 @@ impl LabManagementContract {
         test_code: String,
         val: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         lab_id.require_auth();
 
         // 1. Verify order exists.

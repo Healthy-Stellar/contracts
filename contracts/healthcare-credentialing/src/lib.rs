@@ -240,6 +240,7 @@ impl HealthcareCredentialingSystem {
 
     /// Register an address as an authorized credential verifier. Admin only.
     pub fn add_authorized_verifier(env: Env, admin: Address, verifier: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         require_admin(&env, &admin)?;
         env.storage()
@@ -250,6 +251,7 @@ impl HealthcareCredentialingSystem {
 
     /// Revoke an address's authorized-verifier status. Admin only.
     pub fn remove_authorized_verifier(env: Env, admin: Address, verifier: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         require_admin(&env, &admin)?;
         env.storage()
@@ -260,6 +262,7 @@ impl HealthcareCredentialingSystem {
 
     /// Register an address as a credentialing-committee member. Admin only.
     pub fn add_committee_member(env: Env, admin: Address, member: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         require_admin(&env, &admin)?;
         env.storage()
@@ -270,6 +273,7 @@ impl HealthcareCredentialingSystem {
 
     /// Revoke an address's credentialing-committee membership. Admin only.
     pub fn remove_committee_member(env: Env, admin: Address, member: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         require_admin(&env, &admin)?;
         env.storage()
@@ -285,6 +289,7 @@ impl HealthcareCredentialingSystem {
         application_date: u64,
         requested_privileges: Vec<Symbol>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         if requested_privileges.is_empty() {
             return Err(Error::InvalidInput);
@@ -333,6 +338,7 @@ impl HealthcareCredentialingSystem {
         issue_date: u64,
         expiration_date: Option<u64>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         caller.require_auth();
         let mut case = get_case(&env, case_id)?;
         if caller != case.provider_id {
@@ -376,6 +382,7 @@ impl HealthcareCredentialingSystem {
         verification_date: u64,
         verification_notes: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         verifier.require_auth();
         if !is_authorized_verifier(&env, &verifier) {
             return Err(Error::NotAuthorized);
@@ -435,6 +442,7 @@ impl HealthcareCredentialingSystem {
         sanctions_found: bool,
         check_date: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         checker.require_auth();
         if !is_authorized_verifier(&env, &checker) {
             return Err(Error::NotAuthorized);
@@ -473,6 +481,7 @@ impl HealthcareCredentialingSystem {
         reference_notes_hash: BytesN<32>,
         recommended: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         reference_provider.require_auth();
         if !is_authorized_verifier(&env, &reference_provider) {
             return Err(Error::NotAuthorized);
@@ -513,6 +522,7 @@ impl HealthcareCredentialingSystem {
         effective_date: u64,
         expiration_date: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         credentialing_committee.require_auth();
         if !is_committee_member(&env, &credentialing_committee) {
             return Err(Error::NotAuthorized);
@@ -585,6 +595,7 @@ impl HealthcareCredentialingSystem {
         supervising_provider: Address,
         justification: String,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         let current: u64 = env
             .storage()
@@ -634,6 +645,7 @@ impl HealthcareCredentialingSystem {
         complications: bool,
         activity_date: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         let mut records: Vec<ClinicalActivityRecord> = env
             .storage()
@@ -665,6 +677,7 @@ impl HealthcareCredentialingSystem {
         review_type: Symbol,
         initiated_by: Address,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         initiated_by.require_auth();
         if !is_committee_member(&env, &initiated_by) {
             return Err(Error::NotAuthorized);
@@ -700,6 +713,7 @@ impl HealthcareCredentialingSystem {
         due_date: u64,
         notification_sent: bool,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         let current: u64 = env
             .storage()
@@ -749,6 +763,7 @@ impl HealthcareCredentialingSystem {
         is_immediate: bool,
         peer_review_required: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         suspension_authority.require_auth();
         if !is_committee_member(&env, &suspension_authority) {
             return Err(Error::NotAuthorized);
@@ -819,6 +834,7 @@ impl HealthcareCredentialingSystem {
         corrective_actions_completed: Vec<String>,
         monitoring_requirements: Vec<String>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         reinstatement_authority.require_auth();
         if !is_committee_member(&env, &reinstatement_authority) {
             return Err(Error::NotAuthorized);
@@ -914,6 +930,7 @@ impl HealthcareCredentialingSystem {
         facility_id: Address,
         current_time: u64,
     ) -> Result<bool, Error> {
+        ttl_config::extend_instance_ttl(&env);
         let privileges: Vec<Privilege> = env
             .storage()
             .persistent()
@@ -948,6 +965,7 @@ impl HealthcareCredentialingSystem {
         current_time: u64,
         recredentialing_deadline: u64,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         initiating_authority.require_auth();
         if !is_committee_member(&env, &initiating_authority) {
             return Err(Error::NotAuthorized);
@@ -1013,6 +1031,7 @@ impl HealthcareCredentialingSystem {
         enforcement_authority: Address,
         current_time: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         enforcement_authority.require_auth();
         if !is_committee_member(&env, &enforcement_authority) {
             return Err(Error::NotAuthorized);
@@ -1077,6 +1096,7 @@ impl HealthcareCredentialingSystem {
         credentialing_committee: Address,
         new_expiration_date: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         credentialing_committee.require_auth();
         if !is_committee_member(&env, &credentialing_committee) {
             return Err(Error::NotAuthorized);

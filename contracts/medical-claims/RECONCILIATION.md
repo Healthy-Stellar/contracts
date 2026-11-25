@@ -50,10 +50,13 @@ The `get_unreconciled_claims` function returns claims older than a configurable 
 pub fn get_unreconciled_claims(
     env: Env,
     insurer_id: Address,
-) -> Result<Vec<u64>, Error>
+    cursor: u32,
+    limit: u32,
+) -> Result<(Vec<u64>, Option<u32>), Error>
 ```
 
 **Features:**
+- Paginated: scans `limit` index pages starting at page `cursor`; the returned `Option<u32>` is the next cursor (`None` when done)
 - Returns claim IDs for unreconciled claims older than the threshold
 - Configurable threshold (default: 24 hours / 86400 seconds)
 - Only accessible by registered insurers
@@ -188,11 +191,19 @@ client.reconcile_claim(
 ### Querying Unreconciled Claims
 
 ```rust
-// Get claims older than threshold
-let unreconciled_claims = client.get_unreconciled_claims(&insurer_id);
+// Get claims older than threshold, one page of index at a time
+let mut cursor = 0u32;
+loop {
+    let (unreconciled_claims, next) = client.get_unreconciled_claims(&insurer_id, &cursor, &10);
 
-for claim_id in unreconciled_claims.iter() {
-    // Process unreconciled claim
+    for claim_id in unreconciled_claims.iter() {
+        // Process unreconciled claim
+    }
+
+    match next {
+        Some(c) => cursor = c,
+        None => break,
+    }
 }
 ```
 

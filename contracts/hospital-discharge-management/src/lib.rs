@@ -69,6 +69,7 @@ impl HospitalDischargeContract {
         admission_date: u64,
         expected_discharge_date: u64,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         caller.require_auth();
 
         let hospital_registry = get_hospital_registry(&env)?;
@@ -122,6 +123,7 @@ impl HospitalDischargeContract {
         support_system_score: u32,
         notes: String,
     ) -> Result<ReadinessScore, Error> {
+        ttl_config::extend_instance_ttl(&env);
         caller.require_auth();
 
         // Validate plan exists and caller is authorized
@@ -182,6 +184,7 @@ impl HospitalDischargeContract {
         instructions: String,
         restrictions: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         caller.require_auth();
 
         // Validate plan exists and caller is authorized
@@ -226,6 +229,7 @@ impl HospitalDischargeContract {
         frequency: String,
         start_date: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         caller.require_auth();
 
         // Validate plan exists and caller is authorized
@@ -263,6 +267,7 @@ impl HospitalDischargeContract {
         supplier_id: BytesN<32>,
         delivery_date: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         caller.require_auth();
 
         // Validate plan exists and caller is authorized
@@ -297,6 +302,7 @@ impl HospitalDischargeContract {
         discharge_plan_id: u64,
         appointments: Vec<FollowUpAppointment>,
     ) -> Result<Vec<u64>, Error> {
+        ttl_config::extend_instance_ttl(&env);
         caller.require_auth();
 
         // Validate plan exists and caller is authorized
@@ -329,6 +335,7 @@ impl HospitalDischargeContract {
         materials_provided: Vec<String>,
         patient_understanding_level: u32,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         caller.require_auth();
 
         // Validate plan exists and caller is authorized
@@ -365,6 +372,7 @@ impl HospitalDischargeContract {
         transfer_date: u64,
         care_requirements: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         caller.require_auth();
 
         // Validate plan exists and caller is authorized
@@ -400,6 +408,7 @@ impl HospitalDischargeContract {
         actual_discharge_date: u64,
         discharge_destination: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         caller.require_auth();
 
         // Validate plan exists and caller is authorized
@@ -443,6 +452,7 @@ impl HospitalDischargeContract {
         caller: Address,
         discharge_plan_id: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         caller.require_auth();
 
         // Validate plan exists and caller is authorized
@@ -479,6 +489,7 @@ impl HospitalDischargeContract {
         risk_score: u32,
         mitigation_plan: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         caller.require_auth();
 
         // Validate plan exists and caller is authorized
