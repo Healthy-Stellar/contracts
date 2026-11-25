@@ -286,6 +286,7 @@ impl HealthRecords {
     /// again, so an attacker cannot front-run deployment and point
     /// `provider_registry` at a malicious contract.
     pub fn __constructor(env: Env, admin: Address, provider_registry: Address) {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&admin).expect("admin address must not be zero");
         validate_nonzero_address(&provider_registry)
             .expect("provider registry address must not be zero");
@@ -303,6 +304,7 @@ impl HealthRecords {
         scope: ConsentScope,
         patient_nonce: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&patient).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
         patient.require_auth();
@@ -334,6 +336,7 @@ impl HealthRecords {
 
     /// Patient revokes all consent for a provider.
     pub fn revoke_consent(env: Env, patient: Address, provider: Address, patient_nonce: u64) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&patient).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
         patient.require_auth();
@@ -386,12 +389,8 @@ impl HealthRecords {
     ///
     /// Only callable by the patient themselves (they must auth before
     /// deregistering from patient-registry).
-    pub fn deregister_patient(
-        env: Env,
-        patient: Address,
-        patient_nonce: u64,
-        max_items: u32,
-    ) -> Result<u32, Error> {
+    pub fn deregister_patient(env: Env, patient: Address, patient_nonce: u64) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient.require_auth();
         Self::verify_and_increment_nonce(&env, &patient, patient_nonce)?;
 
@@ -550,6 +549,7 @@ impl HealthRecords {
         policy: PolicyMetadata,
         provider_nonce: u64,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&patient).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
         provider.require_auth();
@@ -573,7 +573,7 @@ impl HealthRecords {
         }
 
         let counter_key = DataKey::RecordCounter;
-        let record_id: u64 = shared_contracts::safe_increment_persistent(&env, &counter_key);
+        let record_id: u64 = shared::counters::safe_increment_persistent(&env, &counter_key);
 
         let timestamp = env.ledger().timestamp();
 
@@ -657,6 +657,7 @@ impl HealthRecords {
 
     /// Set an authorized analytics address that can query category indexes. Admin-only.
     pub fn set_analytics_address(env: Env, admin: Address, analytics: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&analytics).map_err(|_| Error::InvalidAddress)?;
         admin.require_auth();
@@ -693,6 +694,7 @@ impl HealthRecords {
         records: Vec<RecordInput>,
         provider_nonce: u64,
     ) -> Result<Vec<u64>, Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
         provider.require_auth();
         Self::verify_and_increment_nonce(&env, &provider, provider_nonce)?;
@@ -726,7 +728,7 @@ impl HealthRecords {
             }
 
             let counter_key = DataKey::RecordCounter;
-            let record_id: u64 = shared_contracts::safe_increment_persistent(&env, &counter_key);
+            let record_id: u64 = shared::counters::safe_increment_persistent(&env, &counter_key);
 
             let integrity_hash = compute_hash(
                 &env,
@@ -793,6 +795,7 @@ impl HealthRecords {
         record_id: u64,
         expected_hash: Bytes,
     ) -> Result<bool, Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&caller).map_err(|_| Error::InvalidAddress)?;
         caller.require_auth();
 
@@ -844,6 +847,7 @@ impl HealthRecords {
         new_policy: PolicyMetadata,
         caller_nonce: u64,
     ) -> Result<u32, Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&caller).map_err(|_| Error::InvalidAddress)?;
         validate_encrypted_ref(&new_encrypted_ref).map_err(|_| Error::InvalidEncryptedEnvelope)?;
         validate_policy_metadata(&new_policy).map_err(|_| Error::InvalidPolicyMetadata)?;
@@ -955,6 +959,7 @@ impl HealthRecords {
         correlation_id: Option<BytesN<32>>,
         reporter_nonce: u64,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&reporter).map_err(|_| Error::InvalidAddress)?;
         reporter.require_auth();
         Self::verify_and_increment_nonce(&env, &reporter, reporter_nonce)?;

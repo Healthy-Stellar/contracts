@@ -634,6 +634,7 @@ impl PrescriptionContract {
     /// `is_provider` always returns `true`. Fails with `AlreadyExists` if
     /// called more than once.
     pub fn initialize(env: Env, admin: Address, provider_registry: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         if env.storage().persistent().has(&DataKey::ProviderRegistry) {
             return Err(Error::AlreadyExists);
         }
@@ -654,6 +655,7 @@ impl PrescriptionContract {
         admin: Address,
         provider_registry: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         require_admin(&env, &admin)?;
         env.storage()
             .persistent()
@@ -669,6 +671,7 @@ impl PrescriptionContract {
         allergy_registry: Address,
         strict_mode: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         // Once an admin is set, only that admin may reconfigure (#887).
         let configured: Option<Address> = env.storage().persistent().get(&DataKey::Admin);
@@ -691,6 +694,7 @@ impl PrescriptionContract {
         patient_id: Address,
         req: IssueRequest,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         do_issue_prescription(&env, provider_id, patient_id, req)
     }
@@ -702,6 +706,7 @@ impl PrescriptionContract {
         provider: Address,
         limit: u32,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let configured: Option<Address> = env.storage().persistent().get(&DataKey::Admin);
         if configured.as_ref().map_or(true, |a| *a != admin) {
@@ -724,6 +729,7 @@ impl PrescriptionContract {
         provider: Address,
         dea_number: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         require_admin(&env, &admin)?;
 
         if dea_number.len() != 9u32 {
@@ -749,6 +755,7 @@ impl PrescriptionContract {
         admin: Address,
         provider: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         require_admin(&env, &admin)?;
         env.storage()
             .persistent()
@@ -774,6 +781,7 @@ impl PrescriptionContract {
     ///
     /// Admin only. A no-op returning `0` once the namespaced counter exists.
     pub fn migrate_prescription_keys(env: Env, admin: Address) -> Result<u32, Error> {
+        ttl_config::extend_instance_ttl(&env);
         require_admin(&env, &admin)?;
 
         if env.storage().instance().has(&DataKey::PrescriptionCounter) {
@@ -830,6 +838,7 @@ impl PrescriptionContract {
         provider: Address,
         template: PrescriptionTemplate,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider.require_auth();
 
         // #953: a template must not persist an allergy bypass — it would silently
@@ -895,6 +904,7 @@ impl PrescriptionContract {
         template_id: u64,
         valid_until: u64,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider.require_auth();
 
         let template: StoredTemplate = env
@@ -935,6 +945,7 @@ impl PrescriptionContract {
         req: DispenseRequest,
         pharmacy_id: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         pharmacy_id.require_auth();
 
         let mut p: Prescription =
@@ -1016,6 +1027,7 @@ impl PrescriptionContract {
         req: TransferRequest,
         from_pharmacy: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         from_pharmacy.require_auth();
 
         let mut p: Prescription =
@@ -1095,6 +1107,7 @@ impl PrescriptionContract {
         prescription_id: u64,
         pharmacy_id: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         pharmacy_id.require_auth();
 
         let mut p: Prescription =
@@ -1135,6 +1148,7 @@ impl PrescriptionContract {
         drug_class: Symbol,
         interaction_profile_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         if is_registry_governed(&env) {
             return Err(Error::RegistryGoverned);
         }
@@ -1151,6 +1165,7 @@ impl PrescriptionContract {
     }
 
     pub fn initialize_registry_governance(env: Env, admin: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         if is_registry_governed(&env) {
             return Err(Error::AlreadyExists);
@@ -1165,6 +1180,7 @@ impl PrescriptionContract {
     }
 
     pub fn add_registry_writer(env: Env, admin: Address, writer: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         require_registry_admin(&env, &admin)?;
         env.storage()
             .persistent()
@@ -1181,6 +1197,7 @@ impl PrescriptionContract {
         drug_class: Symbol,
         interaction_profile_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         require_registry_writer(&env, &writer)?;
         put_medication(
             &env,
@@ -1203,6 +1220,7 @@ impl PrescriptionContract {
         clinical_effects: String,
         management_strategy: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         if is_registry_governed(&env) {
             return Err(Error::RegistryGoverned);
         }
@@ -1227,6 +1245,7 @@ impl PrescriptionContract {
         clinical_effects: String,
         management_strategy: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         require_registry_writer(&env, &writer)?;
         if requires_documentation(&env, &severity) {
             return Err(Error::HighImpactRequiresProposal);
@@ -1252,6 +1271,7 @@ impl PrescriptionContract {
         clinical_effects: String,
         management_strategy: String,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         require_registry_writer(&env, &writer)?;
         if !is_valid_severity(&env, &severity) {
             return Err(Error::InvalidSeverity);
@@ -1290,6 +1310,7 @@ impl PrescriptionContract {
         drug_class: Symbol,
         interaction_profile_hash: BytesN<32>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         require_registry_writer(&env, &writer)?;
         let key = DataKey::Medication(ndc_code.clone());
         if env.storage().persistent().has(&key) {
@@ -1313,6 +1334,7 @@ impl PrescriptionContract {
         admin: Address,
         proposal_id: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         require_registry_admin(&env, &admin)?;
         let mut proposal: RegistryProposal = env
             .storage()
@@ -1342,6 +1364,7 @@ impl PrescriptionContract {
     }
 
     pub fn create_catalog_snapshot(env: Env, admin: Address) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         require_registry_admin(&env, &admin)?;
         let version = env
             .storage()
@@ -1380,6 +1403,7 @@ impl PrescriptionContract {
         new_medication: String,
         current_medications: Vec<String>,
     ) -> Result<Vec<InteractionWarning>, Error> {
+        ttl_config::extend_instance_ttl(&env);
         if !env
             .storage()
             .persistent()
@@ -1429,6 +1453,7 @@ impl PrescriptionContract {
         patient_id: Address,
         medication: String,
     ) -> Result<Vec<InteractionWarning>, Error> {
+        ttl_config::extend_instance_ttl(&env);
         requester.require_auth();
         require_phi_access(&env, &requester, &patient_id)?;
 
@@ -1528,6 +1553,7 @@ impl PrescriptionContract {
         interaction_id: u64,
         override_reason: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         if is_blank(&override_reason) {
@@ -1564,6 +1590,7 @@ impl PrescriptionContract {
         patient_id: Address,
         allergies: Vec<String>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
         env.storage()
             .persistent()
@@ -1576,6 +1603,7 @@ impl PrescriptionContract {
         patient_id: Address,
         conditions: Vec<String>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
         env.storage()
             .persistent()
@@ -1591,6 +1619,7 @@ impl PrescriptionContract {
         medication: String,
         contraindications: Vec<String>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         require_registry_writer(&env, &writer)?;
         if !env
             .storage()
@@ -1613,6 +1642,7 @@ impl PrescriptionContract {
         pharmacy_id: Address,
         provider_id: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         pharmacy_id.require_auth();
         provider_id.require_auth();
 
@@ -1697,6 +1727,7 @@ impl PrescriptionContract {
         provider_id: Address,
         reason: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let mut p: Prescription =
@@ -1747,6 +1778,7 @@ impl PrescriptionContract {
         recall_reason: String,
         clinical_justification: String,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         if is_blank(&recall_reason) {
@@ -1900,6 +1932,7 @@ impl PrescriptionContract {
         from_id: u64,
         exclusive_upper: u64,
     ) -> Result<u32, Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let configured: Option<Address> = env.storage().persistent().get(&DataKey::Admin);
         if configured.as_ref().map_or(true, |a| *a != admin) {

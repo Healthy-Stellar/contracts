@@ -231,6 +231,7 @@ impl MaternalChildHealthContract {
     /// Runs atomically as part of contract creation and cannot be called again,
     /// so an attacker cannot front-run deployment and elect themselves admin.
     pub fn __constructor(env: Env, admin: Address, provider_registry: Address) {
+        ttl_config::extend_instance_ttl(&env);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
@@ -259,6 +260,7 @@ impl MaternalChildHealthContract {
         para: u32,
         prenatal_risk_factors: Vec<Symbol>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         patient_id.require_auth();
 
@@ -302,6 +304,7 @@ impl MaternalChildHealthContract {
         fetal_heart_rate: Option<u32>,
         visit_notes_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let mut pregnancy = Self::get_pregnancy(&env, pregnancy_id)?;
         pregnancy.provider_id.require_auth();
 
@@ -342,6 +345,7 @@ impl MaternalChildHealthContract {
         results_hash: BytesN<32>,
         abnormal: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let pregnancy = Self::get_pregnancy(&env, pregnancy_id)?;
         pregnancy.provider_id.require_auth();
 
@@ -372,6 +376,7 @@ impl MaternalChildHealthContract {
         placental_location: String,
         findings_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let pregnancy = Self::get_pregnancy(&env, pregnancy_id)?;
         pregnancy.provider_id.require_auth();
 
@@ -407,6 +412,7 @@ impl MaternalChildHealthContract {
         cervical_dilation: u32,
         cervical_effacement: u32,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         let pregnancy = Self::get_pregnancy(&env, pregnancy_id)?;
         pregnancy.provider_id.require_auth();
 
@@ -442,6 +448,7 @@ impl MaternalChildHealthContract {
         blood_loss_ml: u32,
         delivering_provider: Address,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         delivering_provider.require_auth();
 
         let labor: LaborRecord = env
@@ -497,6 +504,7 @@ impl MaternalChildHealthContract {
         apgar_5min: u32,
         gestational_age_weeks: u32,
     ) -> Result<Address, Error> {
+        ttl_config::extend_instance_ttl(&env);
         let mut delivery: DeliveryRecord = env
             .storage()
             .persistent()
@@ -549,6 +557,7 @@ impl MaternalChildHealthContract {
         result: Symbol,
         requires_followup: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let newborn: NewbornRecord = env
@@ -594,6 +603,7 @@ impl MaternalChildHealthContract {
         head_circumference_cm_x100: Option<i64>,
         bmi_x100: i64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         patient_id.require_auth();
 
@@ -642,6 +652,7 @@ impl MaternalChildHealthContract {
         milestones_met: Vec<Symbol>,
         concerns: Vec<Symbol>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         patient_id.require_auth();
 
@@ -679,6 +690,7 @@ impl MaternalChildHealthContract {
         developmental_screening: bool,
         anticipatory_guidance_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         patient_id.require_auth();
 
@@ -748,6 +760,7 @@ impl MaternalChildHealthContract {
     /// records of `patient_id`. For newborn records the mother acts as
     /// guardian, so grants from the mother cover her newborns.
     pub fn grant_record_access(env: Env, patient_id: Address, grantee: Address) {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
         env.storage()
             .persistent()
@@ -756,6 +769,7 @@ impl MaternalChildHealthContract {
 
     /// Revoke a grant previously made with `grant_record_access`.
     pub fn revoke_record_access(env: Env, patient_id: Address, grantee: Address) {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
         env.storage()
             .persistent()
@@ -947,7 +961,7 @@ impl MaternalChildHealthContract {
     }
 
     fn next_id(env: &Env, counter_key: Symbol) -> u64 {
-        shared_contracts::safe_increment(env, &counter_key)
+        shared::counters::safe_increment(env, &counter_key)
     }
 
     fn newborn_address(env: &Env, delivery_id: u64, newborn_seq: u64) -> Address {

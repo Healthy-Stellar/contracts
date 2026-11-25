@@ -68,6 +68,7 @@ impl DoctorRegistry {
     /// Set the contract admin. Must be called once before any profile operations.
     /// Only the admin (or an authorized registrar) may create or modify doctor profiles.
     pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
         admin.require_auth();
         if env.storage().persistent().has(&DataKey::Admin) {
@@ -94,6 +95,7 @@ impl DoctorRegistry {
         specialization: String,
         institution_wallet: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&registrar).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&institution_wallet).map_err(|_| Error::InvalidAddress)?;
@@ -136,6 +138,7 @@ impl DoctorRegistry {
         specialization: String,
         metadata: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&registrar).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         require_admin(&env, &registrar)?;
@@ -177,6 +180,7 @@ impl DoctorRegistry {
         registrar: Address,
         wallet: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&registrar).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         require_admin(&env, &registrar)?;
@@ -209,6 +213,7 @@ impl DoctorRegistry {
         registrar: Address,
         wallet: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&registrar).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         require_admin(&env, &registrar)?;

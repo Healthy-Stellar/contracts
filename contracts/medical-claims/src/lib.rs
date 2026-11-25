@@ -113,6 +113,7 @@ impl MedicalClaimsSystem {
         reconciliation_threshold: u64,
         insurer_registry_id: Address,
     ) {
+        ttl_config::extend_instance_ttl(&env);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
@@ -130,6 +131,7 @@ impl MedicalClaimsSystem {
 
     /// Admin-only: authorize an insurer address to adjudicate and pay claims.
     pub fn register_insurer(env: Env, admin: Address, insurer: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -171,6 +173,7 @@ impl MedicalClaimsSystem {
         policy: PolicyMetadata,
         total_amount: i128,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         Self::require_insurer(&env, &insurer_id)?;
 
@@ -293,6 +296,7 @@ impl MedicalClaimsSystem {
         approved_amount: i128,
         patient_responsibility: i128,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         insurer_id.require_auth();
         Self::require_insurer(&env, &insurer_id)?;
 
@@ -363,6 +367,7 @@ impl MedicalClaimsSystem {
         appeal_level: u32,
         _appeal_details_hash: BytesN<32>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let mut claim = Self::load_claim(&env, claim_id)?;
@@ -394,6 +399,7 @@ impl MedicalClaimsSystem {
         payment_date: u64,
         payment_reference_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         insurer_id.require_auth();
         Self::require_insurer(&env, &insurer_id)?;
         let mut claim = Self::load_claim(&env, claim_id)?;
@@ -465,6 +471,7 @@ impl MedicalClaimsSystem {
         payment_amount: i128,
         payment_date: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
 
         if payment_amount <= 0 {
@@ -684,6 +691,7 @@ impl MedicalClaimsSystem {
         financial_record_idx: u32,
         caller: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         caller.require_auth();
 
         let mut claim = Self::load_claim(&env, claim_id)?;
@@ -796,6 +804,7 @@ impl MedicalClaimsSystem {
         claim_id: u64,
         caller: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         caller.require_auth();
 
         let mut claim = Self::load_claim(&env, claim_id)?;
@@ -877,6 +886,7 @@ impl MedicalClaimsSystem {
         admin: Address,
         threshold: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -965,6 +975,7 @@ impl MedicalClaimsSystem {
 
     /// Admin-only: register an address as an authorized dispute reviewer.
     pub fn register_reviewer(env: Env, admin: Address, reviewer: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -1003,6 +1014,7 @@ impl MedicalClaimsSystem {
 
     /// Admin-only: deactivate an authorized dispute reviewer, preventing them from resolving disputes.
     pub fn deactivate_reviewer(env: Env, admin: Address, reviewer: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -1027,6 +1039,7 @@ impl MedicalClaimsSystem {
         claimant: Address,
         reason_hash: BytesN<32>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         claimant.require_auth();
 
         let claim = Self::load_claim(&env, claim_id)?;
@@ -1094,6 +1107,7 @@ impl MedicalClaimsSystem {
         reviewer: Address,
         resolution_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         reviewer.require_auth();
 
         // Check if reviewer is deactivated
@@ -1175,6 +1189,7 @@ impl MedicalClaimsSystem {
         dispute_id: u64,
         admin: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
 
         let stored_admin: Address = env

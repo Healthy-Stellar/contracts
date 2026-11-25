@@ -254,6 +254,7 @@ impl ImagingRadiology {
         clinical_indication: String,
         priority: Symbol,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         // Verify patient consent via access-control contract
@@ -315,6 +316,7 @@ impl ImagingRadiology {
         scheduled_time: u64,
         prep_instructions_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         imaging_center.require_auth();
 
         Self::require_registered_actor(&env, &registry, &imaging_center)?;
@@ -379,6 +381,7 @@ impl ImagingRadiology {
         image_count: u32,
         study_date: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         imaging_center.require_auth();
 
         Self::require_registered_actor(&env, &registry, &imaging_center)?;
@@ -446,6 +449,7 @@ impl ImagingRadiology {
         report_hash: BytesN<32>,
         urgent_findings: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         radiologist_id.require_auth();
 
         Self::require_credentialed_radiologist(&env, &registry, &radiologist_id)?;
@@ -501,6 +505,7 @@ impl ImagingRadiology {
         final_report_hash: BytesN<32>,
         impression: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         radiologist_id.require_auth();
 
         Self::require_credentialed_radiologist(&env, &registry, &radiologist_id)?;

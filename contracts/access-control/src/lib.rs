@@ -394,6 +394,7 @@ impl AccessControl {
 
     /// Initialize the contract with an admin
     pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         if env.storage().persistent().has(&DataKey::Admin) {
             return Err(ContractError::AlreadyInitialized);
         }
@@ -444,6 +445,7 @@ impl AccessControl {
         role: Role,
         expires_at: u64,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         granter.require_auth();
 
         // Determine the granter's highest active role level.
@@ -489,6 +491,7 @@ impl AccessControl {
         revokee: Address,
         role: Role,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         revoker.require_auth();
         Self::require_role(&env, &revoker, &Role::Admin)?;
 
@@ -537,6 +540,7 @@ impl AccessControl {
         name: String,
         metadata: String,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         wallet.require_auth();
 
         let key = DataKey::Entity(wallet.clone());
@@ -578,6 +582,7 @@ impl AccessControl {
         committer: Address,
         commit_hash: BytesN<32>,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         committer.require_auth();
 
         let key = DataKey::Commit(commit_hash.clone());
@@ -654,6 +659,7 @@ impl AccessControl {
         expires_at: u64,
         nonce: Option<BytesN<32>>,
     ) -> Result<u64, ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         grantor.require_auth();
 
         // #228: verify commit if nonce provided
@@ -799,6 +805,7 @@ impl AccessControl {
         resource_id: String,
         grantor: Option<Address>,
     ) -> Result<u64, ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         revoker.require_auth();
 
         let admin: Address = env
@@ -936,6 +943,7 @@ impl AccessControl {
 
     /// Check if an entity has access to a specific resource
     pub fn check_access(env: Env, entity: Address, resource_id: String) -> bool {
+        ttl_config::extend_instance_ttl(&env);
         if let Some(data) = env
             .storage()
             .persistent()
@@ -997,6 +1005,7 @@ impl AccessControl {
 
     /// Update entity metadata
     pub fn update_entity(env: Env, wallet: Address, metadata: String) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         wallet.require_auth();
 
         let key = DataKey::Entity(wallet.clone());
@@ -1029,6 +1038,7 @@ impl AccessControl {
         admin: Address,
         wallet: Address,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
 
         let stored_admin: Address = env
@@ -1159,6 +1169,7 @@ impl AccessControl {
 
     /// Register or update a W3C DID for the provided address.
     pub fn register_did(env: Env, address: Address, did: Bytes) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         address.require_auth();
         Self::validate_did(&did)?;
 
@@ -1203,6 +1214,7 @@ impl AccessControl {
         legal_basis: String,
         expires_at: u64,
     ) -> Result<u64, ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         subject.require_auth();
 
         Self::check_rate_limit(&env, &subject)?;
@@ -1294,6 +1306,7 @@ impl AccessControl {
         grantee: Address,
         purpose_code: ConsentPurpose,
     ) -> Result<u64, ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         subject.require_auth();
 
         Self::check_rate_limit(&env, &subject)?;
@@ -1340,11 +1353,8 @@ impl AccessControl {
         purpose_code: ConsentPurpose,
         required_scope: u32,
     ) -> Result<(), ContractError> {
-        if required_scope == 0 {
-            return Err(ContractError::InvalidScopeMask);
-        }
-
-        let grantee_data: EntityData = env
+        ttl_config::extend_instance_ttl(&env);
+        if let Some(data) = env
             .storage()
             .persistent()
             .get(&DataKey::Entity(grantee.clone()))
@@ -1421,6 +1431,7 @@ impl AccessControl {
         patient: Address,
         justification_hash: BytesN<32>,
     ) -> Result<u64, ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         responder.require_auth();
 
         // Only EmergencyResponder role (or admin) may call this.
@@ -1462,6 +1473,7 @@ impl AccessControl {
     /// Check whether an active (non-expired) emergency access grant exists for
     /// `(responder, patient)`.  Safe to call as a view.
     pub fn check_emergency_access(env: Env, responder: Address, patient: Address) -> bool {
+        ttl_config::extend_instance_ttl(&env);
         let key = DataKey::EmergencyAccess(responder, patient);
         let record: Option<EmergencyAccessRecord> = env.storage().temporary().get(&key);
         match record {
@@ -1489,6 +1501,7 @@ impl AccessControl {
     ///
     /// Only callable by the stored admin.
     pub fn deregister_patient(env: Env, patient: Address) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         let admin: Address = env
             .storage()
             .persistent()
@@ -1787,6 +1800,7 @@ impl AccessControl {
         admin: Address,
         assignments: Vec<RoleBatchEntry>,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
 
         if assignments.len() > BATCH_SIZE_LIMIT {

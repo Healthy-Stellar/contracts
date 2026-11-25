@@ -619,6 +619,7 @@ impl MedicalRegistry {
         treasury: Address,
         fee_token: Address,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(ContractError::AlreadyInitialized);
         }
@@ -647,6 +648,7 @@ impl MedicalRegistry {
     // =====================================================
 
     pub fn freeze_contract(env: Env) {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_admin(&env);
         env.storage().instance().set(&DataKey::Frozen, &true);
         env.events()
@@ -654,6 +656,7 @@ impl MedicalRegistry {
     }
 
     pub fn unfreeze_contract(env: Env) {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_admin(&env);
         env.storage().instance().set(&DataKey::Frozen, &false);
         env.events()
@@ -672,6 +675,7 @@ impl MedicalRegistry {
     // =====================================================
 
     pub fn set_record_fee(env: Env, amount: i128) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_not_frozen(&env);
         let admin: Address = env
             .storage()
@@ -694,6 +698,7 @@ impl MedicalRegistry {
     }
 
     pub fn publish_consent_version(env: Env, version_hash: BytesN<32>) {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_not_frozen(&env);
         let admin: Address = env
             .storage()
@@ -709,6 +714,7 @@ impl MedicalRegistry {
     }
 
     pub fn assign_guardian(env: Env, patient: Address, guardian: Address) {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_not_frozen(&env);
         let admin: Address = env
             .storage()
@@ -724,6 +730,7 @@ impl MedicalRegistry {
     }
 
     pub fn revoke_guardian(env: Env, patient: Address) {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_not_frozen(&env);
         let admin: Address = env
             .storage()
@@ -750,6 +757,7 @@ impl MedicalRegistry {
         caller: Address,
         version_hash: BytesN<32>,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_not_frozen(&env);
         require_patient_or_guardian(&env, &patient, &caller)?;
         let current: BytesN<32> = env
@@ -819,6 +827,7 @@ impl MedicalRegistry {
     /// Compute a salted commitment for patient identity (HIPAA §164.514(b) protection).
     /// `id_commitment = sha256(wallet || name || dob)`
     pub fn compute_id_commitment(env: &Env, wallet: &Address, name: &String, dob: u64) -> BytesN<32> {
+        ttl_config::extend_instance_ttl(env);
         let mut payload = Bytes::new(env);
         payload.append(&wallet.clone().to_xdr(env));
         payload.append(&name.clone().to_xdr(env));
@@ -828,6 +837,7 @@ impl MedicalRegistry {
 
     /// Verifies that a given name and date of birth match the on-chain salted commitment for `wallet`.
     pub fn verify_patient_identity(env: Env, wallet: Address, name: String, dob: u64) -> bool {
+        ttl_config::extend_instance_ttl(&env);
         let key = DataKey::Patient(wallet.clone());
         let data: PatientData = match env.storage().persistent().get(&key) {
             Some(d) => d,
@@ -845,6 +855,7 @@ impl MedicalRegistry {
         encrypted_metadata_ref: EncryptedEnvelopeRef,
         policy: PolicyMetadata,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_not_frozen(&env);
         wallet.require_auth();
         validate_encrypted_ref(&encrypted_metadata_ref)
@@ -899,6 +910,7 @@ impl MedicalRegistry {
         encrypted_metadata_ref: EncryptedEnvelopeRef,
         policy: PolicyMetadata,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_not_frozen(&env);
         wallet.require_auth();
         guardian.require_auth();
@@ -953,6 +965,7 @@ impl MedicalRegistry {
         encrypted_metadata_ref: EncryptedEnvelopeRef,
         policy: PolicyMetadata,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_not_frozen(&env);
         require_patient_or_guardian(&env, &wallet, &caller)?;
         Self::require_not_on_hold(&env, &wallet)?;
@@ -1011,6 +1024,7 @@ impl MedicalRegistry {
     /// - Records are retained (not deleted) and remain readable by the admin.
     /// - Emits a `pat_dreg` audit event.
     pub fn deregister_patient(env: Env, patient: Address) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         patient.require_auth();
 
         let key = DataKey::Patient(patient.clone());
@@ -1066,6 +1080,7 @@ impl MedicalRegistry {
 
     /// Reactivate a previously deregistered patient (admin-only).
     pub fn reactivate_patient(env: Env, patient: Address) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_admin(&env);
 
         let key = DataKey::Patient(patient.clone());
@@ -1120,6 +1135,7 @@ impl MedicalRegistry {
         env: Env,
         entries: Vec<BatchPatientEntry>,
     ) -> Result<Vec<BatchEntryStatus>, ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_not_frozen(&env);
         if entries.len() > MAX_BATCH_SIZE {
             return Err(ContractError::BatchTooLarge);
@@ -1189,6 +1205,7 @@ impl MedicalRegistry {
     /// Extend the TTL of all persistent storage entries for a patient.
     /// Pure state maintenance callable by the patient, admin, guardian, or any relayer.
     pub fn extend_patient_ttl(env: Env, patient: Address) {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_not_frozen(&env);
         Self::require_patient_exists(&env, &patient).unwrap_or_else(|e| panic_with_error!(&env, e));
         Self::bump_patient_keys(&env, &patient);
@@ -1200,6 +1217,7 @@ impl MedicalRegistry {
         reason_hash: BytesN<32>,
         expires_at: u64,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_not_frozen(&env);
         Self::require_admin(&env);
         Self::require_patient_exists(&env, &patient)?;
@@ -1230,6 +1248,7 @@ impl MedicalRegistry {
     }
 
     pub fn lift_hold(env: Env, patient: Address) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_not_frozen(&env);
         Self::require_admin(&env);
 
@@ -1266,6 +1285,7 @@ impl MedicalRegistry {
         specialization: String,
         certificate_hash: Bytes,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_not_frozen(&env);
         wallet.require_auth();
 
@@ -1305,6 +1325,7 @@ impl MedicalRegistry {
         wallet: Address,
         institution_wallet: Address,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_not_frozen(&env);
         institution_wallet.require_auth();
 
@@ -1343,6 +1364,7 @@ impl MedicalRegistry {
     // =====================================================
 
     pub fn register_institution(env: Env, institution_wallet: Address) {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_not_frozen(&env);
         institution_wallet.require_auth();
         let key = DataKey::Institution(institution_wallet);
@@ -1364,6 +1386,7 @@ impl MedicalRegistry {
         env: Env,
         provider_registry: Address,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_admin(&env);
         env.storage()
             .instance()
@@ -1382,6 +1405,7 @@ impl MedicalRegistry {
         doctor: Address,
         caller_nonce: u64,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_not_frozen(&env);
         require_patient_or_guardian(&env, &patient, &caller)?;
         Self::verify_and_increment_nonce(&env, &caller, caller_nonce)?;
@@ -1432,6 +1456,7 @@ impl MedicalRegistry {
         record_id: u64,
         fields: Vec<FieldPermission>,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_not_frozen(&env);
         patient.require_auth();
         Self::require_not_on_hold(&env, &patient)?;
@@ -1496,6 +1521,7 @@ impl MedicalRegistry {
         doctor: Address,
         caller_nonce: u64,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_not_frozen(&env);
         require_patient_or_guardian(&env, &patient, &caller)?;
         Self::verify_and_increment_nonce(&env, &caller, caller_nonce)?;
@@ -1581,6 +1607,7 @@ impl MedicalRegistry {
         policy: PolicyMetadata,
         doctor_nonce: u64,
     ) -> Result<u64, ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_not_frozen(&env);
         Self::require_patient_exists(&env, &patient)?;
         doctor.require_auth();
@@ -1988,6 +2015,7 @@ impl MedicalRegistry {
         record_id: u64,
         proof: Vec<BytesN<32>>,
     ) -> bool {
+        ttl_config::extend_instance_ttl(&env);
         if env.storage().persistent().has(&DataKey::DeletedRecord(record_id)) {
             return false;
         }
@@ -2067,6 +2095,7 @@ impl MedicalRegistry {
         leaf_hash: BytesN<32>,
         proof: Vec<BytesN<32>>,
     ) -> bool {
+        ttl_config::extend_instance_ttl(&env);
         let root = Self::get_merkle_root(env.clone(), patient.clone());
 
         let ids_key = DataKey::PatientRecordIds(patient);
@@ -2108,6 +2137,7 @@ impl MedicalRegistry {
         policy: PolicyMetadata,
         caller_nonce: u64,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_not_frozen(&env);
 
         let record_key = DataKey::MedicalRecord(record_id);
@@ -2342,6 +2372,7 @@ impl MedicalRegistry {
 
     /// Extend TTL for active patient record keys without changing record data.
     pub fn extend_record_ttl(env: Env, patient: Address) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_patient_exists(&env, &patient)?;
         Self::bump_patient_keys(&env, &patient);
 
@@ -2370,6 +2401,7 @@ impl MedicalRegistry {
         record_id: u64,
         cid_hash: BytesN<32>,
     ) -> Result<ArchivedRecordRef, ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         patient.require_auth();
         validate_nonzero_hash(&cid_hash).map_err(|_| ContractError::InvalidCID)?;
 
@@ -2479,6 +2511,7 @@ impl MedicalRegistry {
     /// 3. `snap_docs` — topics: `("snap_docs", ledger_sequence)`,
     ///    data: `Vec<Address>` of all registered doctor addresses.
     pub fn emit_state_snapshot(env: Env) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_not_frozen(&env);
         let admin: Address = env
             .storage()
@@ -2596,6 +2629,7 @@ impl MedicalRegistry {
         uses_remaining: u32,
         expires_at: u64,
     ) -> Result<BytesN<32>, ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         patient.require_auth();
 
         if uses_remaining == 0 {
@@ -2686,6 +2720,7 @@ impl MedicalRegistry {
         caller: Address,
         token: BytesN<32>,
     ) -> Result<MedicalRecord, ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         caller.require_auth();
 
         let link_key = DataKey::ShareLink(token.clone());
@@ -2762,6 +2797,7 @@ impl MedicalRegistry {
         patient: Address,
         token: BytesN<32>,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         patient.require_auth();
 
         let link_key = DataKey::ShareLink(token.clone());
@@ -2799,6 +2835,7 @@ impl MedicalRegistry {
 
     /// Create a one-hour export authorization ticket for a patient's data.
     pub fn request_data_export(env: Env, patient: Address) -> ExportTicket {
+        ttl_config::extend_instance_ttl(&env);
         patient.require_auth();
 
         let issued_at = env.ledger().timestamp();
@@ -2826,18 +2863,8 @@ impl MedicalRegistry {
     /// Validate a patient data export ticket and consume it (single use).
     /// Only tickets issued by `request_data_export` and not yet used are accepted.
     pub fn validate_export_ticket(env: Env, ticket: ExportTicket) -> bool {
-        let key = DataKey::ExportTicketRecord(ticket.nonce.clone());
-        let mut record: StoredExportTicket = match env.storage().persistent().get(&key) {
-            Some(record) => record,
-            None => return false,
-        };
-
-        if record.used
-            || env.ledger().timestamp() > record.expires_at
-            || record.patient != ticket.patient
-            || record.issued_at != ticket.issued_at
-            || record.expires_at != ticket.expires_at
-        {
+        ttl_config::extend_instance_ttl(&env);
+        if env.ledger().timestamp() > ticket.expires_at {
             return false;
         }
 
@@ -2861,6 +2888,7 @@ impl MedicalRegistry {
         record_id: u64,
         caller: Address,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_not_frozen(&env);
 
         let record_key = DataKey::MedicalRecord(record_id);
@@ -2983,6 +3011,7 @@ impl MedicalRegistry {
         description: String,
         correlation_id: Option<BytesN<32>>,
     ) -> u64 {
+        ttl_config::extend_instance_ttl(&env);
         reporter.require_auth();
         capture_incident(
             &env,
@@ -3016,6 +3045,7 @@ impl MedicalRegistry {
         patient: Address,
         class: RetentionClass,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         Self::require_not_frozen(&env);
         Self::require_admin(&env);
         Self::require_patient_exists(&env, &patient)?;

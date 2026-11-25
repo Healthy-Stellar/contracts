@@ -196,6 +196,7 @@ impl UpgradeGovernance {
     /// Runs atomically as part of contract creation and cannot be called again,
     /// so an attacker cannot front-run deployment with their own signer set.
     pub fn __constructor(env: Env, signers: Vec<Address>, threshold: u32) {
+        ttl_config::extend_instance_ttl(&env);
         if threshold == 0 || threshold as usize > signers.len() as usize {
             panic!("invalid threshold");
         }
@@ -218,6 +219,7 @@ impl UpgradeGovernance {
         artifact_metadata_hash: BytesN<32>,
         min_compatible_schema: u32,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
         proposer.require_auth();
         Self::assert_signer(&env, &proposer)?;
@@ -373,6 +375,7 @@ impl UpgradeGovernance {
     }
 
     pub fn vote_upgrade(env: Env, voter: Address, proposal_id: u64) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
         voter.require_auth();
         Self::assert_signer(&env, &voter)?;
@@ -420,7 +423,8 @@ impl UpgradeGovernance {
         Ok(())
     }
 
-    pub fn execute_upgrade(env: Env, caller: Address, proposal_id: u64) -> Result<(), Error> {
+    pub fn execute_upgrade(env: Env, proposal_id: u64) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
         caller.require_auth();
         Self::assert_signer(&env, &caller)?;
@@ -800,6 +804,7 @@ impl UpgradeGovernance {
     /// Persistently remove an expired proposal. Returns `Ok(())` so the storage
     /// removal is committed (an `Err` return would roll it back).
     pub fn prune_expired(env: Env, proposal_id: u64) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let proposal: UpgradeProposal = env
             .storage()
             .persistent()

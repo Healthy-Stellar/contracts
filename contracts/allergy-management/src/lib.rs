@@ -116,6 +116,7 @@ impl AllergyManagement {
         hospital_registry: Address,
         insurer_registry: Address,
     ) {
+        ttl_config::extend_instance_ttl(&env);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::PatientRegistry, &patient_registry);
         env.storage().instance().set(&DataKey::ProviderRegistry, &provider_registry);
@@ -133,6 +134,7 @@ impl AllergyManagement {
         provider_id: Address,
         request: RecordAllergyRequest,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         // Verify provider is registered
@@ -198,6 +200,7 @@ impl AllergyManagement {
     /// prescription-management) read access to a patient's allergy records.
     /// Authorized by the patient.
     pub fn grant_access(env: Env, patient_id: Address, provider_id: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
 
         storage::grant_access(&env, &patient_id, &provider_id);
@@ -214,6 +217,7 @@ impl AllergyManagement {
 
     /// Revoke a previously granted access. Authorized by the patient.
     pub fn revoke_access(env: Env, patient_id: Address, provider_id: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
 
         storage::revoke_access(&env, &patient_id, &provider_id);
@@ -240,6 +244,7 @@ impl AllergyManagement {
         requester: Address,
         drug_name: String,
     ) -> Result<Vec<AllergyInteraction>, Error> {
+        ttl_config::extend_instance_ttl(&env);
         requester.require_auth();
 
         if !env.storage().instance().has(&DataKey::Admin) {
@@ -318,6 +323,7 @@ impl AllergyManagement {
         severity_level: Symbol, // "low", "medium", "high", "critical"
         reporter: Address,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         reporter.require_auth();
 
         let severity = if severity_level == symbol_short!("critical") {
@@ -357,6 +363,7 @@ impl AllergyManagement {
         data: Bytes,
         reporter: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         reporter.require_auth();
         incident_tracking::attach_evidence(&env, incident_id, evidence_type, data, reporter);
         Ok(())
@@ -377,6 +384,7 @@ impl AllergyManagement {
         resolver: Address,
         resolution_notes: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         resolver.require_auth();
         incident_tracking::resolve_incident(&env, incident_id, resolver, resolution_notes);
         Ok(())
@@ -388,6 +396,7 @@ impl AllergyManagement {
         patient_id: Address,
         drug_name: String,
     ) -> Result<bool, Error> {
+        ttl_config::extend_instance_ttl(&env);
         let allergy_ids = storage::get_patient_allergies(&env, &patient_id);
         for allergy_id in allergy_ids.iter() {
             if let Ok(allergy) = storage::get_allergy(&env, allergy_id) {
@@ -463,6 +472,7 @@ impl AllergyManagement {
         patient_id: Address,
         provider_id: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
         storage::grant_access(&env, &patient_id, &provider_id);
         AccessGranted {
@@ -480,6 +490,7 @@ impl AllergyManagement {
         patient_id: Address,
         provider_id: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
         storage::revoke_access(&env, &patient_id, &provider_id);
         AccessRevoked {
@@ -497,6 +508,7 @@ impl AllergyManagement {
         patient_id: Address,
         requester: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         requester.require_auth();
         if requester != patient_id {
             let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
@@ -524,6 +536,7 @@ impl AllergyManagement {
         new_severity: Symbol,
         reason: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         if !Self::is_registered_provider(&env, &provider_id) {
@@ -570,6 +583,7 @@ impl AllergyManagement {
         provider_id: Address,
         resolution_reason: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         if !Self::is_registered_provider(&env, &provider_id) {
