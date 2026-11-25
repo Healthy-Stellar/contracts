@@ -184,6 +184,7 @@ impl LabManagementContract {
         patient_id: Address,
         req: OrderRequest,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         if !Self::is_provider_registered(&env, &provider_id) {
@@ -222,6 +223,7 @@ impl LabManagementContract {
     }
 
     pub fn assign_lab(env: Env, order_id: u64, lab_id: Address, _eta: u64) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let mut order: LabOrder = env
             .storage()
             .persistent()
@@ -251,6 +253,7 @@ impl LabManagementContract {
         results_summary: Vec<TestResult>,
         qc_passed: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         lab_id.require_auth();
 
         // VALIDATION PHASE: All validations must pass before any storage writes.

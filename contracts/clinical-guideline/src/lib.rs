@@ -2,28 +2,42 @@
 
 //! # Clinical Guideline Contract
 //!
-//! Provides evidence-based clinical decision support through guideline recommendations, dosage
-//! calculations, risk scoring, and care pathway recommendations.
+//! On-chain **registry** of versioned clinical guidelines (condition, criteria hash,
+//! recommendation hash, evidence level) managed by the admin, plus provider-created
+//! patient reminders.
+//!
+//! ## Decision support happens off-chain
+//!
+//! This contract deliberately does **not** compute clinical advice. Guideline
+//! evaluation, drug dosing, risk scoring (CHA₂DS₂-VASc, HEART, Wells, …), care
+//! pathways and preventive-care screening must be performed by a validated
+//! off-chain clinical decision-support system that resolves the registered
+//! guideline by id and checks its `criteria_hash` / `recommendation_hash` against
+//! the rule set it applies. Earlier placeholder entry points
+//! (`evaluate_guideline`, `calculate_drug_dosage`, `assess_risk_score`,
+//! `suggest_care_pathway`, `check_preventive_care`) returned hard-coded output that
+//! could be mistaken for real decision support, so they were removed. Any
+//! future on-chain calculator must be driven by versioned, admin-registered rule
+//! data (e.g. per-medication dosing rules with max single/daily dose and renal
+//! bands) and fail when the rule or required patient data is missing.
 //!
 //! ## HIPAA Compliance
 //!
 //! **Access Control Safeguards:** Authorization checks for guideline access. Provider-based access
 //! control to clinical recommendations. Query access restricted to authorized providers and clinicians.
 //!
-//! **Audit Controls:** Guideline recommendations include strength and evidence level for traceability.
-//! Risk scores documented with calculator type and interpretation. Care pathway recommendations tracked
-//! with clinical decision points for audit trails.
+//! **Audit Controls:** Guideline registrations and updates emit events with the evidence level and
+//! acting admin for traceability. Reminder creation emits an event naming patient and provider.
 //!
-//! **Data Retention Policy:** Guideline recommendations stored immutably for clinical reference.
-//! Risk score history retained with timestamps. Care pathway milestones tracked for longitudinal
-//! patient journey documentation.
+//! **Data Retention Policy:** Guideline metadata stored for clinical reference. Reminders retained
+//! with creation timestamps.
 //!
-//! **Encryption/Integrity:** Guideline evidence levels classified (e.g., A, B, C) for strength
-//! determination. Dosage recommendations include validation against renal function and monitoring
-//! requirements. Clinical decision data stored in contract state for integrity.
+//! **Encryption/Integrity:** Guideline criteria and recommendation content are referenced by hash so
+//! off-chain evaluators can verify they apply the registered version. Evidence levels classified
+//! (e.g., A, B, C).
 
 use soroban_sdk::{
-    Address, BytesN, Env, String, Symbol, Vec, contract, contracterror, contractimpl, contracttype,
+    Address, BytesN, Env, String, Symbol, contract, contracterror, contractimpl, contracttype,
     symbol_short,
 };
 
@@ -38,44 +52,6 @@ pub enum Error {
 }
 
 // --- Data Structures ---
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GuidelineRecommendation {
-    pub guideline_id: String,
-    pub applicable: bool,
-    pub recommendation: String,
-    pub strength: Symbol,
-    pub evidence_level: Symbol,
-    pub alternative_options: Vec<String>,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DosageRecommendation {
-    pub medication: String,
-    pub recommended_dose: String,
-    pub frequency: String,
-    pub route: Symbol,
-    pub duration: Option<u64>,
-    pub renal_adjustment: bool,
-    pub monitoring_required: Vec<String>,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RiskScore {
-    pub calculator: Symbol,
-    pub score: i32,
-    pub interpretation: String,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CarePathway {
-    pub condition: String,
-    pub steps: Vec<String>,
-}
-
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Reminder {
@@ -114,11 +90,13 @@ impl ClinicalGuidelineContract {
     /// Runs atomically as part of contract creation and cannot be called again,
     /// so an attacker cannot front-run deployment and elect themselves admin.
     pub fn __constructor(env: Env, admin: Address) {
+        ttl_config::extend_instance_ttl(&env);
         env.storage().instance().set(&DataKey::Admin, &admin);
     }
 
     /// Set the provider registry address for authorization checks.
     pub fn set_provider_registry(env: Env, provider_registry: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let admin: Address = env
             .storage()
             .instance()
@@ -140,6 +118,7 @@ impl ClinicalGuidelineContract {
         recommendation_hash: BytesN<32>,
         evidence_level: Symbol,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
 
         // Verify caller matches stored admin
@@ -184,6 +163,7 @@ impl ClinicalGuidelineContract {
         recommendation_hash: BytesN<32>,
         evidence_level: Symbol,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
 
         let stored_admin: Address = env
@@ -217,132 +197,6 @@ impl ClinicalGuidelineContract {
         Ok(())
     }
 
-    pub fn evaluate_guideline(
-        env: Env,
-        _patient_id: Address,
-        provider_id: Address,
-        guideline_id: String,
-        patient_data_hash: BytesN<32>,
-    ) -> Result<GuidelineRecommendation, Error> {
-        provider_id.require_auth();
-        if !Self::is_provider_registered(&env, &provider_id) {
-            return Err(Error::NotAuthorized);
-        }
-        let metadata: GuidelineMetadata = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Guideline(guideline_id.clone()))
-            .ok_or(Error::GuidelineNotFound)?;
-
-        let is_applicable = metadata.criteria_hash == patient_data_hash;
-
-        Ok(GuidelineRecommendation {
-            guideline_id,
-            applicable: is_applicable,
-            recommendation: String::from_str(&env, "Follow evidence-based recommendation"),
-            strength: Symbol::new(&env, "Strong"),
-            evidence_level: metadata.evidence_level,
-            alternative_options: Vec::new(&env),
-        })
-    }
-
-    pub fn calculate_drug_dosage(
-        env: Env,
-        _patient_id: Address,
-        provider_id: Address,
-        medication: String,
-        weight_dg: u32, // Decigrams (0.1g) to avoid f32
-        renal_function: Option<u32>,
-    ) -> Result<DosageRecommendation, Error> {
-        provider_id.require_auth();
-        if !Self::is_provider_registered(&env, &provider_id) {
-            return Err(Error::NotAuthorized);
-        }
-        let gfr = renal_function.unwrap_or(100);
-        let is_renal_impaired = gfr < 60;
-
-        // Example: 5mg per kg (1000g = 10000dg)
-        // dosage = (weight_dg / 10000) * 5
-        let mut dose_mg = (weight_dg as u64 * 5) / 10000;
-
-        // Reduce dose by 25% for renal impairment (GFR < 60)
-        if is_renal_impaired {
-            dose_mg = (dose_mg * 75) / 100;
-        }
-
-        // Build dose string: "XXmg" (simple numeric representation)
-        let dose_str = match dose_mg {
-            0 => String::from_str(&env, "0mg"),
-            1..=9 => {
-                let s = match dose_mg {
-                    1 => "1mg",
-                    2 => "2mg",
-                    3 => "3mg",
-                    4 => "4mg",
-                    5 => "5mg",
-                    6 => "6mg",
-                    7 => "7mg",
-                    8 => "8mg",
-                    9 => "9mg",
-                    _ => "0mg",
-                };
-                String::from_str(&env, s)
-            }
-            _ => String::from_str(&env, "10+mg"),
-        };
-
-        Ok(DosageRecommendation {
-            medication,
-            recommended_dose: dose_str,
-            frequency: String::from_str(&env, "TID"),
-            route: Symbol::new(&env, "Oral"),
-            duration: Some(604800), // 7 days in seconds
-            renal_adjustment: is_renal_impaired,
-            monitoring_required: Vec::new(&env),
-        })
-    }
-
-    pub fn assess_risk_score(
-        env: Env,
-        _patient_id: Address,
-        provider_id: Address,
-        risk_calculator: Symbol,
-        input_parameters: Vec<i32>,
-    ) -> Result<RiskScore, Error> {
-        provider_id.require_auth();
-        if !Self::is_provider_registered(&env, &provider_id) {
-            return Err(Error::NotAuthorized);
-        }
-        let mut total_score: i32 = 0;
-        for val in input_parameters.iter() {
-            total_score += val;
-        }
-        Ok(RiskScore {
-            calculator: risk_calculator,
-            score: total_score,
-            interpretation: String::from_str(&env, "Risk assessment complete"),
-        })
-    }
-
-    pub fn suggest_care_pathway(
-        env: Env,
-        _patient_id: Address,
-        provider_id: Address,
-        condition: String,
-        _current_treatment: Vec<String>,
-    ) -> Result<CarePathway, Error> {
-        provider_id.require_auth();
-        if !Self::is_provider_registered(&env, &provider_id) {
-            return Err(Error::NotAuthorized);
-        }
-        let mut steps = Vec::new(&env);
-        steps.push_back(String::from_str(&env, "Initial Diagnosis"));
-        steps.push_back(String::from_str(&env, "Standard Treatment"));
-        steps.push_back(String::from_str(&env, "Follow-up"));
-
-        Ok(CarePathway { condition, steps })
-    }
-
     pub fn create_reminder(
         env: Env,
         patient_id: Address,
@@ -351,6 +205,7 @@ impl ClinicalGuidelineContract {
         due_date: u64,
         _priority: Symbol,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         if !Self::is_provider_registered(&env, &provider_id) {
             return Err(Error::NotAuthorized);
@@ -402,30 +257,6 @@ impl ClinicalGuidelineContract {
             .persistent()
             .get(&DataKey::Reminder(patient_id, reminder_id))
             .ok_or(Error::GuidelineNotFound)
-    }
-
-    pub fn check_preventive_care(
-        env: Env,
-        _patient_id: Address,
-        provider_id: Address,
-        age: u32,
-        _gender: Symbol,
-        _risk_factors: Vec<Symbol>,
-    ) -> Result<Vec<Symbol>, Error> {
-        provider_id.require_auth();
-        if !Self::is_provider_registered(&env, &provider_id) {
-            return Err(Error::NotAuthorized);
-        }
-        let mut alerts = Vec::new(&env);
-
-        if age > 50 {
-            alerts.push_back(Symbol::new(&env, "Screening_A"));
-        }
-        if age > 20 {
-            alerts.push_back(Symbol::new(&env, "Regular_Checkup"));
-        }
-
-        Ok(alerts)
     }
 
     fn is_provider_registered(env: &Env, provider: &Address) -> bool {

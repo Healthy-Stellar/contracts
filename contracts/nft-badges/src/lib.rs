@@ -72,6 +72,7 @@ impl NftBadgesContract {
     /// Runs atomically as part of contract creation, so the deployer binds the
     /// admin address and no front-running `initialize` call is possible.
     pub fn __constructor(env: Env, admin: Address) {
+        ttl_config::extend_instance_ttl(&env);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::NextId, &1u64);
     }
@@ -86,6 +87,7 @@ impl NftBadgesContract {
         achievement:  String,
         metadata_uri: String,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env.storage().instance()
             .get(&DataKey::Admin)
@@ -145,6 +147,7 @@ impl NftBadgesContract {
     /// Revoke a previously minted badge. Restricted to the stored admin.
     /// The badge is flagged as revoked (with a reason) rather than deleted.
     pub fn revoke(env: Env, admin: Address, badge_id: u64, reason: String) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env.storage().instance()
             .get(&DataKey::Admin)
@@ -179,6 +182,7 @@ impl NftBadgesContract {
     }
 
     pub fn badges_of(env: Env, owner: Address) -> Vec<u64> {
+        ttl_config::extend_instance_ttl(&env);
         env.storage().persistent()
             .get(&DataKey::OwnerBadges(owner))
             .unwrap_or_else(|| Vec::new(&env))

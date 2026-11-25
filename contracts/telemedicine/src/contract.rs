@@ -73,14 +73,9 @@ impl TelemedicineContract {
         Ok(())
     }
 
-    /// Initialize the telemedicine contract with an admin.
-    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
-        admin.require_auth();
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::NotAuthorized);
-        }
+    /// Set the telemedicine admin at deployment.
+    pub fn __constructor(env: Env, admin: Address) {
         env.storage().instance().set(&DataKey::Admin, &admin);
-        Ok(())
     }
 
     /// Set the rate limit configuration. Callable by the stored admin.
@@ -90,6 +85,7 @@ impl TelemedicineContract {
         max_sessions_per_window: u32,
         window_duration_secs: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -122,6 +118,7 @@ impl TelemedicineContract {
         consent_obtained: bool,
         recording_consent: bool,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
 
         // Verify provider is actively registered in the provider-registry.
@@ -193,6 +190,7 @@ impl TelemedicineContract {
         provider_id: Address,
         recording_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let visit_key = DataKey::VirtualVisit(visit_id);
@@ -230,6 +228,7 @@ impl TelemedicineContract {
         patient_location_state: String,
         provider_state: String,
     ) -> Result<BytesN<32>, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         // Check rate limit: max sessions per provider per window
@@ -310,6 +309,7 @@ impl TelemedicineContract {
         caller: Address,
         token: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         caller.require_auth();
 
         let session_key = DataKey::Session(visit_id);
@@ -349,6 +349,7 @@ impl TelemedicineContract {
         assessment: String,
         plan: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let visit_key = DataKey::VirtualVisit(visit_id);
@@ -378,6 +379,7 @@ impl TelemedicineContract {
         session_end_time: u64,
         session_duration: u32,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let visit_key = DataKey::VirtualVisit(visit_id);
@@ -416,6 +418,7 @@ impl TelemedicineContract {
         patient_state: String,
         provider_state: String,
     ) -> Result<EligibilityResult, Error> {
+        ttl_config::extend_instance_ttl(&env);
         let now = env.ledger().timestamp();
 
         // 1. Look up the provider's license for the patient's jurisdiction (where care is delivered).
@@ -508,6 +511,7 @@ impl TelemedicineContract {
         license_number: String,
         valid_until: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         // Verify `admin` is the stored credentialing authority before requiring
         // signatures, so a self-attestation attempt (admin == provider_id) is
         // rejected with a typed error rather than a duplicate-auth host abort.
@@ -546,6 +550,7 @@ impl TelemedicineContract {
         allows_compact: bool,
         compact_members: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -576,6 +581,7 @@ impl TelemedicineContract {
         issue_description: String,
         resolution: Option<String>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         reporter.require_auth();
 
         let visit_key = DataKey::VirtualVisit(visit_id);
@@ -605,6 +611,7 @@ impl TelemedicineContract {
         patient_id: Address,
         prescription_details: PrescriptionRequest,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let visit_key = DataKey::VirtualVisit(visit_id);
@@ -691,6 +698,7 @@ impl TelemedicineContract {
         jurisdiction: String,
         requires_inperson: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
