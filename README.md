@@ -402,5 +402,11 @@ cargo test --test integration_tests
 <!-- handsoff-issue-1053 -->
 - #1053: [patient-vitals] get_raw_window_page and get_aggregate_page return raw PHI with no authentication — they bypass the auth in get_vital_trends
 
-<!-- handsoff-issue-1064 -->
-- #1064: [allergy-tracking] Any registered provider can record, downgrade, resolve, verify or soft-delete allergies for any patient — no treating-relationship check
+<!-- handsoff-issue-1091 -->
+- #1091: [mental-health] A "high" suicide-risk assessment can never be saved once an emergency contract is configured — swapped add_critical_alert arguments make every escalation f
+
+<!-- handsoff-issue-1092 -->
+- #1092: [nutrition-care-management] order_therapeutic_diet calls a get_patient_active_prescriptions that prescription-management doesn't have — every diet order traps once the int
+
+<!-- handsoff-issue-1093 -->
+- #1093: [workspace] Cleanup writes and alert events placed right before `return Err(...)` are rolled back, in 6 more places (same bug class as #925 / #947 / #982)
