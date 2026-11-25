@@ -134,6 +134,10 @@ pub enum DataKey {
     /// Per-caller nonce for replay attack protection: (caller) -> u64
     CallerNonce(Address),
     ProviderHospital(Address, Address),
+    /// External contract authorised to update `active` (e.g. credentialing committee).
+    TrustedAuthority(Address),
+    /// Historical credential anchors for a provider (append-only).
+    CredentialHistory(Address),
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -221,27 +225,21 @@ impl ProviderRegistry {
             Some(p) => p,
             None => return false,
         };
-        if !profile.active {
-            return false;
-        }
-        if profile.credential.revoked_at.is_some() {
-            return false;
-        }
-        if profile.credential.expires_at != 0
-            && env.ledger().timestamp() >= profile.credential.expires_at
-        {
-            return false;
-        }
-        true
+        Self::is_active(&profile, env.ledger().timestamp())
     }
 
-    pub fn register_provider(
+    /// Alias kept for consumers that call `is_provider`. Delegates to the same
+    /// internal predicate so both entry points always agree.
+    pub fn is_provider(env: Env, provider: Address) -> bool {
+        Self::is_active_provider(env, provider)
+    }
+
+    /// Renew an expired credential. The provider must authenticate. The new
+    /// `expires_at` must be in the future. The previous anchor is appended to
+    /// the credential history before being replaced.
+    pub fn renew_credential(
         env: Env,
-        admin: Address,
         provider: Address,
-        name: String,
-        specialty: String,
-        license_number: String,
         credential_hash: BytesN<32>,
         issuer: Address,
         attestation_hash: BytesN<32>,
@@ -250,144 +248,154 @@ impl ProviderRegistry {
     ) -> Result<(), Error> {
         ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
-        validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&issuer).map_err(|_| Error::InvalidAddress)?;
-        Self::assert_admin(&env, &admin)?;
-        if expires_at <= env.ledger().timestamp() {
+        provider.require_auth();
+
+        let now = env.ledger().timestamp();
+        if expires_at <= now {
             return Err(Error::CredentialExpired);
         }
+
         let key = DataKey::Provider(provider.clone());
-        if env.storage().persistent().has(&key) {
-            return Err(Error::AlreadyExists);
-        }
-        let profile = ProviderProfile {
-            name,
-            specialty,
-            license_number,
-            credential: CredentialAnchor {
-                credential_hash,
-                issuer,
-                attestation_hash,
-                expires_at,
-                revocation_reference,
-                revoked_at: None,
-            },
-            active: true,
+        let mut profile: ProviderProfile = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::NotAProvider)?;
+
+        // Append the previous anchor to history before replacing it.
+        let hist_key = DataKey::CredentialHistory(provider.clone());
+        let mut history: Vec<CredentialAnchor> = env
+            .storage()
+            .persistent()
+            .get(&hist_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        history.push_back(profile.credential.clone());
+        env.storage().persistent().set(&hist_key, &history);
+
+        profile.credential = CredentialAnchor {
+            credential_hash,
+            issuer,
+            attestation_hash,
+            expires_at,
+            revocation_reference,
+            revoked_at: None,
         };
         env.storage().persistent().set(&key, &profile);
-        env.events()
-            .publish((symbol_short!("reg_prov"), provider), symbol_short!("ok"));
-        Ok(())
-    }
-
-    /// Register multiple providers in one transaction.
-    ///
-    /// Returns a `Vec<BatchEntryStatus>` aligned 1-to-1 with `entries`.
-    /// Already-registered providers produce `AlreadyExists` (no overwrite).
-    /// Enforces `MAX_BATCH_SIZE`; returns `BatchTooLarge` if exceeded.
-    pub fn batch_register_providers(
-        env: Env,
-        admin: Address,
-        entries: Vec<BatchProviderEntry>,
-    ) -> Result<Vec<BatchEntryStatus>, Error> {
-        ttl_config::extend_instance_ttl(&env);
-        Self::assert_initialized(&env)?;
-        Self::assert_admin(&env, &admin)?;
-
-        if entries.len() > MAX_BATCH_SIZE {
-            return Err(Error::BatchTooLarge);
-        }
-
-        let mut results: Vec<BatchEntryStatus> = Vec::new(&env);
-
-        for entry in entries.iter() {
-            if validate_nonzero_address(&entry.provider).is_err()
-                || validate_nonzero_address(&entry.issuer).is_err()
-            {
-                results.push_back(BatchEntryStatus::InvalidAddress);
-                continue;
-            }
-
-            if entry.expires_at <= env.ledger().timestamp() {
-                results.push_back(BatchEntryStatus::CredentialExpired);
-                continue;
-            }
-
-            let key = DataKey::Provider(entry.provider.clone());
-            if env.storage().persistent().has(&key) {
-                results.push_back(BatchEntryStatus::AlreadyExists);
-                continue;
-            }
-
-            let profile = ProviderProfile {
-                name: entry.name.clone(),
-                specialty: entry.specialty.clone(),
-                license_number: entry.license_number.clone(),
-                credential: CredentialAnchor {
-                    credential_hash: entry.credential_hash.clone(),
-                    issuer: entry.issuer.clone(),
-                    attestation_hash: entry.attestation_hash.clone(),
-                    expires_at: entry.expires_at,
-                    revocation_reference: entry.revocation_reference.clone(),
-                    revoked_at: None,
-                },
-                active: true,
-            };
-            env.storage().persistent().set(&key, &profile);
-            results.push_back(BatchEntryStatus::Success);
-        }
-
-        Ok(results)
-    }
-
-    // ── Internal helpers ──────────────────────────────────────────────────────
-
-        env.events()
-            .publish((symbol_short!("react_pr"), provider), symbol_short!("ok"));
-        Ok(())
-    }
-
-    pub fn is_provider(env: Env, provider: Address) -> bool {
-        Self::is_provider_active(&env, &provider)
-    }
-
-    pub fn set_provider_hospital(
-        env: Env,
-        admin: Address,
-        provider: Address,
-        hospital: Address,
-        affiliated: bool,
-    ) -> Result<(), Error> {
-        Self::assert_initialized(&env)?;
-        validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
-        validate_nonzero_address(&hospital).map_err(|_| Error::InvalidAddress)?;
-        Self::assert_admin(&env, &admin)?;
-        if affiliated && !Self::is_provider_active(&env, &provider) {
-            return Err(Error::NotAProvider);
-        }
-
-        env.storage().persistent().set(
-            &DataKey::ProviderHospital(provider.clone(), hospital.clone()),
-            &affiliated,
+        env.events().publish(
+            (symbol_short!("renew_cred"), provider),
+            expires_at,
         );
         Ok(())
     }
 
-    pub fn is_provider_affiliated(env: Env, provider: Address, hospital: Address) -> bool {
-        Self::is_provider_active(&env, &provider)
-            && env
-                .storage()
-                .persistent()
-                .get(&DataKey::ProviderHospital(provider, hospital))
-                .unwrap_or(false)
+    /// Return the historical credential anchors for a provider.
+    pub fn get_credential_history(env: Env, provider: Address) -> Vec<CredentialAnchor> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::CredentialHistory(provider))
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
-    fn is_provider_active(env: &Env, provider: &Address) -> bool {
-        if let Some(profile) = env.storage().persistent().get::<DataKey, ProviderProfile>(&DataKey::Provider(provider.clone())) {
-            profile.active && profile.credential.revoked_at.is_none() && profile.credential.expires_at > env.ledger().timestamp()
+    /// Reactivate a previously deactivated provider. Admin or trusted authority only.
+    pub fn reactivate_provider(
+        env: Env,
+        caller: Address,
+        provider: Address,
+    ) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        validate_nonzero_address(&caller).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
+        caller.require_auth();
+        Self::assert_admin_or_trusted(&env, &caller)?;
+
+        let key = DataKey::Provider(provider.clone());
+        let mut profile: ProviderProfile = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::NotAProvider)?;
+        profile.active = true;
+        env.storage().persistent().set(&key, &profile);
+        env.events().publish(
+            (symbol_short!("react_pr"), provider),
+            true,
+        );
+        Ok(())
+    }
+
+    /// Revoke a provider's credential. Admin or trusted authority only. Marks the
+    /// credential as revoked and deactivates the provider.
+    pub fn revoke_credential(
+        env: Env,
+        caller: Address,
+        provider: Address,
+    ) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        validate_nonzero_address(&caller).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
+        caller.require_auth();
+        Self::assert_admin_or_trusted(&env, &caller)?;
+
+        let now = env.ledger().timestamp();
+        let key = DataKey::Provider(provider.clone());
+        let mut profile: ProviderProfile = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::NotAProvider)?;
+        profile.credential.revoked_at = Some(now);
+        profile.active = false;
+        env.storage().persistent().set(&key, &profile);
+        env.events().publish(
+            (symbol_short!("revoke_cr"), provider),
+            now,
+        );
+        Ok(())
+    }
+
+    // ── Internal helpers ──────────────────────────────────────────────────────
+
+    /// Single internal "is active" predicate shared by `is_active_provider` and
+    /// `is_provider`. A credential with `expires_at == 0` is treated as invalid
+    /// (never active), matching `register_provider` which rejects `expires_at <= now`.
+    fn is_active(profile: &ProviderProfile, now: u64) -> bool {
+        if !profile.active {
+            return false;
+        }
+        if profile.credential.revoked_at.is_some() {
+            return false;
+        }
+        if profile.credential.expires_at == 0 {
+            return false;
+        }
+        profile.credential.expires_at > now
+    }
+
+    fn assert_initialized(env: &Env) -> Result<(), Error> {
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::Initialized)
+            .unwrap_or(false)
+        {
+            Ok(())
         } else {
             Err(Error::NotInitialized)
+        }
+    }
+
+    fn assert_not_initialized(env: &Env) -> Result<(), Error> {
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::Initialized)
+            .unwrap_or(false)
+        {
+            Err(Error::AlreadyInitialized)
+        } else {
+            Ok(())
         }
     }
 
@@ -397,11 +405,11 @@ impl ProviderRegistry {
             .persistent()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
-        if &admin != caller {
-            return Err(Error::Unauthorized);
+        if &admin == caller {
+            Ok(())
+        } else {
+            Err(Error::Unauthorized)
         }
-        caller.require_auth();
-        Ok(())
     }
 
     fn assert_admin_or_trusted(env: &Env, caller: &Address) -> Result<(), Error> {
@@ -413,13 +421,15 @@ impl ProviderRegistry {
         if &admin == caller {
             return Ok(());
         }
-        if env
+        let trusted: bool = env
             .storage()
             .persistent()
-            .has(&DataKey::TrustedAuthority(caller.clone()))
-        {
-            return Ok(());
+            .get(&DataKey::TrustedAuthority(caller.clone()))
+            .unwrap_or(false);
+        if trusted {
+            Ok(())
+        } else {
+            Err(Error::Unauthorized)
         }
-        Err(Error::Unauthorized)
     }
 }

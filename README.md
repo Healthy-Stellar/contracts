@@ -399,5 +399,8 @@ cargo test --test integration_tests
 <!-- handsoff-issue-988 -->
 - #988: [healthcare-credentialing] verify_credential counts repeated verifications of one credential type — a single verifier can push a case to committee review
 
-<!-- handsoff-issue-1054 -->
-- #1054: [patient-vitals] Caller-supplied measurement_time drives the alert cooldown — one future-dated reading silences all threshold alerts for that vital
+<!-- handsoff-issue-1053 -->
+- #1053: [patient-vitals] get_raw_window_page and get_aggregate_page return raw PHI with no authentication — they bypass the auth in get_vital_trends
+
+<!-- handsoff-issue-1089 -->
+- #1089: [imaging-radiology] #987 not fixed — registry and access-control addresses are still caller arguments, and the methods it calls (is_registered / is_credentialed) exist in 
