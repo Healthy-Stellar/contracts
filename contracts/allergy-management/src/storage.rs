@@ -1,7 +1,7 @@
 use soroban_sdk::{Address, Env, String, Symbol, Vec};
 use ttl_config::{extend_critical_ttl_if_exists, extend_critical_ttl};
 
-use crate::{AllergyRecord, DataKey, Error};
+use crate::{AllergyRecord, DataKey, EncryptedEnvelopeRef, Error};
 
 /// Get the next allergy ID and increment counter
 pub fn get_next_allergy_id(env: &Env) -> u64 {
@@ -65,11 +65,33 @@ pub fn get_patient_allergies(env: &Env, patient_id: &Address) -> Vec<u64> {
         .unwrap_or(Vec::new(env))
 }
 
-/// Check if a patient already has a specific allergy recorded
+/// Remove all allergy records and the patient's allergy index (used during deregistration)
+pub fn remove_patient_allergies(env: &Env, patient_id: &Address) {
+    let key = DataKey::PatientAllergies(patient_id.clone());
+    let allergy_ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(Vec::new(env));
+
+    for allergy_id in allergy_ids.iter() {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Allergy(allergy_id));
+    }
+
+    env.storage().persistent().remove(&key);
+}
+
+/// Check if a patient already has a specific allergy recorded.
+///
+/// Because the allergen is stored as an encrypted envelope, duplicate detection
+/// compares the envelope reference (which is deterministic for the same
+/// plaintext under the same key) rather than the plaintext allergen name.
 pub fn check_duplicate_allergy(
     env: &Env,
     patient_id: &Address,
-    allergen: &String,
+    allergen: &EncryptedEnvelopeRef,
     allergen_type: &Symbol,
 ) -> bool {
     let allergy_ids = get_patient_allergies(env, patient_id);
@@ -149,6 +171,11 @@ pub fn remove_all_access_grants(env: &Env, patient_id: &Address) {
         env.storage().persistent().remove(&key);
     }
     env.storage().persistent().remove(&index_key);
+}
+
+/// Alias for `remove_all_access_grants` kept for the deregistration path.
+pub fn clear_access_grants(env: &Env, patient_id: &Address) {
+    remove_all_access_grants(env, patient_id);
 }
 
 /// Check if a requester has access to patient allergies

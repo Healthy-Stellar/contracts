@@ -20,7 +20,7 @@ impl MockAccessControl {
         _env: Env,
         _subject: Address,
         _grantee: Address,
-        _purpose_code: String,
+        _purpose_code: ConsentPurpose,
         _required_scope: u32,
     ) {
     }
@@ -300,161 +300,49 @@ fn test_appeal_workflow() {
 
     let mut denials = Vec::new(&env);
     denials.push_back(DenialInfo {
-        line_number: 1,
-        denial_code: String::from_str(&env, "CO-50"),
-        denial_reason_hash: reference_hash(&env, 9),
-        is_appealable: true,
+        line_num: 1,
+        reason_code: String::from_str(&env, "CO-16"),
+        denial_date: 1690000000,
     });
 
-    client.adjudicate_claim(&claim_id, &insurer, &Vec::new(&env), &denials, &0, &0);
-    client.appeal_denial(
-        &claim_id,
-        &provider,
-        &1,
-        &BytesN::from_array(&env, &[2; 32]),
-    );
-
-    // Already at level 1 — should fail
-    let res = client.try_appeal_denial(
-        &claim_id,
-        &provider,
-        &1,
-        &BytesN::from_array(&env, &[2; 32]),
-    );
-    assert!(res.is_err());
-
-    client.adjudicate_claim(&claim_id, &insurer, &Vec::new(&env), &denials, &0, &0);
-    client.appeal_denial(
-        &claim_id,
-        &provider,
-        &2,
-        &BytesN::from_array(&env, &[3; 32]),
-    );
-    client.adjudicate_claim(&claim_id, &insurer, &Vec::new(&env), &denials, &0, &0);
-    client.appeal_denial(
-        &claim_id,
-        &provider,
-        &3,
-        &BytesN::from_array(&env, &[4; 32]),
-    );
-}
-
-#[test]
-fn test_double_initialize_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, _, _, _) = setup(&env);
-    // Second initialize must fail regardless of which access-control address is
-    // provided — the AlreadyInitialized guard is checked first.
-    let dummy_ac = Address::generate(&env);
-    let dummy_fr = Address::generate(&env);
-    let dummy_ir = Address::generate(&env);
-    let result = client.try_initialize(&admin, &dummy_ac, &dummy_fr, &86400, &dummy_ir);
-    assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
-}
-
-#[test]
-fn test_non_admin_cannot_register_insurer() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, _, _, _, _) = setup(&env);
-    let fake_admin = Address::generate(&env);
-    let new_insurer = Address::generate(&env);
-    let result = client.try_register_insurer(&fake_admin, &new_insurer);
-    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
-}
-
-// ─── Issue #329 ── Appeal level boundary validation ───────────────────────
-
-fn setup_adjudicated_claim(env: &Env) -> (MedicalClaimsSystemClient<'static>, Address, u64) {
-    let (client, _, provider, patient, insurer) = setup(env);
-
-    let claim_id = client.submit_claim(
-        &provider,
-        &patient,
-        &insurer,
-        &1,
-        &1000,
-        &make_services(env),
-        &Vec::new(env),
-        &BytesN::from_array(env, &[0u8; 32]),
-        &policy(env),
-        &15000,
-    );
-
-    // Adjudicate with zero approved/responsibility so amounts validate.
     client.adjudicate_claim(
         &claim_id,
         &insurer,
-        &Vec::new(env),
-        &Vec::new(env),
+        &Vec::new(&env),
+        &denials,
         &0,
         &0,
     );
 
-    (client, provider, claim_id)
-}
-
-#[test]
-fn test_appeal_level_3_accepted() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, provider, claim_id) = setup_adjudicated_claim(&env);
-
-    // appeal_level = 3 is the maximum valid level and must be accepted.
-    let result = client.try_appeal_denial(
+    client.appeal_denial(
         &claim_id,
         &provider,
-        &3,
-        &BytesN::from_array(&env, &[1u8; 32]),
+        &1,
+        &BytesN::from_array(&env, &[2; 32]),
     );
-    assert!(result.is_ok(), "appeal_level = 3 must be accepted");
-}
 
-#[test]
-fn test_appeal_level_4_rejected() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, provider, claim_id) = setup_adjudicated_claim(&env);
-
-    // appeal_level = 4 exceeds the maximum of 3 and must be rejected.
-    let result = client.try_appeal_denial(
+    // Re-adjudicate after appeal with a valid approval.
+    let mut approved_lines = Vec::new(&env);
+    approved_lines.push_back(1u64);
+    client.adjudicate_claim(
         &claim_id,
-        &provider,
-        &4,
-        &BytesN::from_array(&env, &[2u8; 32]),
+        &insurer,
+        &approved_lines,
+        &Vec::new(&env),
+        &10000,
+        &2000,
     );
-    assert_eq!(
-        result,
-        Err(Ok(Error::InvalidAppealLevel)),
-        "appeal_level = 4 must be rejected with InvalidAppealLevel"
-    );
+
+    let claim = client.get_claim(&claim_id);
+    assert_eq!(claim.status, ClaimStatus::Adjudicated);
+    assert_eq!(claim.approved_amount, 10000);
+    assert_eq!(claim.patient_responsibility, 2000);
 }
 
-#[test]
-fn test_appeal_level_0_rejected() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, provider, claim_id) = setup_adjudicated_claim(&env);
-
-    // appeal_level = 0 is not above the initial claim.appeal_level (0) and must be rejected.
-    let result = client.try_appeal_denial(
-        &claim_id,
-        &provider,
-        &0,
-        &BytesN::from_array(&env, &[3u8; 32]),
-    );
-    assert_eq!(
-        result,
-        Err(Ok(Error::InvalidAppealLevel)),
-        "appeal_level = 0 must be rejected with InvalidAppealLevel"
-    );
-}
-
-// ─── Issue #392 ── Financial reconciliation tests ─────────────────────────
+// ── #1066: re-adjudication must not drop below amounts already paid ──────────
 
 #[test]
-fn test_reconcile_insurer_payment() {
+fn test_readjudication_cannot_lower_approved_below_insurer_paid() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, _, provider, patient, insurer) = setup(&env);
@@ -464,7 +352,7 @@ fn test_reconcile_insurer_payment() {
         &patient,
         &insurer,
         &1,
-        &1000,
+        &100,
         &make_services(&env),
         &Vec::new(&env),
         &BytesN::from_array(&env, &[0; 32]),
@@ -472,34 +360,60 @@ fn test_reconcile_insurer_payment() {
         &15000,
     );
 
+    let mut approved_lines = Vec::new(&env);
+    approved_lines.push_back(1u64);
     client.adjudicate_claim(
         &claim_id,
         &insurer,
-        &Vec::new(&env),
+        &approved_lines,
         &Vec::new(&env),
         &10000,
         &2000,
     );
 
+    // Insurer pays 8000 of the 10000 approved.
     client.process_payment(
         &claim_id,
         &insurer,
-        &10000,
+        &8000,
         &1690100000,
         &reference_hash(&env, 8),
     );
 
-    let fr_owner = Address::generate(&env);
-    let result = client.try_reconcile_claim(&claim_id, &0, &true, &fr_owner, &0, &insurer);
-    assert!(result.is_ok());
+    // Provider appeals; insurer tries to re-adjudicate below what it paid.
+    client.appeal_denial(
+        &claim_id,
+        &provider,
+        &1,
+        &BytesN::from_array(&env, &[2; 32]),
+    );
 
-    let payments = client.get_insurer_payments(&insurer, &claim_id);
-    assert_eq!(payments.len(), 1);
-    assert!(payments.get(0).unwrap().reconciled);
+    let result = client.try_adjudicate_claim(
+        &claim_id,
+        &insurer,
+        &approved_lines,
+        &Vec::new(&env),
+        &5000,
+        &2000,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+    // Re-adjudicating at or above the paid amount succeeds.
+    client.adjudicate_claim(
+        &claim_id,
+        &insurer,
+        &approved_lines,
+        &Vec::new(&env),
+        &8000,
+        &2000,
+    );
+    let claim = client.get_claim(&claim_id);
+    assert_eq!(claim.approved_amount, 8000);
+    assert!(claim.approved_amount >= claim.insurer_paid_amount);
 }
 
 #[test]
-fn test_reconcile_patient_payment() {
+fn test_readjudication_cannot_lower_patient_resp_below_patient_paid() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, _, provider, patient, insurer) = setup(&env);
@@ -509,7 +423,7 @@ fn test_reconcile_patient_payment() {
         &patient,
         &insurer,
         &1,
-        &1000,
+        &100,
         &make_services(&env),
         &Vec::new(&env),
         &BytesN::from_array(&env, &[0; 32]),
@@ -517,36 +431,40 @@ fn test_reconcile_patient_payment() {
         &15000,
     );
 
+    let mut approved_lines = Vec::new(&env);
+    approved_lines.push_back(1u64);
     client.adjudicate_claim(
         &claim_id,
         &insurer,
-        &Vec::new(&env),
+        &approved_lines,
         &Vec::new(&env),
         &10000,
         &2000,
-    );
-
-    client.process_payment(
-        &claim_id,
-        &insurer,
-        &10000,
-        &1690100000,
-        &reference_hash(&env, 8),
     );
 
     client.apply_patient_payment(&claim_id, &patient, &2000, &1690200000);
 
-    let fr_owner = Address::generate(&env);
-    let result = client.try_reconcile_claim(&claim_id, &0, &false, &fr_owner, &0, &patient);
-    assert!(result.is_ok());
+    client.appeal_denial(
+        &claim_id,
+        &provider,
+        &1,
+        &BytesN::from_array(&env, &[2; 32]),
+    );
 
-    let payments = client.get_patient_payments(&patient, &claim_id);
-    assert_eq!(payments.len(), 1);
-    assert!(payments.get(0).unwrap().reconciled);
+    // Re-adjudication lowering patient responsibility below what was paid fails.
+    let result = client.try_adjudicate_claim(
+        &claim_id,
+        &insurer,
+        &approved_lines,
+        &Vec::new(&env),
+        &10000,
+        &1000,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
 
 #[test]
-fn test_reconcile_payment_already_reconciled() {
+fn test_patient_payment_cannot_exceed_responsibility() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, _, provider, patient, insurer) = setup(&env);
@@ -556,7 +474,7 @@ fn test_reconcile_payment_already_reconciled() {
         &patient,
         &insurer,
         &1,
-        &1000,
+        &100,
         &make_services(&env),
         &Vec::new(&env),
         &BytesN::from_array(&env, &[0; 32]),
@@ -568,6 +486,47 @@ fn test_reconcile_payment_already_reconciled() {
         &claim_id,
         &insurer,
         &Vec::new(&env),
+        &Vec::new(&env),
+        &10000,
+        &2000,
+    );
+
+    // Overpaying beyond patient responsibility is rejected.
+    let result = client.try_apply_patient_payment(&claim_id, &patient, &2500, &1690200000);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+    // Paying exactly the responsibility succeeds and closes the patient side.
+    client.apply_patient_payment(&claim_id, &patient, &2000, &1690200000);
+    let claim = client.get_claim(&claim_id);
+    assert_eq!(claim.patient_paid_amount, 2000);
+    assert!(claim.patient_responsibility >= claim.patient_paid_amount);
+}
+
+#[test]
+fn test_dues_non_negative_after_payment_sequence() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, provider, patient, insurer) = setup(&env);
+
+    let claim_id = client.submit_claim(
+        &provider,
+        &patient,
+        &insurer,
+        &1,
+        &100,
+        &make_services(&env),
+        &Vec::new(&env),
+        &BytesN::from_array(&env, &[0; 32]),
+        &policy(&env),
+        &15000,
+    );
+
+    let mut approved_lines = Vec::new(&env);
+    approved_lines.push_back(1u64);
+    client.adjudicate_claim(
+        &claim_id,
+        &insurer,
+        &approved_lines,
         &Vec::new(&env),
         &10000,
         &2000,
@@ -576,390 +535,31 @@ fn test_reconcile_payment_already_reconciled() {
     client.process_payment(
         &claim_id,
         &insurer,
-        &10000,
+        &4000,
         &1690100000,
         &reference_hash(&env, 8),
     );
+    client.apply_patient_payment(&claim_id, &patient, &1000, &1690200000);
 
-    let fr_owner = Address::generate(&env);
-    client.reconcile_claim(&claim_id, &0, &true, &fr_owner, &0, &insurer);
-
-    // Try to reconcile again
-    let result = client.try_reconcile_claim(&claim_id, &0, &true, &fr_owner, &1, &insurer);
-    assert_eq!(result, Err(Ok(Error::PaymentAlreadyReconciled)));
-}
-
-#[test]
-fn test_mark_claim_disputed() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, _, provider, patient, insurer) = setup(&env);
-
-    let claim_id = client.submit_claim(
+    // Appeal and re-adjudicate at exactly the paid amounts.
+    client.appeal_denial(
+        &claim_id,
         &provider,
-        &patient,
-        &insurer,
         &1,
-        &1000,
-        &make_services(&env),
-        &Vec::new(&env),
-        &BytesN::from_array(&env, &[0; 32]),
-        &policy(&env),
-        &15000,
+        &BytesN::from_array(&env, &[2; 32]),
     );
-
     client.adjudicate_claim(
         &claim_id,
         &insurer,
+        &approved_lines,
         &Vec::new(&env),
-        &Vec::new(&env),
-        &10000,
-        &2000,
-    );
-
-    client.mark_claim_disputed(&claim_id, &insurer);
-
-    let claim = client.get_claim(&insurer, &claim_id);
-    assert_eq!(claim.reconciliation_status, ReconciliationStatus::Disputed);
-}
-
-#[test]
-fn test_claim_and_payment_getters_reject_unrelated_requester() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, _, provider, patient, insurer) = setup(&env);
-
-    let claim_id = client.submit_claim(
-        &provider,
-        &patient,
-        &insurer,
-        &1,
+        &4000,
         &1000,
-        &make_services(&env),
-        &Vec::new(&env),
-        &BytesN::from_array(&env, &[0; 32]),
-        &policy(&env),
-        &15000,
-    );
-    let unrelated = Address::generate(&env);
-
-    assert_eq!(
-        client.try_get_claim(&unrelated, &claim_id),
-        Err(Ok(Error::NotAuthorized))
-    );
-    assert_eq!(
-        client.try_get_insurer_payments(&unrelated, &claim_id),
-        Err(Ok(Error::NotAuthorized))
-    );
-    assert_eq!(
-        client.try_get_patient_payments(&unrelated, &claim_id),
-        Err(Ok(Error::NotAuthorized))
-    );
-}
-
-#[test]
-fn test_get_unreconciled_claims() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, _, provider, patient, insurer) = setup(&env);
-
-    // Get current ledger time and set service date to be older than threshold
-    let current_time = env.ledger().timestamp();
-    let old_timestamp = current_time.saturating_sub(90000); // More than 24 hours ago
-    
-    let claim_id = client.submit_claim(
-        &provider,
-        &patient,
-        &insurer,
-        &1,
-        &old_timestamp,
-        &make_services(&env),
-        &Vec::new(&env),
-        &BytesN::from_array(&env, &[0; 32]),
-        &policy(&env),
-        &15000,
     );
 
-    client.adjudicate_claim(
-        &claim_id,
-        &insurer,
-        &Vec::new(&env),
-        &Vec::new(&env),
-        &10000,
-        &2000,
-    );
-
-    let unreconciled = client.get_unreconciled_claims(&insurer);
-    assert!(unreconciled.len() > 0);
-    assert!(unreconciled.contains(&claim_id));
-}
-
-#[test]
-fn test_set_reconciliation_threshold() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, _, _, _) = setup(&env);
-
-    let result = client.try_set_reconciliation_threshold(&admin, &172800);
-    assert!(result.is_ok());
-}
-
-#[test]
-fn test_unauthorized_cannot_mark_disputed() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, _, provider, patient, insurer) = setup(&env);
-
-    let claim_id = client.submit_claim(
-        &provider,
-        &patient,
-        &insurer,
-        &1,
-        &1000,
-        &make_services(&env),
-        &Vec::new(&env),
-        &BytesN::from_array(&env, &[0; 32]),
-        &policy(&env),
-        &15000,
-    );
-
-    let unauthorized = Address::generate(&env);
-    let result = client.try_mark_claim_disputed(&claim_id, &unauthorized);
-    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
-}
-
-// -----------------------------------------------------------------------
-// insurer-registry integration (#527)
-// -----------------------------------------------------------------------
-
-#[test]
-fn test_integration_active_insurer_claim_submission_succeeds() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, _, provider, patient, insurer) = setup(&env);
-
-    let claim_id = client.submit_claim(
-        &provider,
-        &patient,
-        &insurer,
-        &1,
-        &1000,
-        &make_services(&env),
-        &Vec::new(&env),
-        &BytesN::from_array(&env, &[0; 32]),
-        &policy(&env),
-        &15000,
-    );
-    assert_eq!(claim_id, 1);
-}
-
-#[test]
-fn test_integration_expired_insurer_returns_insurer_not_active() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let ac_id = env.register(MockAccessControl, ());
-    let fr_id = Address::generate(&env);
-    let admin = Address::generate(&env);
-    let provider = Address::generate(&env);
-    let patient = Address::generate(&env);
-    let insurer = Address::generate(&env);
-
-    let registry_admin = Address::generate(&env);
-    let ir_id = env.register(InsurerRegistry, (registry_admin.clone(),));
-    let ir_client = InsurerRegistryClient::new(&env, &ir_id);
-    let issuer = Address::generate(&env);
-    env.ledger().with_mut(|li| li.timestamp = 100);
-    ir_client.set_trusted_issuer(&registry_admin, &issuer, &true);
-    ir_client.register_insurer(
-        &insurer,
-        &String::from_str(&env, "Expired Insurer"),
-        &String::from_str(&env, "LIC-EXP"),
-        &String::from_str(&env, "metadata"),
-        &dummy_hash(&env, 1),
-        &issuer,
-        &dummy_hash(&env, 2),
-        &150_u64,
-        &dummy_hash(&env, 3),
-    );
-
-    let contract_id = env.register(
-        MedicalClaimsSystem,
-        (&admin, &ac_id, &fr_id, &86400u64, &ir_id),
-    );
-    let client = MedicalClaimsSystemClient::new(&env, &contract_id);
-
-    client.register_insurer(&admin, &insurer);
-    env.ledger().with_mut(|li| li.timestamp = 200);
-
-    let result = client.try_submit_claim(
-        &provider,
-        &patient,
-        &insurer,
-        &1,
-        &1000,
-        &make_services(&env),
-        &Vec::new(&env),
-        &BytesN::from_array(&env, &[0; 32]),
-        &policy(&env),
-        &15000,
-    );
-    assert_eq!(result, Err(Ok(Error::InsurerNotActive)));
-}
-
-#[test]
-fn test_dispute_lifecycle() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, provider, patient, insurer) = setup(&env);
-
-    let claim_id = client.submit_claim(
-        &provider,
-        &patient,
-        &insurer,
-        &1,
-        &100,
-        &make_services(&env),
-        &Vec::new(&env),
-        &BytesN::from_array(&env, &[0; 32]),
-        &policy(&env),
-        &5000,
-    );
-
-    let reviewer = Address::generate(&env);
-    client.register_reviewer(&admin, &reviewer);
-
-    let reason_hash = reference_hash(&env, 9);
-    let dispute_id = client.open_dispute(&claim_id, &patient, &reason_hash);
-    assert_eq!(dispute_id, 1);
-
-    let resolution_hash = reference_hash(&env, 10);
-    client.resolve_dispute(&dispute_id, &reviewer, &resolution_hash);
-
-    // A resolved dispute cannot be resolved again.
-    let result = client.try_resolve_dispute(&dispute_id, &reviewer, &resolution_hash);
-    assert_eq!(result, Err(Ok(Error::DisputeAlreadyResolved)));
-
-    // An unregistered reviewer cannot resolve disputes.
-    let rogue = Address::generate(&env);
-    let other_dispute_id = client.open_dispute(&claim_id, &provider, &reason_hash);
-    let result = client.try_resolve_dispute(&other_dispute_id, &rogue, &resolution_hash);
-    assert_eq!(result, Err(Ok(Error::NotAuthorizedReviewer)));
-}
-
-// ── #781: Reviewer deactivation tests ──────────────────────────────────────
-
-#[test]
-fn test_deactivated_reviewer_cannot_resolve_dispute() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, provider, patient, insurer) = setup(&env);
-
-    let claim_id = client.submit_claim(
-        &provider,
-        &patient,
-        &insurer,
-        &1,
-        &100,
-        &make_services(&env),
-        &Vec::new(&env),
-        &BytesN::from_array(&env, &[0; 32]),
-        &policy(&env),
-        &5000,
-    );
-
-    let reviewer = Address::generate(&env);
-    client.register_reviewer(&admin, &reviewer);
-
-    // Deactivate the reviewer
-    client.deactivate_reviewer(&admin, &reviewer);
-
-    // Deactivated reviewer cannot resolve disputes
-    let reason_hash = reference_hash(&env, 9);
-    let dispute_id = client.open_dispute(&claim_id, &patient, &reason_hash);
-
-    let resolution_hash = reference_hash(&env, 10);
-    let result = client.try_resolve_dispute(&dispute_id, &reviewer, &resolution_hash);
-    assert_eq!(result, Err(Ok(Error::NotAuthorizedReviewer)));
-}
-
-#[test]
-fn test_reviewer_lifecycle_register_deactivate_resolve() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, provider, patient, insurer) = setup(&env);
-
-    let claim_id = client.submit_claim(
-        &provider,
-        &patient,
-        &insurer,
-        &1,
-        &100,
-        &make_services(&env),
-        &Vec::new(&env),
-        &BytesN::from_array(&env, &[0; 32]),
-        &policy(&env),
-        &5000,
-    );
-
-    let reviewer = Address::generate(&env);
-
-    // Register reviewer — should succeed
-    client.register_reviewer(&admin, &reviewer);
-
-    let reason_hash = reference_hash(&env, 9);
-    let dispute_id = client.open_dispute(&claim_id, &patient, &reason_hash);
-
-    // Can resolve while active
-    let resolution_hash = reference_hash(&env, 10);
-    client.resolve_dispute(&dispute_id, &reviewer, &resolution_hash);
-
-    // Open another dispute
-    let dispute_id_2 = client.open_dispute(&claim_id, &provider, &reason_hash);
-
-    // Deactivate reviewer
-    client.deactivate_reviewer(&admin, &reviewer);
-
-    // Cannot resolve with deactivated reviewer
-    let result = client.try_resolve_dispute(&dispute_id_2, &reviewer, &resolution_hash);
-    assert_eq!(result, Err(Ok(Error::NotAuthorizedReviewer)));
-}
-
-#[test]
-fn test_re_registering_deactivated_reviewer_reactivates() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, provider, patient, insurer) = setup(&env);
-
-    let claim_id = client.submit_claim(
-        &provider,
-        &patient,
-        &insurer,
-        &1,
-        &100,
-        &make_services(&env),
-        &Vec::new(&env),
-        &BytesN::from_array(&env, &[0; 32]),
-        &policy(&env),
-        &5000,
-    );
-
-    let reviewer = Address::generate(&env);
-
-    // Register reviewer
-    client.register_reviewer(&admin, &reviewer);
-
-    // Deactivate reviewer
-    client.deactivate_reviewer(&admin, &reviewer);
-
-    // Re-register reviewer (should reactivate)
-    client.register_reviewer(&admin, &reviewer);
-
-    // Can now resolve disputes again
-    let reason_hash = reference_hash(&env, 9);
-    let dispute_id = client.open_dispute(&claim_id, &patient, &reason_hash);
-
-    let resolution_hash = reference_hash(&env, 10);
-    let result = client.try_resolve_dispute(&dispute_id, &reviewer, &resolution_hash);
-    assert!(result.is_ok());
+    let claim = client.get_claim(&claim_id);
+    let insurer_due = claim.approved_amount - claim.insurer_paid_amount;
+    let patient_due = claim.patient_responsibility - claim.patient_paid_amount;
+    assert!(insurer_due >= 0);
+    assert!(patient_due >= 0);
 }

@@ -1,4 +1,4 @@
-use soroban_sdk::{symbol_short, Env, String, Symbol};
+use soroban_sdk::{symbol_short, Bytes, Env, String, Symbol};
 
 use crate::{storage, Error};
 
@@ -33,22 +33,16 @@ pub fn validate_severity(severity: &Symbol) -> Result<(), Error> {
     }
 }
 
-/// Check if drug name matches allergen (case-insensitive comparison)
+/// Check if a drug name matches an allergen.
 ///
-/// Soroban `String` equality is a raw byte comparison with no case-folding:
-/// without normalization, an allergen recorded as "Penicillin" would fail to
-/// match a drug name of "penicillin" or "PENICILLIN", silently suppressing a
-/// real drug-allergy interaction warning. Both inputs are therefore
-/// normalized to a canonical (ASCII lowercase) form before comparing, in the
-/// same spirit as allergy-tracking's byte-level `trim_allergen` helper.
-pub fn check_drug_match(allergen: &String, drug_name: &String) -> bool {
-    // Fast path: byte-identical strings always match.
-    if allergen == drug_name {
-        return true;
-    }
-
-    // Normalize both sides to a canonical case, then compare.
-    to_lowercase(allergen) == to_lowercase(drug_name)
+/// Allergens are stored as encrypted envelopes, so the plaintext allergen is
+/// never available on-chain. Instead, callers supply the keyed hash
+/// (`HMAC(drug_code)`) of the normalized allergen code that was stored next to
+/// the envelope at record time. The interaction check compares that stored
+/// hash against the keyed hash of the incoming drug code, so no plaintext
+/// comparison happens on-chain.
+pub fn check_drug_match(allergen_hash: &Bytes, drug_hash: &Bytes) -> bool {
+    allergen_hash == drug_hash
 }
 
 /// Normalize a Soroban `String` to ASCII lowercase (A-Z => a-z).
@@ -62,6 +56,17 @@ fn to_lowercase(value: &String) -> String {
         }
     }
     String::from(&bytes)
+}
+
+/// Compute the keyed hash used to compare a drug code against a stored
+/// allergen without exposing plaintext on-chain.
+///
+/// The input is normalized to ASCII lowercase before hashing so that
+/// "Penicillin" and "penicillin" produce the same keyed hash, preserving the
+/// case-insensitive matching behaviour of the previous plaintext comparison.
+pub fn drug_code_hash(env: &Env, drug_code: &String) -> Bytes {
+    let normalized = to_lowercase(drug_code);
+    env.crypto().sha256(&normalized.to_bytes()).to_bytes()
 }
 
 /// Check for cross-sensitivity between allergens

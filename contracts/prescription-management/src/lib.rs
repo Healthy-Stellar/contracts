@@ -94,6 +94,9 @@ pub const PRESCRIPTION_TTL_EXTEND: u32 = 535_680;
 pub const MAX_SCHEDULE_REFILLS: u32 = 5;
 /// Maximum days supply for schedules III–IV (statutory 6-month cap).
 pub const MAX_SCHEDULE_DAYS_SUPPLY: u32 = 180;
+pub const SECONDS_PER_DAY: u64 = 24 * SECONDS_PER_HOUR;
+/// Share (percent) of `days_supply` that must elapse since the last dispense before a refill is released.
+pub const REFILL_MIN_INTERVAL_PERCENT: u64 = 75;
 
 // ── DEA number validation ─────────────────────────────────────────────────────
 
@@ -274,6 +277,8 @@ pub enum Error {
     /// The allergy-management cross-contract check could not be completed;
     /// the prescription is refused rather than issued unchecked (#952)
     AllergyCheckUnavailable = 32,
+    /// Refill requested before the minimum interval since the last dispense has elapsed
+    RefillTooSoon = 33,
 }
 
 #[contracttype]
@@ -423,6 +428,7 @@ pub struct Prescription {
     pub medication_name: String,
     pub quantity: u32,
     pub quantity_dispensed: u32,
+    pub days_supply: u32,
     pub refills_allowed: u32,
     pub refills_remaining: u32,
     pub refills_used: u32,
@@ -626,23 +632,22 @@ pub struct PrescriptionContract;
 
 #[contractimpl]
 impl PrescriptionContract {
-    /// Initialize the contract with the admin, and the provider-registry
-    /// contract address used for cross-contract provider verification.
+    /// Set the admin and the provider-registry contract used for cross-contract
+    /// provider verification, and make the admin the registry governor.
     ///
-    /// `admin` must authorize this call, so an attacker cannot front-run
-    /// deployment and point `provider_registry` at a malicious contract whose
-    /// `is_provider` always returns `true`. Fails with `AlreadyExists` if
-    /// called more than once.
-    pub fn initialize(env: Env, admin: Address, provider_registry: Address) -> Result<(), Error> {
-        if env.storage().persistent().has(&DataKey::ProviderRegistry) {
-            return Err(Error::AlreadyExists);
-        }
-        admin.require_auth();
+    /// Runs atomically at deployment, so no one can front-run it and point
+    /// `provider_registry` at a contract whose `is_provider` always returns `true`.
+    pub fn __constructor(env: Env, admin: Address, provider_registry: Address) {
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage()
             .persistent()
             .set(&DataKey::ProviderRegistry, &provider_registry);
-        Ok(())
+        env.storage()
+            .persistent()
+            .set(&DataKey::RegistryAdmin, &admin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::RegistryWriter(admin.clone()), &true);
     }
 
     /// Replace the configured provider-registry contract (admin only).
@@ -654,6 +659,7 @@ impl PrescriptionContract {
         admin: Address,
         provider_registry: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         require_admin(&env, &admin)?;
         env.storage()
             .persistent()
@@ -669,6 +675,7 @@ impl PrescriptionContract {
         allergy_registry: Address,
         strict_mode: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         // Once an admin is set, only that admin may reconfigure (#887).
         let configured: Option<Address> = env.storage().persistent().get(&DataKey::Admin);
@@ -691,6 +698,7 @@ impl PrescriptionContract {
         patient_id: Address,
         req: IssueRequest,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         do_issue_prescription(&env, provider_id, patient_id, req)
     }
@@ -702,6 +710,7 @@ impl PrescriptionContract {
         provider: Address,
         limit: u32,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let configured: Option<Address> = env.storage().persistent().get(&DataKey::Admin);
         if configured.as_ref().map_or(true, |a| *a != admin) {
@@ -724,6 +733,7 @@ impl PrescriptionContract {
         provider: Address,
         dea_number: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         require_admin(&env, &admin)?;
 
         if dea_number.len() != 9u32 {
@@ -749,6 +759,7 @@ impl PrescriptionContract {
         admin: Address,
         provider: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         require_admin(&env, &admin)?;
         env.storage()
             .persistent()
@@ -774,6 +785,7 @@ impl PrescriptionContract {
     ///
     /// Admin only. A no-op returning `0` once the namespaced counter exists.
     pub fn migrate_prescription_keys(env: Env, admin: Address) -> Result<u32, Error> {
+        ttl_config::extend_instance_ttl(&env);
         require_admin(&env, &admin)?;
 
         if env.storage().instance().has(&DataKey::PrescriptionCounter) {
@@ -830,6 +842,7 @@ impl PrescriptionContract {
         provider: Address,
         template: PrescriptionTemplate,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider.require_auth();
 
         // #953: a template must not persist an allergy bypass — it would silently
@@ -895,6 +908,7 @@ impl PrescriptionContract {
         template_id: u64,
         valid_until: u64,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider.require_auth();
 
         let template: StoredTemplate = env
@@ -935,6 +949,7 @@ impl PrescriptionContract {
         req: DispenseRequest,
         pharmacy_id: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         pharmacy_id.require_auth();
 
         let mut p: Prescription =
@@ -959,13 +974,19 @@ impl PrescriptionContract {
             return Err(Error::Expired);
         }
 
+        // Zero-quantity dispenses would let any pharmacy claim a prescription for free.
+        if req.quantity == 0 {
+            return Err(Error::InvalidPrescription);
+        }
+
         // Validate pharmacy authorization
         if let Some(ref current_pharmacy) = p.current_pharmacy {
             if current_pharmacy != &pharmacy_id {
                 return Err(Error::PharmacyNotAuthorized);
             }
         } else {
-            // First dispense sets the pharmacy
+            // First dispense sets the pharmacy, so the patient must consent to it.
+            p.patient_id.require_auth();
             p.current_pharmacy = Some(pharmacy_id.clone());
         }
 
@@ -1010,6 +1031,7 @@ impl PrescriptionContract {
         req: TransferRequest,
         from_pharmacy: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         from_pharmacy.require_auth();
 
         let mut p: Prescription =
@@ -1089,6 +1111,7 @@ impl PrescriptionContract {
         prescription_id: u64,
         pharmacy_id: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         pharmacy_id.require_auth();
 
         let mut p: Prescription =
@@ -1129,6 +1152,7 @@ impl PrescriptionContract {
         drug_class: Symbol,
         interaction_profile_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         if is_registry_governed(&env) {
             return Err(Error::RegistryGoverned);
         }
@@ -1144,21 +1168,8 @@ impl PrescriptionContract {
         )
     }
 
-    pub fn initialize_registry_governance(env: Env, admin: Address) -> Result<(), Error> {
-        admin.require_auth();
-        if is_registry_governed(&env) {
-            return Err(Error::AlreadyExists);
-        }
-        env.storage()
-            .persistent()
-            .set(&DataKey::RegistryAdmin, &admin);
-        env.storage()
-            .persistent()
-            .set(&DataKey::RegistryWriter(admin.clone()), &true);
-        Ok(())
-    }
-
     pub fn add_registry_writer(env: Env, admin: Address, writer: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         require_registry_admin(&env, &admin)?;
         env.storage()
             .persistent()
@@ -1175,6 +1186,7 @@ impl PrescriptionContract {
         drug_class: Symbol,
         interaction_profile_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         require_registry_writer(&env, &writer)?;
         put_medication(
             &env,
@@ -1197,6 +1209,7 @@ impl PrescriptionContract {
         clinical_effects: String,
         management_strategy: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         if is_registry_governed(&env) {
             return Err(Error::RegistryGoverned);
         }
@@ -1221,6 +1234,7 @@ impl PrescriptionContract {
         clinical_effects: String,
         management_strategy: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         require_registry_writer(&env, &writer)?;
         if requires_documentation(&env, &severity) {
             return Err(Error::HighImpactRequiresProposal);
@@ -1246,6 +1260,7 @@ impl PrescriptionContract {
         clinical_effects: String,
         management_strategy: String,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         require_registry_writer(&env, &writer)?;
         if !is_valid_severity(&env, &severity) {
             return Err(Error::InvalidSeverity);
@@ -1284,6 +1299,7 @@ impl PrescriptionContract {
         drug_class: Symbol,
         interaction_profile_hash: BytesN<32>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         require_registry_writer(&env, &writer)?;
         let key = DataKey::Medication(ndc_code.clone());
         if env.storage().persistent().has(&key) {
@@ -1307,6 +1323,7 @@ impl PrescriptionContract {
         admin: Address,
         proposal_id: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         require_registry_admin(&env, &admin)?;
         let mut proposal: RegistryProposal = env
             .storage()
@@ -1336,6 +1353,7 @@ impl PrescriptionContract {
     }
 
     pub fn create_catalog_snapshot(env: Env, admin: Address) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         require_registry_admin(&env, &admin)?;
         let version = env
             .storage()
@@ -1374,6 +1392,7 @@ impl PrescriptionContract {
         new_medication: String,
         current_medications: Vec<String>,
     ) -> Result<Vec<InteractionWarning>, Error> {
+        ttl_config::extend_instance_ttl(&env);
         if !env
             .storage()
             .persistent()
@@ -1423,6 +1442,7 @@ impl PrescriptionContract {
         patient_id: Address,
         medication: String,
     ) -> Result<Vec<InteractionWarning>, Error> {
+        ttl_config::extend_instance_ttl(&env);
         requester.require_auth();
         require_phi_access(&env, &requester, &patient_id)?;
 
@@ -1522,6 +1542,7 @@ impl PrescriptionContract {
         interaction_id: u64,
         override_reason: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         if is_blank(&override_reason) {
@@ -1558,6 +1579,7 @@ impl PrescriptionContract {
         patient_id: Address,
         allergies: Vec<String>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
         env.storage()
             .persistent()
@@ -1570,6 +1592,7 @@ impl PrescriptionContract {
         patient_id: Address,
         conditions: Vec<String>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
         env.storage()
             .persistent()
@@ -1585,6 +1608,7 @@ impl PrescriptionContract {
         medication: String,
         contraindications: Vec<String>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         require_registry_writer(&env, &writer)?;
         if !env
             .storage()
@@ -1607,11 +1631,17 @@ impl PrescriptionContract {
         pharmacy_id: Address,
         provider_id: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         pharmacy_id.require_auth();
         provider_id.require_auth();
 
         let mut p: Prescription =
             get_prescription(&env, prescription_id).ok_or(Error::NotFound)?;
+
+        // Schedule II may never be refilled (21 CFR 1306.12).
+        if p.schedule == Some(2) {
+            return Err(Error::ControlledSubstanceViolation);
+        }
 
         // Validate prescription allows refills
         if p.refills_allowed == 0 {
@@ -1620,6 +1650,11 @@ impl PrescriptionContract {
 
         // Check remaining refills
         if p.refills_remaining == 0 {
+            return Err(Error::RefillExceeded);
+        }
+
+        // Schedules III–V: at most MAX_SCHEDULE_REFILLS refills.
+        if matches!(p.schedule, Some(3..=5)) && p.refills_used >= MAX_SCHEDULE_REFILLS {
             return Err(Error::RefillExceeded);
         }
 
@@ -1638,8 +1673,30 @@ impl PrescriptionContract {
         // is considered expired when ledger timestamp >= valid_until.
         // This ensures consistent behaviour at UTC midnight boundaries
         // regardless of sub-second ledger close timing.
-        if env.ledger().timestamp() >= p.valid_until {
+        // Expiry is anchored to issue time: refills never run past
+        // issued_at + max_validity (180 days for schedules III–V, 1 year otherwise).
+        let now = env.ledger().timestamp();
+        let max_validity = if matches!(p.schedule, Some(3..=5)) {
+            MAX_SCHEDULE_DAYS_SUPPLY as u64 * SECONDS_PER_DAY
+        } else {
+            temporal::MAX_VALIDITY_WINDOW_SECS
+        };
+        let validity_cap = p
+            .issued_at
+            .checked_add(max_validity)
+            .ok_or(Error::TimestampOverflow)?;
+        if now >= p.valid_until || now >= validity_cap {
             return Err(Error::Expired);
+        }
+
+        // Minimum interval: the next fill may not be released until most of the
+        // previous supply should have been consumed.
+        if let Some(last) = p.last_dispensed {
+            let min_interval =
+                p.days_supply as u64 * SECONDS_PER_DAY * REFILL_MIN_INTERVAL_PERCENT / 100;
+            if now < last.saturating_add(min_interval) {
+                return Err(Error::RefillTooSoon);
+            }
         }
 
         // Validate pharmacy authorization
@@ -1656,20 +1713,22 @@ impl PrescriptionContract {
             return Err(Error::Unauthorized);
         }
 
-        // Decrement refills and reset quantity for new fill
+        // Unfilled remainder is discarded by the reset below; record it in the event.
+        let forfeited = p.quantity.saturating_sub(p.quantity_dispensed);
+
+        // Decrement refills and reset quantity for new fill.
+        // last_dispensed is kept so the minimum-interval check anchors on the last real dispense.
         p.refills_remaining -= 1;
         p.refills_used += 1;
         p.quantity_dispensed = 0;
         p.status = PrescriptionStatus::Active;
-        p.last_dispensed = None;
 
-        // Extend validity if needed (30 days from refill). Use checked_add to
-        // guard against overflow when ledger timestamp is near u64::MAX.
-        let new_valid_until = env
-            .ledger()
-            .timestamp()
+        // Extend validity by the refill window, capped at the issue-anchored limit.
+        // checked_add guards against overflow when ledger timestamp is near u64::MAX.
+        let new_valid_until = now
             .checked_add(REFILL_WINDOW_SECS)
-            .ok_or(Error::InvalidValidityWindow)?;
+            .ok_or(Error::InvalidValidityWindow)?
+            .min(validity_cap);
         if new_valid_until > p.valid_until {
             p.valid_until = new_valid_until;
         }
@@ -1679,7 +1738,7 @@ impl PrescriptionContract {
         // Emit refill event — refills_remaining omitted to avoid clinical detail on-chain (#227)
         env.events().publish(
             (Symbol::new(&env, "prescription_refilled"),),
-            (prescription_id, pharmacy_id, provider_id),
+            (prescription_id, pharmacy_id, provider_id, forfeited),
         );
 
         Ok(())
@@ -1691,6 +1750,7 @@ impl PrescriptionContract {
         provider_id: Address,
         reason: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let mut p: Prescription =
@@ -1741,6 +1801,7 @@ impl PrescriptionContract {
         recall_reason: String,
         clinical_justification: String,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         if is_blank(&recall_reason) {
@@ -1894,6 +1955,7 @@ impl PrescriptionContract {
         from_id: u64,
         exclusive_upper: u64,
     ) -> Result<u32, Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let configured: Option<Address> = env.storage().persistent().get(&DataKey::Admin);
         if configured.as_ref().map_or(true, |a| *a != admin) {
@@ -2077,6 +2139,7 @@ fn do_issue_prescription(
         medication_name: req.medication_name.clone(),
         quantity: req.quantity,
         quantity_dispensed: 0,
+        days_supply: req.days_supply,
         refills_allowed: req.refills_allowed,
         refills_remaining: req.refills_allowed,
         refills_used: 0,

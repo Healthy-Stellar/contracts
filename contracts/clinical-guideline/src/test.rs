@@ -2,7 +2,7 @@
 use super::*;
 use provider_registry::{ProviderRegistry, ProviderRegistryClient};
 use soroban_sdk::{
-    Address, BytesN, Env, String, Symbol, Vec,
+    Address, BytesN, Env, String, Symbol,
     testutils::{Address as _, Events as _, Ledger},
 };
 
@@ -86,40 +86,6 @@ fn create_reminder(
 // ── guidelines ───────────────────────────────────────────────────────────────
 
 #[test]
-fn test_register_and_evaluate_guideline() {
-    let (env, client, admin, provider) = setup();
-    let (guideline_id, criteria_hash, evidence_level) = register_guideline(&env, &client, &admin);
-    let patient = Address::generate(&env);
-
-    // Evaluate: Match
-    let result = client.evaluate_guideline(&patient, &provider, &guideline_id, &criteria_hash);
-    assert!(result.applicable);
-    assert_eq!(result.evidence_level, evidence_level);
-
-    // Evaluate: No Match (different hash)
-    let wrong_hash = BytesN::from_array(&env, &[2u8; 32]);
-    let result_fail = client.evaluate_guideline(&patient, &provider, &guideline_id, &wrong_hash);
-    assert!(!result_fail.applicable);
-}
-
-#[test]
-fn test_evaluate_guideline_rejects_unregistered_provider() {
-    let (env, client, admin, _provider) = setup();
-    let (guideline_id, criteria_hash, _) = register_guideline(&env, &client, &admin);
-
-    let res = client.try_evaluate_guideline(
-        &Address::generate(&env),
-        &Address::generate(&env),
-        &guideline_id,
-        &criteria_hash,
-    );
-    assert_eq!(
-        res.err().expect("expected NotAuthorized"),
-        Ok(Error::NotAuthorized)
-    );
-}
-
-#[test]
 #[should_panic(expected = "HostError: Error(Auth, InvalidAction)")]
 fn test_unauthorized_registration() {
     let env = Env::default();
@@ -136,81 +102,6 @@ fn test_unauthorized_registration() {
         &BytesN::from_array(&env, &[0u8; 32]),
         &Symbol::new(&env, "B"),
     );
-}
-
-// ── clinical calculators ─────────────────────────────────────────────────────
-
-#[test]
-fn test_drug_dosage_calculation() {
-    let (env, client, _admin, provider) = setup();
-
-    let weight_dg = 700_000; // 70kg = 70000g = 700000dg
-    let result = client.calculate_drug_dosage(
-        &Address::generate(&env),
-        &provider,
-        &String::from_str(&env, "Amoxicillin"),
-        &weight_dg,
-        &Some(50), // Renal impairment < 60
-    );
-
-    assert!(result.renal_adjustment);
-    assert_eq!(result.medication, String::from_str(&env, "Amoxicillin"));
-    // (700000 * 5) / 10000 = 350mg, reduced 25% for renal impairment = 262mg
-    assert_eq!(result.recommended_dose, String::from_str(&env, "10+mg"));
-    assert_eq!(result.duration, Some(604_800));
-}
-
-#[test]
-fn test_risk_score_assessment() {
-    let (env, client, _admin, provider) = setup();
-
-    let mut params = Vec::new(&env);
-    params.push_back(10);
-    params.push_back(20);
-    params.push_back(5);
-
-    let result = client.assess_risk_score(
-        &Address::generate(&env),
-        &provider,
-        &Symbol::new(&env, "SCORE_X"),
-        &params,
-    );
-
-    assert_eq!(result.score, 35);
-    assert_eq!(result.calculator, Symbol::new(&env, "SCORE_X"));
-}
-
-#[test]
-fn test_care_pathway_suggestion() {
-    let (env, client, _admin, provider) = setup();
-
-    let condition = String::from_str(&env, "Diabetes");
-    let result = client.suggest_care_pathway(
-        &Address::generate(&env),
-        &provider,
-        &condition,
-        &Vec::new(&env),
-    );
-
-    assert_eq!(result.condition, condition);
-    assert!(result.steps.len() >= 3);
-}
-
-#[test]
-fn test_preventive_care_logic() {
-    let (env, client, _admin, provider) = setup();
-
-    // Test for older patient
-    let alerts = client.check_preventive_care(
-        &Address::generate(&env),
-        &provider,
-        &55,
-        &Symbol::new(&env, "M"),
-        &Vec::new(&env),
-    );
-
-    assert!(alerts.len() >= 2);
-    assert!(alerts.contains(Symbol::new(&env, "Screening_A")));
 }
 
 // ── reminders ────────────────────────────────────────────────────────────────

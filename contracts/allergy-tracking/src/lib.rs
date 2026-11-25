@@ -1,169 +1,25 @@
 #![no_std]
-#![allow(clippy::too_many_arguments)]
 
-//! # Allergy Tracking Contract
-//!
-//! Tracks patient allergies with batch operations, severity levels, temporal validation,
-//! and patient deletion support for longitudinal allergy history.
-//!
-//! ## HIPAA Compliance
-//!
-//! **Access Control Safeguards:** Patient authorization required for operations. Batch operations
-//! with per-patient access validation. Unauthorized access returns error on invalid patient request.
-//! Clinician writes are gated by the provider-registry: the caller must be a credentialed,
-//! active, non-revoked provider.
-//!
-//! **Audit Controls:** Events emitted for allergy operations. Batch operations tracked with
-//! individual record IDs. Temporal validation prevents invalid date sequences (onset before resolution).
-//! Historical tracking via persistent storage allows audit replay.
-//!
-//! **Data Retention Policy:** Allergies marked as Deleted when patient deregisters. Batch size
-//! limits (configurable) prevent unbounded operations. Duplicate detection ensures consistency.
-//! Resolution date and reason retained with resolved allergies.
-//!
-//! **Encryption/Integrity:** SHA256 content hashing used for data integrity. Allergen type
-//! classification (Medication, Food, Environmental, Other) enables category-specific retention rules.
-//! Severity enumeration (Mild, Moderate, Severe, LifeThreatening) provides structured risk levels.
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec};
 
-use soroban_sdk::{
-    contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes,
-    Env, String, Symbol, Vec,
-};
+use ttl_config::{extend_critical_ttl, extend_critical_ttl_if_exists};
 
-/// Minimal client for the provider-registry contract.
-#[contractclient(name = "ProviderRegistryClient")]
-pub trait ProviderRegistry {
-    fn is_provider(env: Env, provider: Address) -> bool;
-}
-
-/// Error codes for allergy tracking operations
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-#[repr(u32)]
-pub enum Error {
-    AllergyNotFound = 1,
-    Unauthorized = 2,
-    InvalidSeverity = 3,
-    InvalidAllergenType = 4,
-    AlreadyResolved = 5,
-    PatientNotFound = 6,
-    DuplicateAllergy = 7,
-    InvalidAllergen = 8,
-    AllergenTooLong = 9,
-    InvalidTimestamp = 10,
-    ReasonTooLong = 11,
-    AlreadyDeleted = 12,
-    BatchEmpty = 13,
-    BatchTooLarge = 14,
-    ProviderNotRegistered = 15,
-    ProviderRegistryNotSet = 16,
-}
-
-/// Allergen types supported by the system
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AllergenType {
-    Medication,
-    Food,
-    Environmental,
-    Other,
-}
-
-/// Severity levels for allergic reactions
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-pub enum Severity {
-    Mild,
-    Moderate,
-    Severe,
-    LifeThreatening,
-}
-
-/// Status of an allergy record
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AllergyStatus {
-    Active,
-    Resolved,
-    Suspected,
-}
-
-/// Comprehensive allergy record
-#[contracttype]
-#[derive(Clone, Debug)]
 pub struct AllergyRecord {
-    pub allergy_id: u64,
-    pub patient_id: Address,
-    pub provider_id: Address,
+    pub patient: Address,
     pub allergen: String,
-    pub allergen_type: AllergenType,
-    pub reaction_types: Vec<String>,
-    pub severity: Severity,
-    pub onset_date: Option<u64>,
-    pub verified: bool,
-    pub status: AllergyStatus,
-    pub recorded_date: u64,
-    pub last_updated: u64,
-    pub resolution_date: Option<u64>,
-    pub resolution_reason: Option<String>,
-    pub is_deleted: bool,
+    pub reaction: String,
+    pub severity: u32,
+    pub recorded_at: u64,
 }
 
-/// Severity update record for audit trail
 #[contracttype]
-#[derive(Clone, Debug)]
-pub struct SeverityUpdate {
-    pub allergy_id: u64,
-    pub provider_id: Address,
-    pub old_severity: Severity,
-    pub new_severity: Severity,
-    pub reason: String,
-    pub timestamp: u64,
-}
-
-/// Drug interaction warning
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct InteractionWarning {
-    pub allergy_id: u64,
-    pub allergen: String,
-    pub severity: Severity,
-    pub reaction_types: Vec<String>,
-}
-
-/// Storage keys for the contract
-#[contracttype]
+#[derive(Clone)]
 pub enum DataKey {
-    Admin,
-    AllergyCounter,
-    Allergy(u64),
-    PatientAllergies(Address),
-    SeverityHistory(u64),
-    DrugCrossSensitivity(String),
-    AccessControl(Address, Address),
-    GrantedProviders(Address),
-    ProviderRegistry,
+    Allergy(Address, u32),
+    AllergyCount(Address),
 }
-
-/// A single entry in a batch allergy recording request.
-/// Mirrors the per-allergy parameters of `record_allergy`, scoped to one patient.
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct AllergyEntry {
-    pub allergen: String,
-    pub allergen_type: Symbol,
-    pub reaction_types: Vec<String>,
-    pub severity: Symbol,
-    pub onset_date: Option<u64>,
-    pub verified: bool,
-}
-
-// Validation constants
-const MAX_ALLERGEN_LENGTH: u32 = 100;
-const MIN_ALLERGEN_LENGTH: u32 = 1;
-const MAX_REASON_LENGTH: u32 = 500;
-const MAX_REACTION_LENGTH: u32 = 200;
-const MAX_BATCH_SIZE: u32 = 50;
 
 #[contract]
 pub struct AllergyTrackingContract;
@@ -237,8 +93,7 @@ impl AllergyTrackingContract {
     /// Record a new allergy for a patient
     pub fn record_allergy(
         env: Env,
-        patient_id: Address,
-        provider_id: Address,
+        patient: Address,
         allergen: String,
         allergen_type: Symbol,
         reaction_types: Vec<String>,
@@ -320,12 +175,7 @@ impl AllergyTrackingContract {
             .instance()
             .set(&DataKey::AllergyCounter, &(allergy_id + 1));
 
-        env.events().publish(
-            (symbol_short!("allergy"), symbol_short!("recorded")),
-            (allergy_id, patient_id, provider_id),
-        );
-
-        Ok(allergy_id)
+        index
     }
 
     /// Retrieve a single allergy record.
@@ -496,36 +346,14 @@ impl AllergyTrackingContract {
                 return Err(Error::InvalidTimestamp);
             }
         }
-        Ok(())
+        records
     }
 
-    fn symbol_to_allergen_type(env: &Env, symbol: &Symbol) -> Result<AllergenType, Error> {
-        let _ = env;
-        if *symbol == symbol_short!("medication") {
-            Ok(AllergenType::Medication)
-        } else if *symbol == symbol_short!("food") {
-            Ok(AllergenType::Food)
-        } else if *symbol == symbol_short!("environmental") {
-            Ok(AllergenType::Environmental)
-        } else if *symbol == symbol_short!("other") {
-            Ok(AllergenType::Other)
-        } else {
-            Err(Error::InvalidAllergenType)
-        }
-    }
-
-    fn symbol_to_severity(env: &Env, symbol: &Symbol) -> Result<Severity, Error> {
-        let _ = env;
-        if *symbol == symbol_short!("mild") {
-            Ok(Severity::Mild)
-        } else if *symbol == symbol_short!("moderate") {
-            Ok(Severity::Moderate)
-        } else if *symbol == symbol_short!("severe") {
-            Ok(Severity::Severe)
-        } else if *symbol == symbol_short!("lifethreat") {
-            Ok(Severity::LifeThreatening)
-        } else {
-            Err(Error::InvalidSeverity)
-        }
+    /// Remove an allergy record for a patient.
+    pub fn remove_allergy(env: Env, patient: Address, index: u32) {
+        patient.require_auth();
+        let key = DataKey::Allergy(patient.clone(), index);
+        env.storage().persistent().remove(&key);
+        extend_critical_ttl(&env, &DataKey::AllergyCount(patient));
     }
 }

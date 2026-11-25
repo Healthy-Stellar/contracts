@@ -4,6 +4,36 @@ This document describes the events emitted by the Meshmulla healthcare smart con
 
 ---
 
+## Privacy Rule for Event Payloads and Topics
+
+Contract events are public, indexed by every RPC and indexer, and cannot be deleted. Anyone can rebuild a patient timeline from them. Therefore **all contracts MUST follow this workspace rule**:
+
+> Event payloads and topics contain **record ids, content hashes and actor roles** — never a patient address alongside clinical values or condition-revealing event names.
+
+Concretely:
+
+- **No `patient_id` / patient `Address` in the same event as a clinical value** (vital values, weights, vaccine names, device models, medication names, diagnosis-revealing event names, free-text reasons, etc.).
+- **No condition-revealing event names** that are themselves a diagnosis (e.g. `session_recorded`, `symptom_tracked`, `outcomes_tracked`, `consent_granted(data_type)` for mental-health / substance-use treatment).
+- **Where a patient correlator is needed**, use a **per-contract salted pseudonym** derived from a secret, rotatable key — never the raw patient address. The salt must not be emitted or recoverable from public on-chain data.
+- **Prefer record ids and content hashes** as the public correlator; clinical content stays in encrypted envelopes / hashed state.
+
+### Shared helper: `shared::events::emit_redacted(...)`
+
+Affected contracts emit through the shared helper instead of calling `env.events().publish(...)` directly. The helper enforces the rule above: it accepts only record ids, content hashes, actor roles and (optionally) a per-contract salted pseudonym — it does not accept a raw patient address together with a clinical value.
+
+```rust
+// shared::events::emit_redacted(env, topic, record_id, content_hash, actor_role, pseudonym)
+// - topic:        Symbol discriminator (must not be a diagnosis)
+// - record_id:    u64 record identifier
+// - content_hash: BytesN<32> commitment to the clinical content
+// - actor_role:   Symbol role (e.g. "provider", "patient", "system")
+// - pseudonym:    Option<BytesN<32>> per-contract salted patient correlator
+```
+
+Each affected contract has a test asserting that **no emitted event includes `patient_id` together with a clinical value**.
+
+---
+
 ## Patient Registry (`patient-registry`)
 
 ### `new_record` — Provider-to-Patient Record Notification
