@@ -429,27 +429,18 @@ jobs:
         run: cargo build --workspace --target wasm32-unknown-unknown --release
 
       - name: Verify WASM exports match each contract's own #[contractimpl]
-        run: |
-          set -euo pipefail
-          # For each built contract WASM, ensure it does not export entry points
-          # that belong to the root `Contracts` crate (HealthcareRegistry /
-          # AppointmentScheduling). Those leaked exports indicate the root crate
-          # is still being linked and would collide on storage keys.
-          leaked="init propose_admin accept_admin cancel_admin_transfer register_institution get_institution update_institution verify_institution create_appointment cancel_appointment complete_appointment get_appointments"
-          status=0
-          for wasm in target/wasm32-unknown-unknown/release/*.wasm; do
-            [ -e "$wasm" ] || continue
-            name=$(basename "$wasm")
-            # Skip the dedicated registry/scheduling crates themselves.
-            case "$name" in
-              healthcare_registry.wasm|appointment_scheduling.wasm) continue ;;
-            esac
-            exports=$(wasm-objdump -x "$wasm" 2>/dev/null | awk '/^Export\[/{flag=1;next}/^$/{flag=0}flag{print $NF}' || true)
-            for sym in $leaked; do
-              if printf '%s\n' "$exports" | grep -qx "$sym"; then
-                echo "::error file=$wasm::leaked export '$sym' from root Contracts crate"
-                status=1
-              fi
-            done
-          done
-          exit $status
+        # Fails if a WASM exports entry points it does not declare itself
+        # (leaked from a #[contract] dependency), is missing one it declares
+        # (e.g. a __constructor lost to a symbol clash), or exports more than
+        # one __constructor.
+        run: python3 scripts/check-wasm-exports.py --target wasm32-unknown-unknown
+
+  instance-ttl-check:
+    name: Instance TTL Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Every contract crate must bump its instance TTL
+        run: bash scripts/check-instance-ttl.sh

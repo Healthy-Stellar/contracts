@@ -44,6 +44,32 @@ fn test_add_liquidity() {
 }
 
 #[test]
+fn test_add_liquidity_rounds_token_amounts_up() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, token_a, token_b) = setup(&env);
+    let first_provider = Address::generate(&env);
+    let second_provider = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_a).mint(&first_provider, &30_000);
+    token::StellarAssetClient::new(&env, &token_b).mint(&first_provider, &70_000);
+    token::StellarAssetClient::new(&env, &token_a).mint(&second_provider, &1_000);
+    token::StellarAssetClient::new(&env, &token_b).mint(&second_provider, &1_000);
+    let deadline = env.ledger().timestamp() + 1000;
+
+    client.add_liquidity(&first_provider, &30_000, &70_000, &1, &deadline);
+    let shares = client.add_liquidity(&second_provider, &1_000, &1_000, &1, &deadline);
+
+    // At the initial 3:7 ratio, the second provider receives 654 shares.
+    // The corresponding token amounts are rounded up to 429 and 1000.
+    assert_eq!(shares, 654);
+    assert_eq!(token::TokenClient::new(&env, &token_a).balance(&second_provider), 571);
+    assert_eq!(token::TokenClient::new(&env, &token_b).balance(&second_provider), 0);
+    let stats = client.get_stats();
+    assert_eq!(stats.reserve_a, 30_429);
+    assert_eq!(stats.reserve_b, 71_000);
+}
+
+#[test]
 fn test_add_liquidity_slippage_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -205,6 +231,27 @@ fn test_admin_rotation_and_pause() {
     // Unpause
     client.set_paused(&false);
     assert!(!client.is_paused());
+}
+
+#[test]
+fn test_remove_liquidity_is_allowed_while_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, token_a, token_b) = setup(&env);
+    let provider = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_a).mint(&provider, &100_000);
+    token::StellarAssetClient::new(&env, &token_b).mint(&provider, &100_000);
+    let deadline = env.ledger().timestamp() + 1000;
+    client.add_liquidity(&provider, &100_000, &100_000, &1, &deadline);
+    let shares = client.shares_of(&provider);
+
+    client.set_paused(&true);
+    let (out_a, out_b) = client.remove_liquidity(&provider, &shares, &0, &0, &deadline);
+
+    assert_eq!((out_a, out_b), (99_000, 99_000));
+    assert_eq!(token::TokenClient::new(&env, &token_a).balance(&provider), 100_000);
+    assert_eq!(token::TokenClient::new(&env, &token_b).balance(&provider), 100_000);
+    assert!(client.is_paused());
 }
 
 #[test]

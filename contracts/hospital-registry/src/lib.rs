@@ -26,8 +26,8 @@
 
 use shared::privacy::validate_nonzero_address;
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
-    String, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, xdr::ToXdr, Address,
+    BytesN, Env, String, Vec,
 };
 
 /// Maximum number of departments a hospital configuration may contain.
@@ -169,8 +169,8 @@ pub struct AuditEvent {
     pub caller: Address,
     pub timestamp: u64,
     pub field: String,
-    pub old_value: HospitalConfig,
-    pub new_value: HospitalConfig,
+    pub old_hash: BytesN<32>,
+    pub new_hash: BytesN<32>,
 }
 
 #[contracttype]
@@ -183,6 +183,10 @@ pub enum DataKey {
 
 #[contract]
 pub struct HospitalRegistry;
+
+fn audit_hash<T: ToXdr>(env: &Env, value: &T) -> BytesN<32> {
+    env.crypto().sha256(&value.to_xdr(env)).into()
+}
 
 #[contractimpl]
 impl HospitalRegistry {
@@ -261,6 +265,7 @@ impl HospitalRegistry {
     /// Runs atomically as part of contract creation and cannot be called again,
     /// so an attacker cannot front-run deployment and elect themselves admin.
     pub fn __constructor(env: Env, admin: Address) {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&admin).expect("admin address must not be zero");
         env.storage().persistent().set(&DataKey::Admin, &admin);
     }
@@ -292,15 +297,15 @@ impl HospitalRegistry {
         env: &Env,
         caller: &Address,
         field: &str,
-        old: HospitalConfig,
-        new: HospitalConfig,
+        old_hash: BytesN<32>,
+        new_hash: BytesN<32>,
     ) {
         let event = AuditEvent {
             caller: caller.clone(),
             timestamp: env.ledger().timestamp(),
             field: String::from_str(env, field),
-            old_value: old,
-            new_value: new,
+            old_hash,
+            new_hash,
         };
         env.events()
             .publish((symbol_short!("audit"), caller.clone()), event);
@@ -308,6 +313,7 @@ impl HospitalRegistry {
 
     /// Set the admin address. Only callable by the current admin.
     pub fn set_admin(env: Env, caller: Address, admin: Address) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&admin).map_err(|_| ContractError::InvalidAddress)?;
         caller.require_auth();
 
@@ -337,6 +343,7 @@ impl HospitalRegistry {
         expires_at: u64,
         revocation_reference: BytesN<32>,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
         validate_nonzero_address(&issuer).map_err(|_| ContractError::InvalidAddress)?;
 
@@ -382,6 +389,7 @@ impl HospitalRegistry {
     }
 
     pub fn update_hospital(env: Env, wallet: Address, metadata: String) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
         wallet.require_auth();
 
@@ -405,6 +413,7 @@ impl HospitalRegistry {
         admin: Address,
         wallet: Address,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&admin).map_err(|_| ContractError::InvalidAddress)?;
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
 
@@ -447,6 +456,7 @@ impl HospitalRegistry {
         wallet: Address,
         config: HospitalConfig,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
         validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
         Self::assert_config_auth(&env, &caller, &wallet)?;
@@ -460,6 +470,18 @@ impl HospitalRegistry {
         if config.equipment.len() > MAX_EQUIPMENT {
             return Err(ContractError::ConfigLimitExceeded);
         }
+        if config.policies.len() > MAX_POLICIES {
+            return Err(ContractError::ConfigLimitExceeded);
+        }
+        if config.alerts.len() > MAX_ALERTS {
+            return Err(ContractError::ConfigLimitExceeded);
+        }
+        if config.insurance_providers.len() > MAX_INSURANCE_PROVIDERS {
+            return Err(ContractError::ConfigLimitExceeded);
+        }
+        if config.emergency_protocols.len() > MAX_EMERGENCY_PROTOCOLS {
+            return Err(ContractError::ConfigLimitExceeded);
+        }
 
         let old: HospitalConfig = env
             .storage()
@@ -471,7 +493,62 @@ impl HospitalRegistry {
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
 
-        Self::emit_audit(&env, &caller, "config", old, config);
+        Self::emit_audit(
+            &env,
+            &caller,
+            "departments",
+            audit_hash(&env, &old.departments),
+            audit_hash(&env, &config.departments),
+        );
+        Self::emit_audit(
+            &env,
+            &caller,
+            "locations",
+            audit_hash(&env, &old.locations),
+            audit_hash(&env, &config.locations),
+        );
+        Self::emit_audit(
+            &env,
+            &caller,
+            "equipment",
+            audit_hash(&env, &old.equipment),
+            audit_hash(&env, &config.equipment),
+        );
+        Self::emit_audit(
+            &env,
+            &caller,
+            "policies",
+            audit_hash(&env, &old.policies),
+            audit_hash(&env, &config.policies),
+        );
+        Self::emit_audit(
+            &env,
+            &caller,
+            "alerts",
+            audit_hash(&env, &old.alerts),
+            audit_hash(&env, &config.alerts),
+        );
+        Self::emit_audit(
+            &env,
+            &caller,
+            "insurance",
+            audit_hash(&env, &old.insurance_providers),
+            audit_hash(&env, &config.insurance_providers),
+        );
+        Self::emit_audit(
+            &env,
+            &caller,
+            "billing",
+            audit_hash(&env, &old.billing),
+            audit_hash(&env, &config.billing),
+        );
+        Self::emit_audit(
+            &env,
+            &caller,
+            "emergency",
+            audit_hash(&env, &old.emergency_protocols),
+            audit_hash(&env, &config.emergency_protocols),
+        );
         Ok(())
     }
 
@@ -489,6 +566,7 @@ impl HospitalRegistry {
         wallet: Address,
         departments: Vec<Department>,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
         validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
         Self::assert_config_auth(&env, &caller, &wallet)?;
@@ -499,12 +577,13 @@ impl HospitalRegistry {
         if departments.len() > MAX_DEPARTMENTS {
             return Err(ContractError::ConfigLimitExceeded);
         }
-        let old = config.clone();
+        let old_hash = audit_hash(&env, &config.departments);
+        let new_hash = audit_hash(&env, &departments);
         config.departments = departments;
         env.storage()
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
-        Self::emit_audit(&env, &caller, "departments", old, config);
+        Self::emit_audit(&env, &caller, "departments", old_hash, new_hash);
         Ok(())
     }
 
@@ -514,6 +593,7 @@ impl HospitalRegistry {
         wallet: Address,
         locations: Vec<Location>,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
         validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
         Self::assert_config_auth(&env, &caller, &wallet)?;
@@ -524,12 +604,13 @@ impl HospitalRegistry {
         if locations.len() > MAX_LOCATIONS {
             return Err(ContractError::ConfigLimitExceeded);
         }
-        let old = config.clone();
+        let old_hash = audit_hash(&env, &config.locations);
+        let new_hash = audit_hash(&env, &locations);
         config.locations = locations;
         env.storage()
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
-        Self::emit_audit(&env, &caller, "locations", old, config);
+        Self::emit_audit(&env, &caller, "locations", old_hash, new_hash);
         Ok(())
     }
 
@@ -539,6 +620,7 @@ impl HospitalRegistry {
         wallet: Address,
         equipment: Vec<EquipmentResource>,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
         validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
         Self::assert_config_auth(&env, &caller, &wallet)?;
@@ -549,12 +631,13 @@ impl HospitalRegistry {
         if equipment.len() > MAX_EQUIPMENT {
             return Err(ContractError::ConfigLimitExceeded);
         }
-        let old = config.clone();
+        let old_hash = audit_hash(&env, &config.equipment);
+        let new_hash = audit_hash(&env, &equipment);
         config.equipment = equipment;
         env.storage()
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
-        Self::emit_audit(&env, &caller, "equipment", old, config);
+        Self::emit_audit(&env, &caller, "equipment", old_hash, new_hash);
         Ok(())
     }
 
@@ -564,6 +647,7 @@ impl HospitalRegistry {
         wallet: Address,
         policies: Vec<PolicyProcedure>,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
         validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
         Self::assert_config_auth(&env, &caller, &wallet)?;
@@ -574,12 +658,13 @@ impl HospitalRegistry {
         if policies.len() > MAX_POLICIES {
             return Err(ContractError::ConfigLimitExceeded);
         }
-        let old = config.clone();
+        let old_hash = audit_hash(&env, &config.policies);
+        let new_hash = audit_hash(&env, &policies);
         config.policies = policies;
         env.storage()
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
-        Self::emit_audit(&env, &caller, "policies", old, config);
+        Self::emit_audit(&env, &caller, "policies", old_hash, new_hash);
         Ok(())
     }
 
@@ -589,6 +674,7 @@ impl HospitalRegistry {
         wallet: Address,
         alerts: Vec<AlertSetting>,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
         validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
         Self::assert_config_auth(&env, &caller, &wallet)?;
@@ -599,12 +685,13 @@ impl HospitalRegistry {
         if alerts.len() > MAX_ALERTS {
             return Err(ContractError::ConfigLimitExceeded);
         }
-        let old = config.clone();
+        let old_hash = audit_hash(&env, &config.alerts);
+        let new_hash = audit_hash(&env, &alerts);
         config.alerts = alerts;
         env.storage()
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
-        Self::emit_audit(&env, &caller, "alerts", old, config);
+        Self::emit_audit(&env, &caller, "alerts", old_hash, new_hash);
         Ok(())
     }
 
@@ -614,6 +701,7 @@ impl HospitalRegistry {
         wallet: Address,
         insurance_providers: Vec<InsuranceProviderConfig>,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
         validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
         Self::assert_config_auth(&env, &caller, &wallet)?;
@@ -624,12 +712,13 @@ impl HospitalRegistry {
         if insurance_providers.len() > MAX_INSURANCE_PROVIDERS {
             return Err(ContractError::ConfigLimitExceeded);
         }
-        let old = config.clone();
+        let old_hash = audit_hash(&env, &config.insurance_providers);
+        let new_hash = audit_hash(&env, &insurance_providers);
         config.insurance_providers = insurance_providers;
         env.storage()
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
-        Self::emit_audit(&env, &caller, "insurance", old, config);
+        Self::emit_audit(&env, &caller, "insurance", old_hash, new_hash);
         Ok(())
     }
 
@@ -639,16 +728,18 @@ impl HospitalRegistry {
         wallet: Address,
         billing: BillingConfig,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
         validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
         Self::assert_config_auth(&env, &caller, &wallet)?;
         let mut config = Self::get_hospital_config(env.clone(), wallet.clone())?;
-        let old = config.clone();
+        let old_hash = audit_hash(&env, &config.billing);
+        let new_hash = audit_hash(&env, &billing);
         config.billing = billing;
         env.storage()
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
-        Self::emit_audit(&env, &caller, "billing", old, config);
+        Self::emit_audit(&env, &caller, "billing", old_hash, new_hash);
         Ok(())
     }
 
@@ -658,6 +749,7 @@ impl HospitalRegistry {
         wallet: Address,
         protocols: Vec<EmergencyProtocol>,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
         validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
         Self::assert_config_auth(&env, &caller, &wallet)?;
@@ -668,12 +760,13 @@ impl HospitalRegistry {
         if protocols.len() > MAX_EMERGENCY_PROTOCOLS {
             return Err(ContractError::ConfigLimitExceeded);
         }
-        let old = config.clone();
+        let old_hash = audit_hash(&env, &config.emergency_protocols);
+        let new_hash = audit_hash(&env, &protocols);
         config.emergency_protocols = protocols;
         env.storage()
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
-        Self::emit_audit(&env, &caller, "emergency", old, config);
+        Self::emit_audit(&env, &caller, "emergency", old_hash, new_hash);
         Ok(())
     }
 }

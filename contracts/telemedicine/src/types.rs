@@ -33,6 +33,8 @@ pub enum Error {
     PatientLocationNotConfirmed = 19,
     /// Session start is outside the allowed window around the scheduled time
     OutsideScheduledWindow = 20,
+    /// There is no session record to consume for this visit
+    SessionRecordNotFound = 21,
 }
 
 /// On-chain record of a provider's license in a given jurisdiction (state/region).
@@ -129,7 +131,6 @@ pub struct Prescription {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionRecord {
-    pub token_hash: BytesN<32>,
     pub visit_id: u64,
     pub caller: Address,
     pub expires_at: u64,
@@ -159,7 +160,6 @@ pub struct RateLimitConfig {
 pub enum DataKey {
     VirtualVisit(u64),
     VisitCount,
-    SessionNonce,
     Session(u64),
     /// (provider_id, jurisdiction) -> ProviderLicense
     LicenseRegistry(Address, String),

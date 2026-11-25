@@ -20,7 +20,7 @@ impl MockAccessControl {
         _env: Env,
         _subject: Address,
         _grantee: Address,
-        _purpose_code: String,
+        _purpose_code: ConsentPurpose,
         _required_scope: u32,
     ) {
     }
