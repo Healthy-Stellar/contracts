@@ -16,8 +16,9 @@
 //!   MAX_PUBLIC_INPUTS and proof length at MAX_PROOF_BYTES.
 //! - A successful verification is recorded on-chain (nullifier pattern) so
 //!   the same proof cannot be replayed within the TTL window.
-//! - Nullifiers expire after `nullifier_ttl_ledgers` ledgers; expired
-//!   nullifiers allow re-verification with the same proof.
+//! - Nullifiers expire at `max(proof_expiry, now + nullifier_ttl)` (ledger
+//!   timestamps). Eligibility cache entries expire at
+//!   `min(proof_expiry, now + nullifier_ttl)`.
 //! - Integration point: other contracts call `verify_eligibility` and receive
 //!   a typed `Ok(())` / `Err(Error)` they can gate their own logic on.
 
@@ -48,8 +49,12 @@ pub const MAX_PUBLIC_INPUTS: u32 = 16;
 pub const MAX_PROOF_BYTES: u32 = 512;
 /// Maximum subjects/bundles accepted in a single batch call.
 pub const MAX_BATCH_SIZE: u32 = 10;
-/// Default nullifier TTL in ledgers when not explicitly configured (~1 day at 5s/ledger).
-pub const DEFAULT_NULLIFIER_TTL_LEDGERS: u32 = 17_280;
+/// Default nullifier TTL in seconds when not explicitly configured (1 day).
+pub const DEFAULT_NULLIFIER_TTL_SECONDS: u32 = 86_400;
+/// Minimum configurable nullifier TTL in seconds (1 day). Prevents `0`, which disables replay protection.
+pub const MIN_NULLIFIER_TTL_SECONDS: u32 = 86_400;
+/// Maximum configurable nullifier TTL in seconds (2 years).
+pub const MAX_NULLIFIER_TTL_SECONDS: u32 = 2 * 365 * 86_400;
 /// Window (in seconds) within which a new admin must accept the rotation (~24 hours).
 pub const ADMIN_ROTATION_WINDOW: u64 = 86_400;
 /// Alias for `ADMIN_ROTATION_WINDOW`; used by tests and external callers.
@@ -83,6 +88,7 @@ pub enum Error {
     /// satisfy the stub commitment check.  Never returned by a correct proof
     /// submission; exists so integration tests can assert the stub is active.
     StubVerifierActive   = 16,
+    InvalidNullifierTtl  = 17,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -93,13 +99,13 @@ pub enum DataKey {
     Admin,
     /// Verifier key for a given schema version.
     VerifierKey(u32),
-    /// Nullifier: proof hash → NullifierRecord (schema version + expiry ledger).
+    /// Nullifier: proof hash → NullifierRecord (schema version + expiry timestamp).
     Nullifier(BytesN<32>),
     /// Cached subject eligibility after a successful proof.
-    /// Value is a (bool, u32) tuple: (eligible, expires_at_ledger)
+    /// Value is a (bool, u64) tuple: (eligible, expires_at_timestamp)
     Eligibility(Address),
-    /// Configurable TTL (in ledgers) for nullifier entries.
-    NullifierTtlLedgers,
+    /// Configurable TTL (in seconds) for nullifier entries.
+    NullifierTtlSeconds,
     PendingAdmin,
     RotationExpiry,
 }
@@ -129,8 +135,8 @@ pub struct VerifierKeyEntry {
 pub struct NullifierRecord {
     /// Schema version the proof was verified against.
     pub schema_version: u32,
-    /// Ledger sequence number at which this nullifier expires.
-    pub expires_at_ledger: u32,
+    /// Ledger timestamp (seconds) at which this nullifier expires.
+    pub expires_at: u64,
 }
 
 /// Proof submission bundle.
@@ -162,14 +168,19 @@ impl ZkEligibility {
         env.storage().persistent().set(&DataKey::Initialized, &true);
     }
 
-    /// Set the nullifier TTL in ledgers. Admin only.
-    pub fn set_nullifier_ttl(env: Env, admin: Address, ttl_ledgers: u32) -> Result<(), Error> {
-        ttl_config::extend_instance_ttl(&env);
+    /// Set the nullifier TTL in seconds. Admin only. Must be within
+    /// `MIN_NULLIFIER_TTL_SECONDS..=MAX_NULLIFIER_TTL_SECONDS`.
+    pub fn set_nullifier_ttl(env: Env, admin: Address, ttl_seconds: u32) -> Result<(), Error> {
         Self::assert_initialized(&env)?;
         Self::assert_admin(&env, &admin)?;
+        if !(MIN_NULLIFIER_TTL_SECONDS..=MAX_NULLIFIER_TTL_SECONDS).contains(&ttl_seconds) {
+            return Err(Error::InvalidNullifierTtl);
+        }
         env.storage()
             .persistent()
-            .set(&DataKey::NullifierTtlLedgers, &ttl_ledgers);
+            .set(&DataKey::NullifierTtlSeconds, &ttl_seconds);
+        env.events()
+            .publish((symbol_short!("nul_ttl"),), ttl_seconds);
         Ok(())
     }
 
@@ -349,14 +360,13 @@ impl ZkEligibility {
         }
 
         // ── Record nullifier ──────────────────────────────────────────────────
-        Self::store_nullifier(&env, &proof_hash, bundle.schema_version);
+        Self::store_nullifier(&env, &proof_hash, bundle.schema_version, expiry);
         
-        // ── Cache eligibility with expiry ────────────────────────────────────────
-        let eligibility_expires_at = env.ledger().sequence().saturating_add(
-            env.storage()
-                .persistent()
-                .get(&DataKey::NullifierTtlLedgers)
-                .unwrap_or(DEFAULT_NULLIFIER_TTL_LEDGERS),
+        // ── Cache eligibility until the proof expires or the cache TTL lapses ────
+        let eligibility_expires_at = expiry.min(
+            env.ledger()
+                .timestamp()
+                .saturating_add(Self::nullifier_ttl(&env) as u64),
         );
         env.storage()
             .persistent()
@@ -415,15 +425,15 @@ impl ZkEligibility {
     /// Check whether a subject has a cached successful eligibility proof.
     /// Returns false if the cached entry has expired.
     pub fn is_eligible(env: Env, subject: Address) -> bool {
-        let cache_entry: Option<(bool, u32)> = env
+        let cache_entry: Option<(bool, u64)> = env
             .storage()
             .persistent()
             .get(&DataKey::Eligibility(subject));
-        
+
         match cache_entry {
-            Some((eligible, expires_at_ledger)) => {
+            Some((eligible, expires_at)) => {
                 // Check if cache has expired
-                if env.ledger().sequence() >= expires_at_ledger {
+                if env.ledger().timestamp() >= expires_at {
                     return false;
                 }
                 eligible
@@ -435,7 +445,7 @@ impl ZkEligibility {
     // ── internal helpers ──────────────────────────────────────────────────────
 
     /// Returns `true` when the nullifier for `proof_hash` is active:
-    /// - The record exists and has not yet reached its `expires_at_ledger`.
+    /// - The record exists and has not yet reached its `expires_at` timestamp.
     /// - The schema it was recorded against is either still active or was
     ///   migrated to a new version (deprecated-migrated). Non-migrated
     ///   deprecated schemas have their nullifiers invalidated so subjects
@@ -450,7 +460,7 @@ impl ZkEligibility {
             None => return false,
         };
 
-        if env.ledger().sequence() >= record.expires_at_ledger {
+        if env.ledger().timestamp() >= record.expires_at {
             return false;
         }
 
@@ -464,16 +474,24 @@ impl ZkEligibility {
         }
     }
 
-    fn store_nullifier(env: &Env, proof_hash: &BytesN<32>, schema_version: u32) {
-        let ttl: u32 = env
-            .storage()
+    fn nullifier_ttl(env: &Env) -> u32 {
+        env.storage()
             .persistent()
-            .get(&DataKey::NullifierTtlLedgers)
-            .unwrap_or(DEFAULT_NULLIFIER_TTL_LEDGERS);
-        let expires_at = env.ledger().sequence().saturating_add(ttl);
+            .get(&DataKey::NullifierTtlSeconds)
+            .unwrap_or(DEFAULT_NULLIFIER_TTL_SECONDS)
+    }
+
+    /// Keeps the nullifier at least until the proof's own expiry, so the proof
+    /// cannot be replayed after its nullifier lapses.
+    fn store_nullifier(env: &Env, proof_hash: &BytesN<32>, schema_version: u32, proof_expiry: u64) {
+        let ttl_expiry = env
+            .ledger()
+            .timestamp()
+            .saturating_add(Self::nullifier_ttl(env) as u64);
+        let expires_at = proof_expiry.max(ttl_expiry);
         env.storage().persistent().set(
             &DataKey::Nullifier(proof_hash.clone()),
-            &NullifierRecord { schema_version, expires_at_ledger: expires_at },
+            &NullifierRecord { schema_version, expires_at },
         );
     }
 
@@ -516,14 +534,13 @@ impl ZkEligibility {
             return false;
         }
 
-        Self::store_nullifier(env, &proof_hash, bundle.schema_version);
+        Self::store_nullifier(env, &proof_hash, bundle.schema_version, expiry);
         
-        // ── Cache eligibility with expiry ────────────────────────────────────────
-        let eligibility_expires_at = env.ledger().sequence().saturating_add(
-            env.storage()
-                .persistent()
-                .get(&DataKey::NullifierTtlLedgers)
-                .unwrap_or(DEFAULT_NULLIFIER_TTL_LEDGERS),
+        // ── Cache eligibility until the proof expires or the cache TTL lapses ────
+        let eligibility_expires_at = expiry.min(
+            env.ledger()
+                .timestamp()
+                .saturating_add(Self::nullifier_ttl(&env) as u64),
         );
         env.storage()
             .persistent()
