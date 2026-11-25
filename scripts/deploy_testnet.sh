@@ -38,7 +38,7 @@ Usage: $(basename "$0") [options]
 Deploys the patient-registry contract to Stellar Testnet and runs a smoke test.
 
 Options:
-  --admin-identity <alias>       Identity alias used for deploy + initialize
+  --admin-identity <alias>       Identity alias used to deploy (admin is bound via constructor; requires FEE_TOKEN_ADDRESS, optional TREASURY_ADDRESS)
   --patient-identity <alias>     Identity alias used for patient registration
   --doctor-identity <alias>      Identity alias used for doctor record creation
   --network-name <name>          Network label for log output (default: ${NETWORK_NAME})
@@ -321,20 +321,23 @@ step "Building ${PACKAGE_NAME} WASM..."
 [[ -f "${WASM_PATH}" ]] || die "Expected WASM was not produced at ${WASM_PATH}"
 log "Built WASM: ${WASM_PATH}"
 
-step "Deploying contract to ${NETWORK_NAME}..."
+[[ -n "${FEE_TOKEN_ADDRESS:-}" ]] || die "Set FEE_TOKEN_ADDRESS to the fee token contract address"
+TREASURY_ADDRESS="${TREASURY_ADDRESS:-${ADMIN_ADDRESS}}"
+
+step "Deploying contract to ${NETWORK_NAME} (constructor binds admin, treasury, fee token)..."
 DEPLOY_OUTPUT="$(
     "${CLI_BIN}" contract deploy \
         "${RPC_ARGS[@]}" \
         --source "${ADMIN_IDENTITY}" \
-        --wasm "${WASM_PATH}" 2>&1
+        --wasm "${WASM_PATH}" \
+        -- \
+        --admin "${ADMIN_ADDRESS}" \
+        --treasury "${TREASURY_ADDRESS}" \
+        --fee_token "${FEE_TOKEN_ADDRESS}" 2>&1
 )"
 CONTRACT_ID="$(extract_contract_id "${DEPLOY_OUTPUT}" || true)"
 [[ -n "${CONTRACT_ID}" ]] || die "Contract deployment did not return a contract ID. Output: ${DEPLOY_OUTPUT}"
-log "Deployed contract ID: ${CONTRACT_ID}"
-
-step "Initializing contract..."
-invoke_contract "${ADMIN_IDENTITY}" initialize --admin "${ADMIN_ADDRESS}" >/dev/null
-log "Initialized contract with admin ${ADMIN_ADDRESS}"
+log "Deployed and initialized contract ID: ${CONTRACT_ID}"
 
 step "Registering test patient..."
 invoke_contract \

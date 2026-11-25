@@ -112,6 +112,7 @@ impl ScholarshipFundContract{
     /// Runs atomically as part of contract creation, so the deployer binds the
     /// admin and token addresses and no front-running `initialize` call is possible.
     pub fn __constructor(env:Env,admin:Address,token:Address){
+        ttl_config::extend_instance_ttl(&env);
         env.storage().instance().set(&DataKey::Admin,&admin);
         env.storage().instance().set(&DataKey::Token,&token);
         env.storage().instance().set(&DataKey::PoolBalance,&0i128);
@@ -179,6 +180,7 @@ impl ScholarshipFundContract{
     }
     /// Deposit tokens into the pool in exchange for pro-rata shares of the uncommitted pool.
     pub fn deposit(env:Env,depositor:Address,amount:i128)->Result<(),Error>{
+        ttl_config::extend_instance_ttl(&env);
         depositor.require_auth();
         if amount<=0{return Err(Error::ZeroAmount);}
         let token_addr:Address=env.storage().instance().get(&DataKey::Token).ok_or(Error::NotInitialized)?;
@@ -208,8 +210,10 @@ impl ScholarshipFundContract{
         env.events().publish((symbol_short!("DEPOSIT"),depositor),amount);
         Ok(())
     }
-    /// Withdraw up to the depositor's pro-rata share of the uncommitted pool.
+    /// Withdraw up to the depositor's pro-rata share of the whole pool. Committed funds count toward
+    /// the share but cannot be withdrawn until released or disbursed.
     pub fn withdraw(env:Env,depositor:Address,amount:i128)->Result<(),Error>{
+        ttl_config::extend_instance_ttl(&env);
         depositor.require_auth();
         if amount<=0{return Err(Error::ZeroAmount);}
         let shares_key = DataKey::Shares(depositor.clone());
@@ -217,14 +221,13 @@ impl ScholarshipFundContract{
         let held=donor_shares(&env,&shares_key);
         let total=total_shares(&env);
         let pool=pool_balance(&env);
+        if amount>share_value(held,pool,total)?{return Err(Error::InsufficientFunds);}
+        // Liquidity limit: committed funds are owned by donors but cannot leave the pool yet.
         let available=pool-committed_funds(&env);
-        if amount>share_value(held,available,total)?{
-            // Distinguish funds earmarked for a pending award from funds the donor never had.
-            if amount<=share_value(held,pool,total)?{return Err(Error::FundsCommitted);}
-            return Err(Error::InsufficientFunds);
-        }
-        // Burn shares rounded up so rounding never favours the withdrawer.
-        let burned=(amount.checked_mul(total).ok_or(Error::Overflow)?+available-1)/available;
+        if amount>available{return Err(Error::FundsCommitted);}
+        // Burn shares rounded up so rounding never favours the withdrawer. `amount <= available`
+        // and `amount > 0` imply `pool > 0`, so the division is safe.
+        let burned=(amount.checked_mul(total).ok_or(Error::Overflow)?+pool-1)/pool;
         let token_addr:Address=env.storage().instance().get(&DataKey::Token).ok_or(Error::NotInitialized)?;
         let pool_addr=env.current_contract_address();
         token::Client::new(&env,&token_addr).transfer(&pool_addr,&depositor,&amount);
