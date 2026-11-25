@@ -1,9 +1,12 @@
 name: Extend Contract TTLs
 
 on:
-  # Weekly: every Monday at 06:00 UTC. (Disabled until mainnet deployment)
-  # schedule:
-  #   - cron: "0 6 * * 1"
+  # Weekly: every Monday at 06:00 UTC. Contract code bumps instance and
+  # critical entries on every write (ttl_config::extend_instance_ttl), but
+  # contracts that are not called for months still need this off-chain bump.
+  # Failures open/update a tracking issue (see the `alert-on-failure` job).
+  schedule:
+    - cron: "0 6 * * 1"
   # Manual trigger for ad-hoc extension.
   workflow_dispatch:
     inputs:
@@ -24,6 +27,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   # ──────────────────────────────────────────────────────────────────────────
   # ttl-monitoring: Gate — fail hard if the manifest is absent or incomplete.
@@ -35,6 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       network: ${{ steps.pick-network.outputs.network }}
+      deployed: ${{ steps.check-manifest.outputs.deployed }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -67,6 +75,13 @@ jobs:
 
           # The manifest MUST have _status == "complete".
           STATUS=$(python3 -c "import json, sys; d=json.load(open('$MANIFEST')); print(d.get('_status',''))")
+          # A scheduled run before the first deployment has nothing to extend:
+          # skip quietly instead of failing (and alerting) every week.
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$STATUS" = "not-yet-deployed" ]; then
+            echo "::notice::Manifest '${MANIFEST}' is marked not-yet-deployed; skipping scheduled TTL extension."
+            echo "deployed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$STATUS" != "complete" ]; then
             echo "::error::Manifest '${MANIFEST}' exists but _status='${STATUS}' (expected 'complete')."
             echo "  Either the deployment did not finish, or contracts are not yet deployed."
@@ -74,6 +89,7 @@ jobs:
             exit 1
           fi
 
+          echo "deployed=true" >> "$GITHUB_OUTPUT"
           echo "Manifest '${MANIFEST}' is present and complete."
 
   # ──────────────────────────────────────────────────────────────────────────
@@ -84,6 +100,7 @@ jobs:
     name: Extend TTLs on ${{ needs.ttl-monitoring.outputs.network }}
     runs-on: ubuntu-latest
     needs: ttl-monitoring
+    if: needs.ttl-monitoring.outputs.deployed == 'true'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -163,3 +180,35 @@ jobs:
           fi
 
           echo "All contract TTLs extended successfully."
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # alert-on-failure: Any failure (manifest gate or extension) opens a
+  # tracking issue, or comments on the open one, so a silently failing
+  # schedule cannot let contracts drift into archival (#580, #632, #701).
+  # ──────────────────────────────────────────────────────────────────────────
+  alert-on-failure:
+    name: Alert on TTL extension failure
+    runs-on: ubuntu-latest
+    needs: [ttl-monitoring, extend-ttls]
+    if: failure()
+    steps:
+      - name: Open or update tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          NETWORK: ${{ needs.ttl-monitoring.outputs.network || github.event.inputs.network || 'mainnet' }}
+        run: |
+          TITLE="Extend Contract TTLs failed (${NETWORK})"
+          BODY="The \`Extend Contract TTLs\` workflow failed on \`${NETWORK}\` at $(date -u +%Y-%m-%dT%H:%M:%SZ).
+
+          Run: ${RUN_URL}
+
+          Contracts whose instance entry is archived reject **every** call until restored.
+          Follow the manual extension and restore runbook in TTL_POLICY.md before the next scheduled run."
+          EXISTING=$(gh issue list --state open --search "in:title \"${TITLE}\"" --json number --jq '.[0].number' || true)
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "$BODY"
+          else
+            gh issue create --title "$TITLE" --body "$BODY"
+          fi

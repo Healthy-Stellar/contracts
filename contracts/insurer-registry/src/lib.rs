@@ -103,6 +103,7 @@ pub struct InsurerRegistry;
 #[contractimpl]
 impl InsurerRegistry {
     pub fn __constructor(env: Env, admin: Address) {
+        ttl_config::extend_instance_ttl(&env);
         assert!(validate_nonzero_address(&admin).is_ok());
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -114,14 +115,19 @@ impl InsurerRegistry {
         issuer: Address,
         trusted: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&issuer).map_err(|_| Error::InvalidAddress)?;
         Self::require_admin(&env, &admin)?;
-        let key = DataKey::TrustedIssuer(issuer);
+        let key = DataKey::TrustedIssuer(issuer.clone());
         if trusted {
             env.storage().persistent().set(&key, &true);
         } else {
             env.storage().persistent().remove(&key);
         }
+        env.events().publish(
+            (Symbol::new(&env, "issuer_trust"), issuer),
+            trusted,
+        );
         Ok(())
     }
 
@@ -144,6 +150,7 @@ impl InsurerRegistry {
         expires_at: u64,
         revocation_reference: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&issuer).map_err(|_| Error::InvalidAddress)?;
         wallet.require_auth();
@@ -186,6 +193,7 @@ impl InsurerRegistry {
     }
 
     /// Renew an insurer credential using an issuer trusted by the registry admin.
+    /// Revoked credentials cannot be renewed; use `reinstate_insurer` first.
     pub fn renew_credential(
         env: Env,
         wallet: Address,
@@ -195,6 +203,7 @@ impl InsurerRegistry {
         expires_at: u64,
         revocation_reference: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&issuer).map_err(|_| Error::InvalidAddress)?;
         wallet.require_auth();
@@ -202,12 +211,15 @@ impl InsurerRegistry {
         Self::require_trusted_issuer(&env, &issuer)?;
         Self::validate_credential_expiry(&env, expires_at)?;
 
-        let key = DataKey::Insurer(wallet);
+        let key = DataKey::Insurer(wallet.clone());
         let mut insurer: InsurerData = env
             .storage()
             .persistent()
             .get(&key)
             .ok_or(Error::InsurerNotFound)?;
+        if insurer.credential.revoked_at.is_some() {
+            return Err(Error::NotAuthorized);
+        }
         insurer.credential = CredentialAnchor {
             credential_hash,
             issuer,
@@ -219,6 +231,32 @@ impl InsurerRegistry {
             revoked_by: None,
         };
         env.storage().persistent().set(&key, &insurer);
+
+        env.events()
+            .publish((Symbol::new(&env, "cred_renew"), wallet), expires_at);
+        Ok(())
+    }
+
+    /// Clear a credential revocation so the insurer can be renewed and used again.
+    /// Only the registry admin may reinstate an insurer.
+    pub fn reinstate_insurer(env: Env, admin: Address, wallet: Address) -> Result<(), Error> {
+        validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
+        Self::require_admin(&env, &admin)?;
+
+        let key = DataKey::Insurer(wallet.clone());
+        let mut insurer: InsurerData = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::InsurerNotFound)?;
+        insurer.credential.revoked_at = None;
+        insurer.credential.revocation_reason = None;
+        insurer.credential.revoked_by = None;
+        env.storage().persistent().set(&key, &insurer);
+
+        env.events()
+            .publish((symbol_short!("cred_rein"), wallet, admin), ());
         Ok(())
     }
 
@@ -261,6 +299,7 @@ impl InsurerRegistry {
     /// * `wallet` - The wallet address of the insurance company
     /// * `metadata` - Updated metadata information
     pub fn update_insurer(env: Env, wallet: Address, metadata: String) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         wallet.require_auth();
 
@@ -293,6 +332,7 @@ impl InsurerRegistry {
         wallet: Address,
         contact_details: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         wallet.require_auth();
 
@@ -327,6 +367,7 @@ impl InsurerRegistry {
         wallet: Address,
         coverage_policies: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         wallet.require_auth();
 
@@ -365,10 +406,14 @@ impl InsurerRegistry {
             .ok_or(Error::InsurerNotFound)
     }
 
+    /// An insurer is active only while its credential is unrevoked, unexpired, and its issuer
+    /// is still trusted. Removing issuer trust deactivates every insurer it registered.
     pub fn is_insurer_active(env: Env, wallet: Address) -> bool {
         let now = env.ledger().timestamp();
-        if let Ok(insurer) = Self::get_insurer(env, wallet) {
-            insurer.credential.revoked_at.is_none() && insurer.credential.expires_at > now
+        if let Ok(insurer) = Self::get_insurer(env.clone(), wallet) {
+            insurer.credential.revoked_at.is_none()
+                && insurer.credential.expires_at > now
+                && Self::require_trusted_issuer(&env, &insurer.credential.issuer).is_ok()
         } else {
             false
         }
@@ -380,6 +425,7 @@ impl InsurerRegistry {
         insurer_wallet: Address,
         plans: Vec<CoveragePlan>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&insurer_wallet).map_err(|_| Error::InvalidAddress)?;
         insurer_wallet.require_auth();
 
@@ -445,6 +491,7 @@ impl InsurerRegistry {
         effective_from: u64,
         effective_until: Option<u64>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         wallet.require_auth();
 
@@ -516,6 +563,7 @@ impl InsurerRegistry {
         insurer_wallet: Address,
         reviewer_wallet: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&insurer_wallet).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&reviewer_wallet).map_err(|_| Error::InvalidAddress)?;
         insurer_wallet.require_auth();
@@ -565,6 +613,7 @@ impl InsurerRegistry {
         insurer_wallet: Address,
         reviewers: Vec<Address>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&insurer_wallet).map_err(|_| Error::InvalidAddress)?;
         insurer_wallet.require_auth();
 
@@ -633,6 +682,7 @@ impl InsurerRegistry {
         insurer_wallet: Address,
         reviewer_wallet: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&insurer_wallet).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&reviewer_wallet).map_err(|_| Error::InvalidAddress)?;
         insurer_wallet.require_auth();
@@ -693,6 +743,7 @@ impl InsurerRegistry {
         wallet: Address,
         reason: Symbol,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         Self::require_admin(&env, &admin)?;

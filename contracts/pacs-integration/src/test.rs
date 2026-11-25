@@ -1,18 +1,49 @@
 #![cfg(test)]
 
-use soroban_sdk::{testutils::{Address as _, Ledger}, Address, BytesN, Env, String, Symbol, Vec};
+use soroban_sdk::{
+    contract, contractimpl,
+    testutils::{Address as _, Ledger},
+    Address, BytesN, Env, String, Symbol, Vec,
+};
 
 use crate::types::{ComparisonCriteria, Error, ImagingFilters};
 use crate::{PacsContract, PacsContractClient};
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
+/// Minimal provider-registry stand-in: every provider is active unless it has
+/// been explicitly deactivated with `deactivate`.
+#[contract]
+pub struct MockProviderRegistry;
+
+#[contractimpl]
+impl MockProviderRegistry {
+    pub fn is_active_provider(env: Env, provider: Address) -> bool {
+        !env.storage().instance().has(&provider)
+    }
+
+    pub fn deactivate(env: Env, provider: Address) {
+        env.storage().instance().set(&provider, &true);
+    }
+}
+
 fn setup(env: &Env) -> (PacsContractClient<'_>, Address, Address) {
+    let (client, _, patient, provider) = setup_with_registry(env);
+    (client, patient, provider)
+}
+
+fn setup_with_registry(
+    env: &Env,
+) -> (PacsContractClient<'_>, MockProviderRegistryClient<'_>, Address, Address) {
+    let registry_id = env.register(MockProviderRegistry, ());
+    let registry = MockProviderRegistryClient::new(env, &registry_id);
     let id = env.register(PacsContract, ());
     let client = PacsContractClient::new(env, &id);
+    let admin = Address::generate(env);
+    client.initialize(&admin, &registry_id);
     let patient = Address::generate(env);
     let provider = Address::generate(env);
-    (client, patient, provider)
+    (client, registry, patient, provider)
 }
 
 fn dummy_hash(env: &Env) -> BytesN<32> {
@@ -173,7 +204,7 @@ fn comparison_study_returns_prior_match() {
         same_side: false,
     };
 
-    let matches = client.request_comparison_study(&current, &provider, &criteria);
+    let matches = client.request_comparison_study(&current, &provider, &criteria, &0, &50);
     assert!(matches.contains(prior));
     assert!(!matches.contains(current));
 }
@@ -205,7 +236,7 @@ fn comparison_study_granted_radiologist_succeeds() {
         same_side: false,
     };
 
-    let matches = client.request_comparison_study(&current, &rad, &criteria);
+    let matches = client.request_comparison_study(&current, &rad, &criteria, &0, &50);
     assert!(matches.contains(prior));
     assert!(!matches.contains(current));
 }
@@ -228,7 +259,7 @@ fn comparison_study_unauthorized_caller_fails() {
         same_side: false,
     };
 
-    let result = client.try_request_comparison_study(&current, &stranger, &criteria);
+    let result = client.try_request_comparison_study(&current, &stranger, &criteria, &0, &50);
     assert!(matches!(result, Err(Ok(Error::Unauthorized))));
 }
 
@@ -248,7 +279,7 @@ fn comparison_study_wrong_modality_no_match() {
         max_age_days: 365,
         same_side: false,
     };
-    let matches = client.request_comparison_study(&current, &provider, &criteria);
+    let matches = client.request_comparison_study(&current, &provider, &criteria, &0, &50);
     assert_eq!(matches.len(), 0);
 }
 
@@ -483,6 +514,8 @@ fn search_studies_modality_filter() {
         &patient,
         &String::from_str(&env, ""),
         &filters,
+        &0,
+        &50,
     );
     assert_eq!(results.len(), 1);
 }
@@ -506,6 +539,8 @@ fn search_studies_wrong_modality_no_results() {
         &patient,
         &String::from_str(&env, ""),
         &filters,
+        &0,
+        &50,
     );
     assert_eq!(results.len(), 0);
 }
@@ -539,6 +574,8 @@ fn search_studies_critical_findings_filter() {
         &patient,
         &String::from_str(&env, ""),
         &filters,
+        &0,
+        &50,
     );
     assert_eq!(results.len(), 1);
 }
@@ -737,7 +774,7 @@ fn view_records_include_hash_chain_links() {
         &9_u32,
     );
 
-    let logs = client.get_study_view_logs(&sid);
+    let logs = client.get_study_view_logs(&patient, &sid, &0, &50);
     assert_eq!(logs.len(), 2);
 
     let first = logs.get(0).unwrap();
@@ -752,11 +789,7 @@ fn test_acknowledge_critical_finding() {
     env.mock_all_auths();
     env.ledger().set_timestamp(1000);
 
-    let contract_id = env.register(PacsContract, ());
-    let client = PacsContractClient::new(&env, &contract_id);
-
-    let patient = Address::generate(&env);
-    let provider = Address::generate(&env);
+    let (client, patient, provider) = setup(&env);
     let radiologist = Address::generate(&env);
 
     // Register study
@@ -787,7 +820,7 @@ fn test_acknowledge_critical_finding() {
     client.acknowledge_critical_finding(&sid, &provider, &2000u64);
 
     // Verify acknowledgment was recorded
-    let study = client.get_imaging_study(&sid);
+    let study = client.get_imaging_study(&provider, &sid);
     assert!(study.critical_findings);
 }
 
@@ -797,11 +830,7 @@ fn test_acknowledge_critical_finding_only_by_ordering_provider() {
     env.mock_all_auths();
     env.ledger().set_timestamp(1000);
 
-    let contract_id = env.register(PacsContract, ());
-    let client = PacsContractClient::new(&env, &contract_id);
-
-    let patient = Address::generate(&env);
-    let provider = Address::generate(&env);
+    let (client, patient, provider) = setup(&env);
     let other_provider = Address::generate(&env);
     let radiologist = Address::generate(&env);
 
@@ -839,11 +868,7 @@ fn test_list_unack_crit_findings() {
     env.mock_all_auths();
     env.ledger().set_timestamp(1000);
 
-    let contract_id = env.register(PacsContract, ());
-    let client = PacsContractClient::new(&env, &contract_id);
-
-    let patient = Address::generate(&env);
-    let provider = Address::generate(&env);
+    let (client, patient, provider) = setup(&env);
     let radiologist = Address::generate(&env);
 
     // Register first study with critical findings (unacknowledged)
@@ -922,4 +947,175 @@ fn test_create_imaging_cd_unauthorized_provider() {
         &1_700_002_000_u64,
     );
     assert!(result.is_err());
+}
+
+// ─── #1111: view-log authorization, paging, provider verification ───────────
+
+#[test]
+fn track_view_by_unauthorized_viewer_fails_and_is_not_logged() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, patient, provider) = setup(&env);
+    let sid = register_ct_chest(&env, &client, &patient, &provider);
+    let stranger = Address::generate(&env);
+
+    env.ledger().set_timestamp(5_000);
+    let result = client.try_track_study_views(
+        &sid,
+        &stranger,
+        &String::from_str(&env, "curious"),
+        &5_000_u64,
+        &10_u32,
+    );
+    assert!(result.is_err());
+
+    let head = client.get_view_log_head(&patient, &sid);
+    assert_eq!(head.count, 0);
+    assert!(head.last_hash.is_none());
+}
+
+#[test]
+fn view_log_is_chained_across_viewers_and_paged() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, patient, provider) = setup(&env);
+    let sid = register_ct_chest(&env, &client, &patient, &provider);
+
+    env.ledger().set_timestamp(6_000);
+    client.track_study_views(
+        &sid,
+        &provider,
+        &String::from_str(&env, "treatment"),
+        &6_000_u64,
+        &5_u32,
+    );
+    env.ledger().set_timestamp(6_010);
+    client.track_study_views(
+        &sid,
+        &patient,
+        &String::from_str(&env, "personal"),
+        &6_010_u64,
+        &5_u32,
+    );
+    env.ledger().set_timestamp(6_020);
+    client.track_study_views(
+        &sid,
+        &provider,
+        &String::from_str(&env, "treatment"),
+        &6_020_u64,
+        &5_u32,
+    );
+
+    let head = client.get_view_log_head(&provider, &sid);
+    assert_eq!(head.count, 3);
+
+    let first_page = client.get_study_view_logs(&provider, &sid, &0, &2);
+    assert_eq!(first_page.len(), 2);
+    let second_page = client.get_study_view_logs(&provider, &sid, &2, &2);
+    assert_eq!(second_page.len(), 1);
+
+    let e0 = first_page.get(0).unwrap();
+    let e1 = first_page.get(1).unwrap();
+    let e2 = second_page.get(0).unwrap();
+    assert!(e0.previous_entry_hash.is_none());
+    assert_eq!(e1.previous_entry_hash, Some(e0.entry_hash.clone()));
+    assert_eq!(e2.previous_entry_hash, Some(e1.entry_hash.clone()));
+    assert_eq!(head.last_hash, Some(e2.entry_hash));
+}
+
+#[test]
+fn view_logs_unreadable_by_stranger() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, patient, provider) = setup(&env);
+    let sid = register_ct_chest(&env, &client, &patient, &provider);
+    let stranger = Address::generate(&env);
+
+    let result = client.try_get_study_view_logs(&stranger, &sid, &0, &10);
+    assert!(matches!(result, Err(Ok(Error::Unauthorized))));
+    let result = client.try_get_imaging_study(&stranger, &sid);
+    assert!(matches!(result, Err(Ok(Error::Unauthorized))));
+}
+
+#[test]
+fn register_study_requires_active_provider() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, registry, patient, provider) = setup_with_registry(&env);
+    registry.deactivate(&provider);
+
+    let result = client.try_register_imaging_study(
+        &patient,
+        &provider,
+        &String::from_str(&env, "1.2.3"),
+        &Symbol::new(&env, "CT"),
+        &String::from_str(&env, "Chest"),
+        &1_700_000_000_u64,
+        &String::from_str(&env, "desc"),
+        &1_u32,
+        &1_u32,
+        &dummy_hash(&env),
+    );
+    assert!(matches!(result, Err(Ok(Error::ProviderNotRegistered))));
+}
+
+#[test]
+fn register_study_requires_initialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let id = env.register(PacsContract, ());
+    let client = PacsContractClient::new(&env, &id);
+    let patient = Address::generate(&env);
+    let provider = Address::generate(&env);
+
+    let result = client.try_register_imaging_study(
+        &patient,
+        &provider,
+        &String::from_str(&env, "1.2.3"),
+        &Symbol::new(&env, "CT"),
+        &String::from_str(&env, "Chest"),
+        &1_700_000_000_u64,
+        &String::from_str(&env, "desc"),
+        &1_u32,
+        &1_u32,
+        &dummy_hash(&env),
+    );
+    assert!(matches!(result, Err(Ok(Error::NotInitialized))));
+}
+
+#[test]
+fn patient_studies_are_paged() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, patient, provider) = setup(&env);
+    for _ in 0..3 {
+        register_ct_chest(&env, &client, &patient, &provider);
+    }
+    assert_eq!(client.get_patient_study_count(&patient), 3);
+
+    let filters = ImagingFilters {
+        modality: None,
+        body_part: None,
+        start_date: None,
+        end_date: None,
+        has_critical_findings: None,
+    };
+    let page1 = client.search_imaging_studies(
+        &patient,
+        &patient,
+        &String::from_str(&env, ""),
+        &filters,
+        &0,
+        &2,
+    );
+    let page2 = client.search_imaging_studies(
+        &patient,
+        &patient,
+        &String::from_str(&env, ""),
+        &filters,
+        &2,
+        &2,
+    );
+    assert_eq!(page1.len(), 2);
+    assert_eq!(page2.len(), 1);
 }

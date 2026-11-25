@@ -25,10 +25,12 @@
 //!
 //! ## Donor Accounting
 //!
-//! Donors hold pro-rata *shares* of the uncommitted pool (`PoolBalance - CommittedFunds`), like LP
-//! shares. Committing or disbursing an award lowers the value of every share equally, so the cost
-//! of an award is borne by all donors in proportion to their stake rather than by whoever withdraws
-//! last. The sum of all donors' withdrawable amounts never exceeds the uncommitted pool.
+//! Donors hold pro-rata *shares* of the whole pool (`PoolBalance`), like LP shares. Committed funds
+//! are still donor-owned, so withdrawals are priced against the full pool; `CommittedFunds` only
+//! limits how much can leave the pool right now. Disbursing an award lowers the value of every
+//! share equally, so the cost of an award is borne by all donors in proportion to their stake
+//! rather than by whoever withdraws last. Committed funds therefore return to the donors who still
+//! hold shares if the commitment is released.
 
 use soroban_sdk::{contract,contracterror,contractimpl,contracttype,symbol_short,token,Address,Env,String};
 use ttl_config::{extend_critical_ttl, extend_critical_ttl_if_exists};
@@ -71,12 +73,14 @@ impl ScholarshipFundContract{
     /// Runs atomically as part of contract creation, so the deployer binds the
     /// admin and token addresses and no front-running `initialize` call is possible.
     pub fn __constructor(env:Env,admin:Address,token:Address){
+        ttl_config::extend_instance_ttl(&env);
         env.storage().instance().set(&DataKey::Admin,&admin);
         env.storage().instance().set(&DataKey::Token,&token);
         env.storage().instance().set(&DataKey::PoolBalance,&0i128);
     }
     /// Deposit tokens into the pool in exchange for pro-rata shares of the uncommitted pool.
     pub fn deposit(env:Env,depositor:Address,amount:i128)->Result<(),Error>{
+        ttl_config::extend_instance_ttl(&env);
         depositor.require_auth();
         if amount<=0{return Err(Error::ZeroAmount);}
         let token_addr:Address=env.storage().instance().get(&DataKey::Token).ok_or(Error::NotInitialized)?;
@@ -106,8 +110,10 @@ impl ScholarshipFundContract{
         env.events().publish((symbol_short!("DEPOSIT"),depositor),amount);
         Ok(())
     }
-    /// Withdraw up to the depositor's pro-rata share of the uncommitted pool.
+    /// Withdraw up to the depositor's pro-rata share of the whole pool. Committed funds count toward
+    /// the share but cannot be withdrawn until released or disbursed.
     pub fn withdraw(env:Env,depositor:Address,amount:i128)->Result<(),Error>{
+        ttl_config::extend_instance_ttl(&env);
         depositor.require_auth();
         if amount<=0{return Err(Error::ZeroAmount);}
         let shares_key = DataKey::Shares(depositor.clone());
@@ -115,14 +121,13 @@ impl ScholarshipFundContract{
         let held=donor_shares(&env,&shares_key);
         let total=total_shares(&env);
         let pool=pool_balance(&env);
+        if amount>share_value(held,pool,total)?{return Err(Error::InsufficientFunds);}
+        // Liquidity limit: committed funds are owned by donors but cannot leave the pool yet.
         let available=pool-committed_funds(&env);
-        if amount>share_value(held,available,total)?{
-            // Distinguish funds earmarked for a pending award from funds the donor never had.
-            if amount<=share_value(held,pool,total)?{return Err(Error::FundsCommitted);}
-            return Err(Error::InsufficientFunds);
-        }
-        // Burn shares rounded up so rounding never favours the withdrawer.
-        let burned=(amount.checked_mul(total).ok_or(Error::Overflow)?+available-1)/available;
+        if amount>available{return Err(Error::FundsCommitted);}
+        // Burn shares rounded up so rounding never favours the withdrawer. `amount <= available`
+        // and `amount > 0` imply `pool > 0`, so the division is safe.
+        let burned=(amount.checked_mul(total).ok_or(Error::Overflow)?+pool-1)/pool;
         let token_addr:Address=env.storage().instance().get(&DataKey::Token).ok_or(Error::NotInitialized)?;
         let pool_addr=env.current_contract_address();
         token::Client::new(&env,&token_addr).transfer(&pool_addr,&depositor,&amount);
@@ -133,23 +138,10 @@ impl ScholarshipFundContract{
         env.events().publish((symbol_short!("WITHDRAW"),depositor),amount);
         Ok(())
     }
-    /// Earmark pool funds for a pending award, protecting them from donor withdrawal.
-    /// Admin-only. Can only commit funds currently uncommitted in the pool.
-    pub fn commit_funds(env:Env,admin:Address,amount:i128)->Result<(),Error>{
-        admin.require_auth();
-        let stored:Address=env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
-        if admin!=stored{return Err(Error::Unauthorized);}
-        if amount<=0{return Err(Error::ZeroAmount);}
-        let pool:i128=env.storage().instance().get(&DataKey::PoolBalance).unwrap_or(0);
-        let committed=committed_funds(&env);
-        if amount>pool-committed{return Err(Error::InsufficientFunds);}
-        env.storage().instance().set(&DataKey::CommittedFunds,&(committed+amount));
-        env.events().publish((symbol_short!("COMMIT"),admin),amount);
-        Ok(())
-    }
     /// Earmark pool funds for a specific pending award recipient. Admin-only. Records a
     /// `Commitment(id)` so the earmark can later be disbursed to that recipient or released.
     pub fn commit_funds_for(env:Env,admin:Address,id:u64,recipient:Address,amount:i128)->Result<(),Error>{
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored:Address=env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
         if admin!=stored{return Err(Error::Unauthorized);}
@@ -168,6 +160,7 @@ impl ScholarshipFundContract{
     /// Release a pending award commitment without disbursing it, restoring the funds to the
     /// uncommitted pool. Admin-only.
     pub fn release_commitment(env:Env,admin:Address,id:u64)->Result<(),Error>{
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored:Address=env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
         if admin!=stored{return Err(Error::Unauthorized);}
@@ -183,6 +176,7 @@ impl ScholarshipFundContract{
     /// must match the recipient and amount) or requires the uncommitted pool to cover the award so
     /// existing commitments stay backed.
     pub fn disburse(env:Env,admin:Address,recipient:Address,amount:i128)->Result<(),Error>{
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored:Address=env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
         if admin!=stored{return Err(Error::Unauthorized);}
@@ -200,6 +194,7 @@ impl ScholarshipFundContract{
     /// Disburse a specific commitment to its recorded recipient, consuming the earmark.
     /// Admin-only.
     pub fn disburse_commitment(env:Env,admin:Address,id:u64)->Result<(),Error>{
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored:Address=env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
         if admin!=stored{return Err(Error::Unauthorized);}

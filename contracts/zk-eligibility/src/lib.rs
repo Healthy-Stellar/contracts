@@ -163,6 +163,7 @@ impl ZkEligibility {
     /// Runs atomically as part of contract creation and cannot be called again,
     /// so an attacker cannot front-run deployment and elect themselves admin.
     pub fn __constructor(env: Env, admin: Address) {
+        ttl_config::extend_instance_ttl(&env);
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage().persistent().set(&DataKey::Initialized, &true);
     }
@@ -192,6 +193,7 @@ impl ZkEligibility {
         schema_version: u32,
         vk: Bytes,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
         Self::assert_admin(&env, &admin)?;
 
@@ -219,6 +221,7 @@ impl ZkEligibility {
         admin: Address,
         schema_version: u32,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
         Self::assert_admin(&env, &admin)?;
 
@@ -255,6 +258,7 @@ impl ZkEligibility {
         new_version: u32,
         migration_proof: Bytes,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
         Self::assert_admin(&env, &admin)?;
 
@@ -311,6 +315,7 @@ impl ZkEligibility {
         subject: Address,
         bundle: ProofBundle,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
         subject.require_auth();
 
@@ -385,6 +390,7 @@ impl ZkEligibility {
         subjects: Vec<Address>,
         bundles: Vec<ProofBundle>,
     ) -> Result<Vec<bool>, Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
 
         let len = subjects.len();
@@ -578,6 +584,7 @@ impl ZkEligibility {
 
     /// Propose transferring admin to `new_admin`. Must be confirmed within 24 hours.
     pub fn propose_admin_rotation(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
         Self::assert_admin(&env, &admin)?;
         if env.storage().persistent().has(&DataKey::PendingAdmin) {
@@ -600,6 +607,7 @@ impl ZkEligibility {
 
     /// New admin confirms the rotation proposed by the current admin.
     pub fn accept_admin_rotation(env: Env, new_admin: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
         new_admin.require_auth();
         let pending: Address = env
@@ -628,6 +636,7 @@ impl ZkEligibility {
 
     /// Cancel a pending admin rotation.
     pub fn cancel_admin_rotation(env: Env, admin: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
         Self::assert_admin(&env, &admin)?;
         if !env.storage().persistent().has(&DataKey::PendingAdmin) {
