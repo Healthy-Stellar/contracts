@@ -23,6 +23,9 @@ pub enum DataKey {
     PerformanceReports(u64),
     ManufacturerAllowlist(Address),
     DeviceByUdi(String),
+    ProviderRegistry,
+    HospitalRegistry,
+    RemovingProvider(u64),
 }
 
 #[contracterror]
@@ -40,6 +43,8 @@ pub enum Error {
     ManufacturerNotAuthorized = 9,
     DuplicateUdi = 10,
     ArithmeticOverflow = 11,
+    DeviceRecalled = 12,
+    DeviceAlreadyImplanted = 13,
 }
 
 #[contracttype]

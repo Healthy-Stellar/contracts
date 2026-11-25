@@ -182,6 +182,8 @@ pub enum DataKey {
     RequesterMemoryUsed(Address),
     RequesterCpuLimit,
     RequesterMemoryLimit,
+    JobReservation(u64),
+    LastFailureIncident(Address),
 }
 
 /// --------------------
@@ -297,11 +299,19 @@ impl HealthcareAnalytics {
             .instance()
             .get(&DataKey::RequesterMemoryLimit)
             .unwrap_or(u64::MAX);
-        if req_cpu_used.saturating_add(estimated_cpu) > req_cpu_limit
-            || req_mem_used.saturating_add(estimated_memory) > req_mem_limit
+        let reserved_cpu = req_cpu_used.checked_add(estimated_cpu).ok_or(Error::ArithmeticOverflow)?;
+        let reserved_mem = req_mem_used.checked_add(estimated_memory).ok_or(Error::ArithmeticOverflow)?;
+        if reserved_cpu > req_cpu_limit || reserved_mem > req_mem_limit
         {
             return Err(Error::RequesterThrottled);
         }
+
+        let reserve = |job_id| {
+            let storage = env.storage().persistent();
+            storage.set(&DataKey::RequesterCpuUsed(requester.clone()), &reserved_cpu);
+            storage.set(&DataKey::RequesterMemoryUsed(requester.clone()), &reserved_mem);
+            storage.set(&DataKey::JobReservation(job_id), &(estimated_cpu, estimated_memory));
+        };
 
         let throttled = should_throttle_job(&env, &report_type);
 
@@ -349,6 +359,7 @@ impl HealthcareAnalytics {
                         requester.clone(),
                         quota,
                     );
+                    reserve(job_id);
                     env.storage().persistent().set(
                         &DataKey::JobResultQuality(job_id),
                         &ResultQuality::Truncated,
@@ -372,8 +383,8 @@ impl HealthcareAnalytics {
                 DegradationPolicy::Sample => {
                     let sampling_rate_pct: u32 = 50;
                     let quota = ResourceQuota {
-                        cpu_units: estimated_cpu * (sampling_rate_pct as u64) / 100,
-                        memory_units: estimated_memory * (sampling_rate_pct as u64) / 100,
+                        cpu_units: estimated_cpu / 2,
+                        memory_units: estimated_memory / 2,
                         timeout_seconds: 300,
                     };
                     let job_id = create_report_job(
@@ -383,6 +394,7 @@ impl HealthcareAnalytics {
                         requester.clone(),
                         quota,
                     );
+                    reserve(job_id);
                     env.storage().persistent().set(
                         &DataKey::JobResultQuality(job_id),
                         &ResultQuality::Sampled,
@@ -413,6 +425,7 @@ impl HealthcareAnalytics {
         };
         let job_id =
             create_report_job(&env, report_type.clone(), priority, requester.clone(), quota);
+        reserve(job_id);
 
         env.events()
             .publish((symbol_short!("rep_job"), requester), (report_type, job_id));
@@ -512,29 +525,7 @@ impl HealthcareAnalytics {
             let _ = attach_evidence(&env, incident_id, EvidenceType::ContextData, hash, job.requested_by.clone());
         }
 
-        // Update per-requester cumulative usage (checked to avoid silent wrap).
-        let req_cpu: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::RequesterCpuUsed(job.requested_by.clone()))
-            .unwrap_or(0);
-        let req_mem: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::RequesterMemoryUsed(job.requested_by.clone()))
-            .unwrap_or(0);
-        let total_cpu = req_cpu.checked_add(cpu_used).ok_or(Error::ArithmeticOverflow)?;
-        let total_mem = req_mem
-            .checked_add(memory_used)
-            .ok_or(Error::ArithmeticOverflow)?;
-        env.storage().persistent().set(
-            &DataKey::RequesterCpuUsed(job.requested_by.clone()),
-            &total_cpu,
-        );
-        env.storage().persistent().set(
-            &DataKey::RequesterMemoryUsed(job.requested_by.clone()),
-            &total_mem,
-        );
+        Self::settle_requester_usage(&env, job_id, &job.requested_by, cpu_used, memory_used)?;
 
         let result_quality: ResultQuality = env
             .storage()
@@ -565,10 +556,19 @@ impl HealthcareAnalytics {
 
         let mut job = get_job(&env, job_id).map_err(|_| Error::JobNotFound)?;
 
-        if job.requested_by != requester {
+        let admin: Option<Address> = env.storage().instance().get(&DataKey::Admin);
+        let executor: Option<Address> = env.storage().instance().get(&DataKey::Executor);
+        if admin.as_ref() != Some(&requester) && executor.as_ref() != Some(&requester) {
             return Err(Error::Unauthorized);
         }
+        if job.state != JobState::Running {
+            return Err(Error::JobNotFound);
+        }
 
+        // Failed jobs have no measured usage, so charge the execution quota.
+        Self::settle_requester_usage(
+            &env, job_id, &job.requested_by, job.quota.cpu_units, job.quota.memory_units,
+        )?;
         job.state = JobState::Failed;
         env.storage().persistent().set(&ResourceKey::ReportJob(job_id), &job);
 
@@ -590,20 +590,27 @@ impl HealthcareAnalytics {
             .persistent()
             .set(&ResourceKey::RunningJobs, &new_running);
 
-        // Capture incident for job failure
-        let incident_id = capture_incident(
-            &env,
-            IncidentSeverity::High,
-            String::from_str(&env, "healthcare-analytics"),
-            9, // Job failure error code
-            String::from_str(&env, "Report job failed"),
-            requester.clone(),
-            None,
-        );
-        let hash: Bytes = env.crypto().sha256(
-            &Bytes::from_slice(&env, b"report_job_error_log")
-        ).into();
-        let _ = attach_evidence(&env, incident_id, EvidenceType::ErrorLog, hash, requester);
+        let incident_key = DataKey::LastFailureIncident(job.requested_by.clone());
+        let now = env.ledger().timestamp();
+        let last: Option<u64> = env.storage().persistent().get(&incident_key);
+        if last.is_none_or(|last| now.saturating_sub(last) >= 3600) {
+            // Capture incident for job failure
+            let incident_id = capture_incident(
+                &env,
+                IncidentSeverity::High,
+                String::from_str(&env, "healthcare-analytics"),
+                9, // Job failure error code
+                String::from_str(&env, "Report job failed"),
+                job.requested_by.clone(),
+                None,
+            );
+            let hash: Bytes = env.crypto().sha256(
+                &Bytes::from_slice(&env, b"report_job_error_log")
+            ).into();
+            let _ = attach_evidence(&env, incident_id, EvidenceType::ErrorLog, hash, job.requested_by.clone());
+
+            env.storage().persistent().set(&incident_key, &now);
+        }
 
         env.events()
             .publish((symbol_short!("job_fail"), job_id), error_message);
@@ -1111,9 +1118,33 @@ impl HealthcareAnalytics {
         shared::resource_management::cancel_queued_job(&env, job_id)
             .map_err(|_| Error::JobNotFound)?;
 
+        Self::settle_requester_usage(&env, job_id, &requester, 0, 0)?;
+
         env.events()
             .publish((symbol_short!("rep_canc"), requester), job_id);
 
+        Ok(())
+    }
+
+    fn settle_requester_usage(
+        env: &Env, job_id: u64, requester: &Address, cpu: u64, memory: u64,
+    ) -> Result<(), Error> {
+        let storage = env.storage().persistent();
+        let reservation_key = DataKey::JobReservation(job_id);
+        let (reserved_cpu, reserved_memory): (u64, u64) =
+            storage.get(&reservation_key).unwrap_or((0, 0));
+        let cpu_key = DataKey::RequesterCpuUsed(requester.clone());
+        let memory_key = DataKey::RequesterMemoryUsed(requester.clone());
+        let settle = |key: &DataKey, reserved, actual| {
+            let used: u64 = storage.get(key).unwrap_or(0);
+            used.checked_sub(reserved).and_then(|used| used.checked_add(actual))
+                .ok_or(Error::ArithmeticOverflow)
+        };
+        let cpu = settle(&cpu_key, reserved_cpu, cpu)?;
+        let memory = settle(&memory_key, reserved_memory, memory)?;
+        storage.set(&cpu_key, &cpu);
+        storage.set(&memory_key, &memory);
+        storage.remove(&reservation_key);
         Ok(())
     }
 }

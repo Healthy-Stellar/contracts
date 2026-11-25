@@ -28,7 +28,7 @@
 mod test;
 mod types;
 
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, IntoVal, String, Symbol, Vec};
 use types::{
     DataKey, DeviceExtras, DeviceRecord, DmePrescription, Error, ImplantRecord, MaintenanceRecord,
     PerformanceReport, RecallInfo, WarrantyRecord,
@@ -46,6 +46,31 @@ impl MedicalDeviceRegistry {
     pub fn __constructor(env: Env, regulator: Address) {
         ttl_config::extend_instance_ttl(&env);
         env.storage().instance().set(&DataKey::Regulator, &regulator);
+    }
+
+    pub fn configure_registries(env: Env, regulator: Address, provider_registry: Address, hospital_registry: Address) -> Result<(), Error> {
+        if Self::get_regulator(env.clone())? != regulator {
+            return Err(Error::NotAuthorized);
+        }
+        regulator.require_auth();
+        env.storage().instance().set(&DataKey::ProviderRegistry, &provider_registry);
+        env.storage().instance().set(&DataKey::HospitalRegistry, &hospital_registry);
+        Ok(())
+    }
+
+    fn registry_check(env: &Env, key: DataKey, method: &str, args: Vec<soroban_sdk::Val>) -> Result<(), Error> {
+        let registry: Address = env.storage().instance().get(&key).ok_or(Error::NotAuthorized)?;
+        if matches!(env.try_invoke_contract::<bool, Error>(&registry, &Symbol::new(env, method), args), Ok(Ok(true))) {
+            Ok(())
+        } else {
+            Err(Error::NotAuthorized)
+        }
+    }
+
+    fn require_active_provider(env: &Env, provider: &Address) -> Result<(), Error> {
+        provider.require_auth();
+        Self::registry_check(env, DataKey::ProviderRegistry, "is_provider",
+            soroban_sdk::vec![env, provider.clone().into_val(env)])
     }
 
     /// Return the configured regulator address.
@@ -227,8 +252,8 @@ impl MedicalDeviceRegistry {
         implant_location: String,
         surgical_notes_hash: BytesN<32>,
     ) -> Result<u64, Error> {
-        ttl_config::extend_instance_ttl(&env);
-        provider_id.require_auth();
+        Self::require_active_provider(&env, &provider_id)?;
+        patient_id.require_auth();
 
         let device_id: u64 = env
             .storage()
@@ -242,6 +267,22 @@ impl MedicalDeviceRegistry {
             .has(&DataKey::DeviceRecord(device_id))
         {
             return Err(Error::RecordNotFound);
+        }
+
+        let storage = env.storage().persistent();
+        if storage.get::<_, Vec<u64>>(&DataKey::DeviceRecalls(device_id))
+            .is_some_and(|recalls| !recalls.is_empty())
+        {
+            return Err(Error::DeviceRecalled);
+        }
+        let mut device_implants: Vec<u64> = storage.get(&DataKey::DeviceImplants(device_id))
+            .unwrap_or_else(|| Vec::new(&env));
+        for id in device_implants.iter() {
+            let implant: ImplantRecord = storage.get(&DataKey::ImplantRecord(id))
+                .ok_or(Error::RecordNotFound)?;
+            if implant.is_active {
+                return Err(Error::DeviceAlreadyImplanted);
+            }
         }
 
         let count: u64 = env
@@ -282,11 +323,6 @@ impl MedicalDeviceRegistry {
             .persistent()
             .set(&DataKey::PatientImplants(patient_id.clone()), &patient_implants);
 
-        let mut device_implants: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::DeviceImplants(device_id))
-            .unwrap_or(Vec::new(&env));
         device_implants.push_back(new_id);
         env.storage()
             .persistent()
@@ -294,7 +330,7 @@ impl MedicalDeviceRegistry {
 
         env.events().publish(
             (Symbol::new(&env, "implant_recorded"),),
-            (new_id, device_id, patient_id, implant_date),
+            (new_id, device_id, implant_date),
         );
 
         Ok(new_id)
@@ -597,12 +633,16 @@ impl MedicalDeviceRegistry {
         env: Env,
         implant_record_id: u64,
         provider_id: Address,
+        facility: Address,
         removal_date: u64,
         removal_reason: String,
         explant_analysis_hash: Option<BytesN<32>>,
     ) -> Result<(), Error> {
-        ttl_config::extend_instance_ttl(&env);
-        provider_id.require_auth();
+        Self::require_active_provider(&env, &provider_id)?;
+        Self::registry_check(&env, DataKey::HospitalRegistry, "is_hospital_active",
+            soroban_sdk::vec![&env, facility.clone().into_val(&env)])?;
+        Self::registry_check(&env, DataKey::ProviderRegistry, "is_provider_affiliated",
+            soroban_sdk::vec![&env, provider_id.clone().into_val(&env), facility.into_val(&env)])?;
 
         let mut record: ImplantRecord = env
             .storage()
@@ -614,10 +654,6 @@ impl MedicalDeviceRegistry {
             return Err(Error::DeviceNotActive);
         }
 
-        if provider_id != record.implanting_provider {
-            return Err(Error::NotAuthorized);
-        }
-
         record.is_active = false;
         record.removal_date = Some(removal_date);
         record.removal_reason = Some(removal_reason);
@@ -625,6 +661,8 @@ impl MedicalDeviceRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::ImplantRecord(implant_record_id), &record);
+
+        env.storage().persistent().set(&DataKey::RemovingProvider(implant_record_id), &provider_id);
 
         env.events().publish(
             (Symbol::new(&env, "implant_removed"),),

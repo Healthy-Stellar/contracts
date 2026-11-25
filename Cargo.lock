@@ -1019,7 +1019,6 @@ dependencies = [
 name = "immunization-registry"
 version = "0.0.0"
 dependencies = [
- "provider-registry",
  "soroban-sdk",
  "ttl-config",
 ]

@@ -6,6 +6,19 @@ use soroban_sdk::{
     Address, BytesN, Env, String, Symbol,
 };
 
+#[contract]
+struct TestHospitalRegistry;
+
+#[contractimpl]
+impl TestHospitalRegistry {
+    pub fn is_hospital_active(_env: Env, _facility: Address) -> bool { true }
+}
+
+fn register_tracking(env: &Env) -> Address {
+    let registry = env.register(TestHospitalRegistry, ());
+    env.register(HAITrackingContract, (&registry,))
+}
+
 fn setup() -> (Env, HAITrackingContractClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
@@ -14,7 +27,7 @@ fn setup() -> (Env, HAITrackingContractClient<'static>) {
         l.sequence_number = 100;
     });
 
-    let contract_id = env.register(HAITrackingContract, ());
+    let contract_id = register_tracking(&env);
     let client = HAITrackingContractClient::new(&env, &contract_id);
     (env, client)
 }
@@ -27,7 +40,7 @@ fn report_case(
     infection_type: &str,
     onset_date: u64,
     location: &str,
-    reporter: &Address,
+    _reporter: &Address,
 ) -> u64 {
     client.report_infection(
         patient,
@@ -37,7 +50,7 @@ fn report_case(
         &String::from_str(env, location),
         &false,
         &None,
-        reporter,
+        facility,
     )
 }
 
@@ -348,12 +361,11 @@ fn test_alert_infection_control_team_invalid_priority_fails() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_report_infection_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(HAITrackingContract, ());
+    let contract_id = register_tracking(&env);
     let client = HAITrackingContractClient::new(&env, &contract_id);
 
     let patient = Address::generate(&env);
     let facility = Address::generate(&env);
-    let reporter = Address::generate(&env);
 
     client.report_infection(
         &patient,
@@ -363,7 +375,7 @@ fn test_report_infection_requires_auth() {
         &String::from_str(&env, "ICU"),
         &false,
         &None,
-        &reporter,
+        &facility,
     );
 }
 
@@ -371,7 +383,7 @@ fn test_report_infection_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_identify_outbreak_cluster_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(HAITrackingContract, ());
+    let contract_id = register_tracking(&env);
     let client = HAITrackingContractClient::new(&env, &contract_id);
 
     let facility = Address::generate(&env);
@@ -389,7 +401,7 @@ fn test_identify_outbreak_cluster_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_track_isolation_precaution_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(HAITrackingContract, ());
+    let contract_id = register_tracking(&env);
     let client = HAITrackingContractClient::new(&env, &contract_id);
 
     let patient = Address::generate(&env);
@@ -409,7 +421,7 @@ fn test_track_isolation_precaution_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_record_patient_days_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(HAITrackingContract, ());
+    let contract_id = register_tracking(&env);
     let client = HAITrackingContractClient::new(&env, &contract_id);
 
     let recorder = Address::generate(&env);
@@ -421,7 +433,7 @@ fn test_record_patient_days_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_configure_ward_rate_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(HAITrackingContract, ());
+    let contract_id = register_tracking(&env);
     let client = HAITrackingContractClient::new(&env, &contract_id);
 
     let facility = Address::generate(&env);
@@ -551,4 +563,37 @@ fn test_record_census_rejects_non_facility_reporter() {
         &reporter,
     );
     assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+}
+
+
+#[test]
+fn infection_report_rejects_spoofed_facility_and_future_onset() {
+    let (env, client) = setup();
+    let patient = Address::generate(&env);
+    let facility = Address::generate(&env);
+    let outsider = Address::generate(&env);
+    let report = |reporter: &Address, date| client.try_report_infection(
+        &patient, &facility, &symbol_short!("clabsi"), &date,
+        &String::from_str(&env, "ICU"), &false, &None, reporter,
+    );
+    let now = env.ledger().timestamp();
+    assert_eq!(report(&outsider, now), Err(Ok(Error::NotAuthorized)));
+    assert_eq!(report(&facility, now + 1), Err(Ok(Error::InvalidData)));
+}
+
+
+#[test]
+fn only_ordering_facility_can_discontinue_isolation() {
+    let (env, client) = setup();
+    let patient = Address::generate(&env);
+    let facility = Address::generate(&env);
+    let outsider = Address::generate(&env);
+    let id = client.track_isolation_precaution(
+        &patient, &symbol_short!("contact"), &env.ledger().timestamp(),
+        &String::from_str(&env, "indication"), &String::from_str(&env, "criteria"), &facility,
+    );
+    let reason = String::from_str(&env, "resolved");
+    assert_eq!(client.try_discontinue_isolation_precaution(&id, &outsider, &reason), Err(Ok(Error::NotAuthorized)));
+    client.discontinue_isolation_precaution(&id, &facility, &reason);
+    assert!(client.get_active_isolations(&patient).is_empty());
 }
