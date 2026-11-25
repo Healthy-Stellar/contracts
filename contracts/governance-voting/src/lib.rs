@@ -101,6 +101,7 @@ impl GovernanceVotingContract {
     /// Runs atomically as part of contract creation, so the deployer binds the
     /// admin address and no front-running `initialize` call is possible.
     pub fn __constructor(env: Env, admin: Address) {
+        ttl_config::extend_instance_ttl(&env);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::NextId, &1u64);
         env.storage().instance().set(&DataKey::ActiveProposalCount, &0u32);
@@ -111,6 +112,7 @@ impl GovernanceVotingContract {
 
     /// Propose transferring admin to `new_admin`. Must be confirmed within 24 hours.
     pub fn propose_admin_rotation(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored: Address = env
             .storage()
@@ -140,6 +142,7 @@ impl GovernanceVotingContract {
 
     /// New admin confirms the rotation proposed by the current admin.
     pub fn accept_admin_rotation(env: Env, new_admin: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         new_admin.require_auth();
         let pending: Address = env
             .storage()
@@ -165,6 +168,7 @@ impl GovernanceVotingContract {
 
     /// Cancel a pending admin rotation.
     pub fn cancel_admin_rotation(env: Env, admin: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored: Address = env
             .storage()
@@ -184,6 +188,7 @@ impl GovernanceVotingContract {
 
     /// Register a member eligible to vote.
     pub fn register_member(env: Env, admin: Address, member: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored: Address = env
             .storage()
@@ -195,11 +200,10 @@ impl GovernanceVotingContract {
         }
 
         let key = DataKey::Member(member.clone());
-        if env.storage().persistent().get(&key).unwrap_or(false) {
+        if env.storage().persistent().has(&key) {
             return Ok(());
         }
 
-        env.storage().persistent().set(&key, &true);
         let count: u32 = env
             .storage()
             .instance()
@@ -210,13 +214,16 @@ impl GovernanceVotingContract {
             .storage()
             .instance()
             .get(&DataKey::MemberEpoch)
-            .unwrap_or(0);
-        env.storage().instance().set(&DataKey::MemberEpoch, &(epoch + 1));
+            .unwrap_or(0)
+            + 1;
+        env.storage().instance().set(&DataKey::MemberEpoch, &epoch);
+        env.storage().persistent().set(&key, &epoch);
         Ok(())
     }
 
     /// Unregister a member.
     pub fn unregister_member(env: Env, admin: Address, member: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored: Address = env
             .storage()
@@ -228,7 +235,7 @@ impl GovernanceVotingContract {
         }
 
         let key = DataKey::Member(member.clone());
-        if !env.storage().persistent().get(&key).unwrap_or(false) {
+        if !env.storage().persistent().has(&key) {
             return Ok(());
         }
 
@@ -250,10 +257,7 @@ impl GovernanceVotingContract {
 
     /// Returns true if `member` is currently registered.
     pub fn is_member(env: Env, member: Address) -> bool {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Member(member))
-            .unwrap_or(false)
+        env.storage().persistent().has(&DataKey::Member(member))
     }
 
     /// Create a proposal. Quorum is derived from the current member count via `quorum_bps`.
@@ -265,6 +269,7 @@ impl GovernanceVotingContract {
         quorum_bps: u32,
         duration: u64,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored: Address = env
             .storage()
@@ -336,7 +341,9 @@ impl GovernanceVotingContract {
     }
 
     /// Cast a vote on an active proposal. Only members registered at creation time may vote.
+    /// Members registered after the proposal was created are rejected via the epoch snapshot.
     pub fn vote(env: Env, voter: Address, proposal_id: u64, choice: VoteChoice) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         voter.require_auth();
 
         let mut proposal: Proposal = env
@@ -357,13 +364,13 @@ impl GovernanceVotingContract {
             return Err(Error::AlreadyVoted);
         }
 
-        if !env
+        let joined_epoch: Option<u64> = env
             .storage()
             .persistent()
-            .get(&DataKey::Member(voter.clone()))
-            .unwrap_or(false)
-        {
-            return Err(Error::NotMember);
+            .get(&DataKey::Member(voter.clone()));
+        match joined_epoch {
+            Some(joined) if joined <= proposal.member_epoch => {}
+            _ => return Err(Error::NotMember),
         }
 
         match choice {
@@ -384,6 +391,7 @@ impl GovernanceVotingContract {
 
     /// Finalize a proposal once its deadline has passed.
     pub fn finalize(env: Env, proposal_id: u64) -> Result<ProposalStatus, Error> {
+        ttl_config::extend_instance_ttl(&env);
         let mut proposal: Proposal = env
             .storage()
             .persistent()
@@ -433,6 +441,7 @@ impl GovernanceVotingContract {
 
     /// Current number of registered members.
     pub fn member_count(env: Env) -> u32 {
+        ttl_config::extend_instance_ttl(&env);
         env.storage()
             .instance()
             .get(&DataKey::MemberCount)

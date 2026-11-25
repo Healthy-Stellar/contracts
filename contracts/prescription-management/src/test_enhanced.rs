@@ -1470,6 +1470,7 @@ fn test_migrate_prescription_keys() {
             last_dispensed: None,
             transfer_count: 0,
             transfer_history: Vec::new(&env),
+            days_supply: 0,
         };
         env.storage().persistent().set(&0u64, &legacy);
         env.storage()

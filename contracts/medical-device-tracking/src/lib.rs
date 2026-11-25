@@ -44,6 +44,7 @@ impl MedicalDeviceRegistry {
     /// Runs atomically as part of contract creation and cannot be called again,
     /// so an attacker cannot front-run deployment and choose the regulator.
     pub fn __constructor(env: Env, regulator: Address) {
+        ttl_config::extend_instance_ttl(&env);
         env.storage().instance().set(&DataKey::Regulator, &regulator);
     }
 
@@ -61,6 +62,7 @@ impl MedicalDeviceRegistry {
         regulator: Address,
         manufacturer: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         regulator.require_auth();
         let stored_regulator: Address = env
             .storage()
@@ -82,6 +84,7 @@ impl MedicalDeviceRegistry {
         regulator: Address,
         manufacturer: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         regulator.require_auth();
         let stored_regulator: Address = env
             .storage()
@@ -149,6 +152,7 @@ impl MedicalDeviceRegistry {
         device_specs_hash: BytesN<32>,
         extras: DeviceExtras,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         manufacturer_id.require_auth();
 
         if !Self::is_manufacturer_allowlisted(env.clone(), manufacturer_id.clone()) {
@@ -223,6 +227,7 @@ impl MedicalDeviceRegistry {
         implant_location: String,
         surgical_notes_hash: BytesN<32>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let device_id: u64 = env
@@ -306,6 +311,7 @@ impl MedicalDeviceRegistry {
         duration_days: Option<u64>,
         instructions_hash: BytesN<32>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let count: u64 = env
@@ -342,6 +348,7 @@ impl MedicalDeviceRegistry {
         performed_by: Address,
         notes_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         performed_by.require_auth();
 
         let mut record: ImplantRecord = env
@@ -395,6 +402,7 @@ impl MedicalDeviceRegistry {
         recall_date: u64,
         action_required: String,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         manufacturer.require_auth();
 
         if device_ids.is_empty() {
@@ -459,6 +467,7 @@ impl MedicalDeviceRegistry {
         action_required: String,
         emergency_scope: String,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         regulator.require_auth();
 
         if device_ids.is_empty() || emergency_scope.is_empty() {
@@ -540,6 +549,7 @@ impl MedicalDeviceRegistry {
         recall_id: u64,
         _notification_date: u64,
     ) -> Result<Vec<Address>, Error> {
+        ttl_config::extend_instance_ttl(&env);
         caller.require_auth();
 
         let recall: RecallInfo = env
@@ -591,6 +601,7 @@ impl MedicalDeviceRegistry {
         removal_reason: String,
         explant_analysis_hash: Option<BytesN<32>>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let mut record: ImplantRecord = env
@@ -632,6 +643,7 @@ impl MedicalDeviceRegistry {
         reported_date: u64,
         complications: Option<Vec<String>>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
 
         let implant_record: ImplantRecord = env
@@ -699,6 +711,7 @@ impl MedicalDeviceRegistry {
 
     /// Retrieve all recalls associated with a specific device ID.
     pub fn check_device_recalls(env: Env, device_id: u64) -> Result<Vec<RecallInfo>, Error> {
+        ttl_config::extend_instance_ttl(&env);
         let recall_ids: Vec<u64> = env
             .storage()
             .persistent()
@@ -747,6 +760,7 @@ impl MedicalDeviceRegistry {
         warranty_expiration_date: u64,
         coverage_details_hash: BytesN<32>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         warranty_provider.require_auth();
 
         // Verify device exists
@@ -806,6 +820,7 @@ impl MedicalDeviceRegistry {
         device_id: u64,
         current_time: u64,
     ) -> Result<bool, Error> {
+        ttl_config::extend_instance_ttl(&env);
         let warranties: Vec<u64> = env
             .storage()
             .persistent()
@@ -841,6 +856,7 @@ impl MedicalDeviceRegistry {
         device_id: u64,
         current_time: u64,
     ) -> Result<bool, Error> {
+        ttl_config::extend_instance_ttl(&env);
         let device: DeviceRecord = env
             .storage()
             .persistent()
@@ -868,6 +884,7 @@ impl MedicalDeviceRegistry {
         maintenance_completed_date: u64,
         performed_by: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         performed_by.require_auth();
 
         let mut device: DeviceRecord = env

@@ -143,13 +143,12 @@ pub struct ProviderRegistry;
 
 #[contractimpl]
 impl ProviderRegistry {
-    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
-        Self::assert_not_initialized(&env)?;
-        validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
-        admin.require_auth();
+    /// Runs atomically at deployment, so no one can front-run it to become admin
+    /// of the root of trust for `is_provider`.
+    pub fn __constructor(env: Env, admin: Address) {
+        validate_nonzero_address(&admin).expect("admin address must not be zero");
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage().persistent().set(&DataKey::Initialized, &true);
-        Ok(())
     }
 
     /// Authorise an external contract (e.g. healthcare-credentialing) to update the
@@ -161,6 +160,7 @@ impl ProviderRegistry {
         authority: Address,
         trusted: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
         validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&authority).map_err(|_| Error::InvalidAddress)?;
@@ -190,6 +190,7 @@ impl ProviderRegistry {
         provider: Address,
         active: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
         validate_nonzero_address(&caller).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
@@ -247,6 +248,7 @@ impl ProviderRegistry {
         expires_at: u64,
         revocation_reference: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
         validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
@@ -289,6 +291,7 @@ impl ProviderRegistry {
         admin: Address,
         entries: Vec<BatchProviderEntry>,
     ) -> Result<Vec<BatchEntryStatus>, Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
         Self::assert_admin(&env, &admin)?;
 
@@ -385,14 +388,6 @@ impl ProviderRegistry {
             profile.active && profile.credential.revoked_at.is_none() && profile.credential.expires_at > env.ledger().timestamp()
         } else {
             Err(Error::NotInitialized)
-        }
-    }
-
-    fn assert_not_initialized(env: &Env) -> Result<(), Error> {
-        if env.storage().persistent().has(&DataKey::Initialized) {
-            Err(Error::AlreadyInitialized)
-        } else {
-            Ok(())
         }
     }
 

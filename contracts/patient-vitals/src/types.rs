@@ -8,6 +8,20 @@ pub enum Error {
     NotFound = 2,
     InvalidParameter = 3,
     InvalidPage = 4,
+    /// #1121: an alert for this (patient, vital_type) was raised less than
+    /// `ALERT_COOLDOWN_SECONDS` ago.
+    AlertCooldown = 5,
+}
+
+/// #1121: alert severity, as produced by threshold classification. Replaces
+/// the previous free-form `Symbol`.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Severity {
+    CriticalLow,
+    Low,
+    High,
+    CriticalHigh,
 }
 
 #[contracttype]
@@ -54,6 +68,10 @@ pub const AGG_WINDOW_SECONDS: u64 = 86400;  // 24-hour aggregate buckets
 pub const PAGE_SIZE: u32 = 50;
 /// Minimum seconds between repeated alerts for the same patient+vital_type.
 pub const ALERT_COOLDOWN_SECONDS: u64 = 300; // 5 minutes
+/// Number of window indices stored per per-day index page.
+/// Bounds the size of each `WindowPage` entry so write cost stays constant
+/// regardless of how many windows a patient has accumulated.
+pub const WINDOW_PAGE_CAPACITY: u32 = 24;
 
 #[contracttype]
 #[derive(Clone)]
@@ -63,7 +81,11 @@ pub enum DataKey {
     DeviceReg(Address, String),        // map to DeviceRegistration
     /// Reverse mapping: (patient_id, device_address) → () — used for trigger_vital_alert auth.
     DeviceAddress(Address, Address),
-    VitalsAlerts(Address, Symbol),     // map to Vec<VitalAlert>
+    /// #1121: one alert per ledger entry, ring-buffered:
+    /// (patient, vital_type, seq % MAX_ALERTS_PER_VITAL) → VitalAlert
+    Alert(Address, Symbol, u32),
+    /// #1121: total alerts ever written for (patient, vital_type) → u64
+    AlertSeq(Address, Symbol),
     /// Raw readings bucketed by hour window index
     RawWindow(Address, u64),
     /// Aggregated stats bucketed by day window index
@@ -72,25 +94,90 @@ pub enum DataKey {
     LatestRawWindow(Address),
     /// Last alert timestamp for (patient, vital_type) — cooldown tracking
     LastAlertTime(Address, Symbol),
-    /// Index of all raw-window and agg-window indices written for a patient.
-    /// Stored as a WindowIndex struct; updated on every record_vital_signs call.
-    /// Required so deregister_patient can enumerate and purge all buckets.
-    PatientWindows(Address),
+    /// Bounded per-day index page of raw/agg window indices written for a
+    /// patient. Keyed by `(patient, day)` where `day = raw_idx / WINDOW_PAGE_CAPACITY`.
+    /// Replaces the unbounded `PatientWindows` vector so each write touches at
+    /// most one bounded page instead of scanning the whole index.
+    WindowPage(Address, u64),
+    /// Number of `WindowPage` entries written for a patient (page count).
+    /// Used to enumerate pages during paginated deregistration.
+    WindowPageCount(Address),
     /// Monotonically increasing reading counter for stable IDs per patient
     ReadingCounter(Address),
 }
 
-/// Tracks which RawWindow and AggWindow bucket indices have been written for
-/// a given patient so they can be fully purged on deregistration.
+/// A bounded page of window indices for a single patient.
+///
+/// Each page holds at most `WINDOW_PAGE_CAPACITY` raw indices and the
+/// corresponding aggregate indices, so appending a new window only reads and
+/// rewrites one small entry rather than the entire history.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WindowIndex {
-    /// All distinct `raw_idx` values (= measurement_time / RAW_WINDOW_SECONDS)
-    /// that have ever been written for this patient.
+pub struct WindowPage {
+    /// Distinct `raw_idx` values (= measurement_time / RAW_WINDOW_SECONDS)
+    /// stored in this page.
     pub raw_indices: soroban_sdk::Vec<u64>,
-    /// All distinct `agg_idx` values (= measurement_time / AGG_WINDOW_SECONDS)
-    /// that have ever been written for this patient.
+    /// Distinct `agg_idx` values (= measurement_time / AGG_WINDOW_SECONDS)
+    /// stored in this page.
     pub agg_indices: soroban_sdk::Vec<u64>,
+}
+
+impl WindowPage {
+    pub fn new() -> Self {
+        Self {
+            raw_indices: soroban_sdk::Vec::new(),
+            agg_indices: soroban_sdk::Vec::new(),
+        }
+    }
+
+    /// Append a raw index if not already present in this page.
+    pub fn push_raw(&mut self, raw_idx: u64) {
+        if !self.raw_indices.contains(&raw_idx) {
+            self.raw_indices.push_back(raw_idx);
+        }
+    }
+
+    /// Append an agg index if not already present in this page.
+    pub fn push_agg(&mut self, agg_idx: u64) {
+        if !self.agg_indices.contains(&agg_idx) {
+            self.agg_indices.push_back(agg_idx);
+        }
+    }
+}
+
+/// Per-vital running accumulator used while building a daily aggregate.
+///
+/// `sum` holds the exact sum of all values seen for this vital (u64 to avoid
+/// overflow across a day's readings) and `n` holds the number of readings
+/// that actually carried this vital. The average is computed on read as
+/// `sum / n`, so readings that omit the vital do not skew the result and
+/// there is no per-step integer truncation drift.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VitalAccumulator {
+    pub sum: u64,
+    pub n: u32,
+}
+
+impl VitalAccumulator {
+    pub fn new() -> Self {
+        Self { sum: 0, n: 0 }
+    }
+
+    /// Add a single observation for this vital.
+    pub fn add(&mut self, value: u32) {
+        self.sum += value as u64;
+        self.n += 1;
+    }
+
+    /// Compute the average for this vital, or `None` if no readings carried it.
+    pub fn average(&self) -> Option<u32> {
+        if self.n == 0 {
+            None
+        } else {
+            Some((self.sum / self.n as u64) as u32)
+        }
+    }
 }
 
 #[contracttype]
@@ -144,8 +231,11 @@ pub struct DeviceRegistration {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VitalAlert {
-    pub value: String,
-    pub severity: Symbol,
+    /// #1121: monotonically increasing sequence number per (patient, vital_type).
+    pub seq: u64,
+    pub value: u32,
+    pub severity: Severity,
+    /// Ledger time for manual alerts; reading time for threshold alerts.
     pub alert_time: u64,
 }
 

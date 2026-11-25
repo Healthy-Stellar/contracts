@@ -16,13 +16,34 @@ Previously, TTL extension was inconsistent across contracts:
 
 We define three retention classes based on data criticality:
 
+### 0. Instance Storage (every contract)
+
+**Used for:** admin, id counters, registry pointers, config — and the contract-instance record itself.
+
+- **Extend to:** the network maximum entry TTL, read at runtime from the network config
+  (`env.storage().max_ttl()`, i.e. `max_entry_ttl`), so the value follows whatever the network
+  the contract is deployed on allows.
+- **Threshold:** maximum − `MAX_TTL_REBUMP_MARGIN` (17,280 ledgers, ~1 day), so repeated calls
+  within a day do not pay for redundant extensions.
+- **Policy:** call `ttl_config::extend_instance_ttl(&env)` at the top of **every state-changing
+  `#[contractimpl]` entry point** (including `__constructor` / `initialize`).
+
+If the instance entry is archived, **every** call to the contract fails until someone restores it.
+CI (`scripts/check-instance-ttl.sh`, job *Instance TTL Check*) fails when a contract crate never
+references `extend_instance_ttl`.
+
 ### 1. Critical Retention Class
 
 **Used for:** Patient records, medical history, prescriptions, clinical trials, allergy records
 
-- **Bump Amount:** 535,680 ledgers (~31 days at 5s/ledger)
-- **Threshold:** 518,400 ledgers (~30 days)
-- **Minimum TTL:** 535,680 ledgers
+- **Extend to (helpers):** the network maximum entry TTL, read from the network config at
+  runtime. `extend_critical_ttl` / `extend_critical_ttl_if_exists` no longer stop at ~31 days:
+  a patient who does not touch their record between visits keeps it live for the full network
+  maximum (several months on mainnet).
+- **Threshold (helpers):** maximum − 17,280 ledgers (~1 day)
+- **Floor constants:** `critical::LEDGER_BUMP_AMOUNT` / `MIN_TTL_LEDGERS` = 535,680 ledgers
+  (~31 days), `critical::LEDGER_THRESHOLD` = 518,400 — kept for callers that pass explicit values
+  to `extend_ttl`; prefer the helpers.
 - **Policy:** Bump on every write and read operation
 
 **Contracts using Critical:**
@@ -51,7 +72,7 @@ We define three retention classes based on data criticality:
 
 ### 3. Ephemeral Retention Class
 
-**Used for:** Counters, temporary caches, transient state
+**Used for:** Persistent counters, temporary caches, transient state
 
 - **Bump Amount:** 17,280 ledgers (~1 day at 5s/ledger)
 - **Threshold:** 8,640 ledgers (~12 hours)
@@ -60,7 +81,7 @@ We define three retention classes based on data criticality:
 
 **Recommended for:**
 
-- Instance storage counters
+- Persistent counters that can be rebuilt (instance-storage counters follow the Instance policy above)
 - Temporary caches
 - Session tokens
 
@@ -71,7 +92,12 @@ We define three retention classes based on data criticality:
 All TTL constants are defined in `contracts/ttl-config/src/lib.rs`:
 
 ```rust
+pub const MAX_TTL_REBUMP_MARGIN: u32 = 17_280; // ~1 day
+
+pub fn max_entry_ttl(env: &Env) -> u32; // network max, from config
+
 pub mod critical {
+    // Floor values; the helpers extend to the network maximum.
     pub const LEDGER_BUMP_AMOUNT: u32 = 535_680;
     pub const LEDGER_THRESHOLD: u32 = 518_400;
 }
@@ -92,6 +118,9 @@ pub mod ephemeral {
 The `ttl-config` crate provides helper functions for easy TTL management:
 
 ```rust
+// Extend the contract instance (admin, counters, registry pointers, instance record)
+extend_instance_ttl(env);
+
 // Extend TTL for a key
 extend_critical_ttl(env, &key);
 extend_operational_ttl(env, &key);
@@ -215,6 +244,11 @@ Test snapshots capture TTL extension calls. Example from allergy-management:
 
 ## Monitoring & Maintenance
 
+The `Extend Contract TTLs` workflow runs weekly (Mondays 06:00 UTC) as a backstop for contracts
+that are not called often enough for the on-chain bumps to keep them live. Scheduled runs are
+skipped while the manifest is `not-yet-deployed`; any other failure opens (or comments on) an
+issue titled `Extend Contract TTLs failed (<network>)`.
+
 ### Key Metrics
 
 - **TTL Expiry Rate:** Monitor contracts for unexpected data loss
@@ -304,7 +338,42 @@ if any contract failed.
   run) and confirm it completes green. If it still fails, capture the run URL and error output in the
   tracking issue before escalating.
 
-### 5. When the scheduled job fails
+### 5. Archival and restore runbook
+
+Soroban archives an entry when its TTL reaches zero. Archived entries are not deleted, but any
+transaction that touches them fails until they are restored.
+
+- **Instance entry archived:** every call to the contract fails (admin, counters and registry
+  pointers live there). Restore it first.
+- **Persistent entry archived:** only calls that read/write that key fail (e.g. one patient's
+  record).
+
+To restore:
+
+1. Identify the archived entries. Simulating the failing call reports the keys that need
+   restoring (`stellar contract invoke ... --send=no` prints a restore preamble), or use
+   `stellar contract info --id <CONTRACT_ID>` for the instance entry.
+2. Restore them:
+
+   ```bash
+   # Contract instance + code
+   stellar contract restore --network mainnet --source mainnet-deployer --id <CONTRACT_ID>
+
+   # A specific persistent key (XDR-encoded ScVal of the DataKey)
+   stellar contract restore --network mainnet --source mainnet-deployer \
+     --id <CONTRACT_ID> --key-xdr <BASE64_KEY_XDR> --durability persistent
+   ```
+
+3. Immediately extend what was restored (restore only grants the network minimum TTL):
+
+   ```bash
+   ./scripts/extend-ttls.sh --network mainnet --identity mainnet-deployer
+   ```
+
+4. Re-run the failing call and confirm it succeeds; record the incident (affected contract and
+   keys, cause, restore tx hashes) on the tracking issue.
+
+### 6. When the scheduled job fails
 
 If the automatic TTL extension job fails (e.g. the run reported in issue #580 on
 `2026-07-20T03:23:37.546Z` for `mainnet`), treat it as an incident:

@@ -13,6 +13,7 @@ testutils = ["soroban-sdk/testutils"]
 
 [dependencies]
 soroban-sdk = { workspace = true }
+ttl-config = { path = "../ttl-config" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
