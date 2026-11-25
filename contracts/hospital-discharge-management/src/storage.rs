@@ -1,4 +1,4 @@
-use shared_contracts::safe_increment;
+use shared::counters::safe_increment;
 use soroban_sdk::{Address, Env, Symbol};
 
 use crate::types::*;
@@ -132,7 +132,3 @@ pub fn get_provider_registry(env: &Env) -> Result<Address, Error> {
         .ok_or(Error::Unauthorized)
 }
 
-// Initialization guard
-pub fn is_initialized(env: &Env) -> bool {
-    env.storage().instance().has(&DataKey::HospitalRegistry)
-}

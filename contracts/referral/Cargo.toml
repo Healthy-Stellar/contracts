@@ -14,7 +14,7 @@ testutils = ["soroban-sdk/testutils"]
 [dependencies]
 soroban-sdk = { workspace = true }
 shared = { workspace = true }
-shared-contracts = { path = "..", package = "Contracts" }
+ttl-config = { path = "../ttl-config" }
 
 [dev-dependencies]
 provider-registry = { path = "../provider-registry" }

@@ -7,7 +7,7 @@ edition = "2021"
 [dependencies]
 soroban-sdk = { workspace = true }
 shared = { workspace = true }
-shared-contracts = { path = "..", package = "Contracts" }
+ttl-config = { path = "../ttl-config" }
 
 [dev_dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
