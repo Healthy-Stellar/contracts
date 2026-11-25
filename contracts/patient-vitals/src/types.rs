@@ -68,9 +68,10 @@ pub const AGG_WINDOW_SECONDS: u64 = 86400;  // 24-hour aggregate buckets
 pub const PAGE_SIZE: u32 = 50;
 /// Minimum seconds between repeated alerts for the same patient+vital_type.
 pub const ALERT_COOLDOWN_SECONDS: u64 = 300; // 5 minutes
-/// #1121: ring-buffer capacity of stored alerts per (patient, vital_type).
-/// Once full, the oldest alert slot is overwritten.
-pub const MAX_ALERTS_PER_VITAL: u32 = 100;
+/// Number of window indices stored per per-day index page.
+/// Bounds the size of each `WindowPage` entry so write cost stays constant
+/// regardless of how many windows a patient has accumulated.
+pub const WINDOW_PAGE_CAPACITY: u32 = 24;
 
 #[contracttype]
 #[derive(Clone)]
@@ -93,25 +94,90 @@ pub enum DataKey {
     LatestRawWindow(Address),
     /// Last alert timestamp for (patient, vital_type) — cooldown tracking
     LastAlertTime(Address, Symbol),
-    /// Index of all raw-window and agg-window indices written for a patient.
-    /// Stored as a WindowIndex struct; updated on every record_vital_signs call.
-    /// Required so deregister_patient can enumerate and purge all buckets.
-    PatientWindows(Address),
+    /// Bounded per-day index page of raw/agg window indices written for a
+    /// patient. Keyed by `(patient, day)` where `day = raw_idx / WINDOW_PAGE_CAPACITY`.
+    /// Replaces the unbounded `PatientWindows` vector so each write touches at
+    /// most one bounded page instead of scanning the whole index.
+    WindowPage(Address, u64),
+    /// Number of `WindowPage` entries written for a patient (page count).
+    /// Used to enumerate pages during paginated deregistration.
+    WindowPageCount(Address),
     /// Monotonically increasing reading counter for stable IDs per patient
     ReadingCounter(Address),
 }
 
-/// Tracks which RawWindow and AggWindow bucket indices have been written for
-/// a given patient so they can be fully purged on deregistration.
+/// A bounded page of window indices for a single patient.
+///
+/// Each page holds at most `WINDOW_PAGE_CAPACITY` raw indices and the
+/// corresponding aggregate indices, so appending a new window only reads and
+/// rewrites one small entry rather than the entire history.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WindowIndex {
-    /// All distinct `raw_idx` values (= measurement_time / RAW_WINDOW_SECONDS)
-    /// that have ever been written for this patient.
+pub struct WindowPage {
+    /// Distinct `raw_idx` values (= measurement_time / RAW_WINDOW_SECONDS)
+    /// stored in this page.
     pub raw_indices: soroban_sdk::Vec<u64>,
-    /// All distinct `agg_idx` values (= measurement_time / AGG_WINDOW_SECONDS)
-    /// that have ever been written for this patient.
+    /// Distinct `agg_idx` values (= measurement_time / AGG_WINDOW_SECONDS)
+    /// stored in this page.
     pub agg_indices: soroban_sdk::Vec<u64>,
+}
+
+impl WindowPage {
+    pub fn new() -> Self {
+        Self {
+            raw_indices: soroban_sdk::Vec::new(),
+            agg_indices: soroban_sdk::Vec::new(),
+        }
+    }
+
+    /// Append a raw index if not already present in this page.
+    pub fn push_raw(&mut self, raw_idx: u64) {
+        if !self.raw_indices.contains(&raw_idx) {
+            self.raw_indices.push_back(raw_idx);
+        }
+    }
+
+    /// Append an agg index if not already present in this page.
+    pub fn push_agg(&mut self, agg_idx: u64) {
+        if !self.agg_indices.contains(&agg_idx) {
+            self.agg_indices.push_back(agg_idx);
+        }
+    }
+}
+
+/// Per-vital running accumulator used while building a daily aggregate.
+///
+/// `sum` holds the exact sum of all values seen for this vital (u64 to avoid
+/// overflow across a day's readings) and `n` holds the number of readings
+/// that actually carried this vital. The average is computed on read as
+/// `sum / n`, so readings that omit the vital do not skew the result and
+/// there is no per-step integer truncation drift.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VitalAccumulator {
+    pub sum: u64,
+    pub n: u32,
+}
+
+impl VitalAccumulator {
+    pub fn new() -> Self {
+        Self { sum: 0, n: 0 }
+    }
+
+    /// Add a single observation for this vital.
+    pub fn add(&mut self, value: u32) {
+        self.sum += value as u64;
+        self.n += 1;
+    }
+
+    /// Compute the average for this vital, or `None` if no readings carried it.
+    pub fn average(&self) -> Option<u32> {
+        if self.n == 0 {
+            None
+        } else {
+            Some((self.sum / self.n as u64) as u32)
+        }
+    }
 }
 
 #[contracttype]
