@@ -134,10 +134,8 @@ pub enum DataKey {
     /// Per-caller nonce for replay attack protection: (caller) -> u64
     CallerNonce(Address),
     ProviderHospital(Address, Address),
-    /// External contract authorised to update `active` (e.g. credentialing committee).
+    /// Addresses authorised to update the `active` flag (e.g. credentialing committee).
     TrustedAuthority(Address),
-    /// Historical credential anchors for a provider (append-only).
-    CredentialHistory(Address),
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -225,153 +223,19 @@ impl ProviderRegistry {
             Some(p) => p,
             None => return false,
         };
-        Self::is_active(&profile, env.ledger().timestamp())
-    }
-
-    /// Alias kept for consumers that call `is_provider`. Delegates to the same
-    /// internal predicate so both entry points always agree.
-    pub fn is_provider(env: Env, provider: Address) -> bool {
-        Self::is_active_provider(env, provider)
-    }
-
-    /// Renew an expired credential. The provider must authenticate. The new
-    /// `expires_at` must be in the future. The previous anchor is appended to
-    /// the credential history before being replaced.
-    pub fn renew_credential(
-        env: Env,
-        provider: Address,
-        credential_hash: BytesN<32>,
-        issuer: Address,
-        attestation_hash: BytesN<32>,
-        expires_at: u64,
-        revocation_reference: BytesN<32>,
-    ) -> Result<(), Error> {
-        ttl_config::extend_instance_ttl(&env);
-        Self::assert_initialized(&env)?;
-        validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
-        validate_nonzero_address(&issuer).map_err(|_| Error::InvalidAddress)?;
-        provider.require_auth();
-
-        let now = env.ledger().timestamp();
-        if expires_at <= now {
-            return Err(Error::CredentialExpired);
-        }
-
-        let key = DataKey::Provider(provider.clone());
-        let mut profile: ProviderProfile = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::NotAProvider)?;
-
-        // Append the previous anchor to history before replacing it.
-        let hist_key = DataKey::CredentialHistory(provider.clone());
-        let mut history: Vec<CredentialAnchor> = env
-            .storage()
-            .persistent()
-            .get(&hist_key)
-            .unwrap_or_else(|| Vec::new(&env));
-        history.push_back(profile.credential.clone());
-        env.storage().persistent().set(&hist_key, &history);
-
-        profile.credential = CredentialAnchor {
-            credential_hash,
-            issuer,
-            attestation_hash,
-            expires_at,
-            revocation_reference,
-            revoked_at: None,
-        };
-        env.storage().persistent().set(&key, &profile);
-        env.events().publish(
-            (symbol_short!("renew_cred"), provider),
-            expires_at,
-        );
-        Ok(())
-    }
-
-    /// Return the historical credential anchors for a provider.
-    pub fn get_credential_history(env: Env, provider: Address) -> Vec<CredentialAnchor> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::CredentialHistory(provider))
-            .unwrap_or_else(|| Vec::new(&env))
-    }
-
-    /// Reactivate a previously deactivated provider. Admin or trusted authority only.
-    pub fn reactivate_provider(
-        env: Env,
-        caller: Address,
-        provider: Address,
-    ) -> Result<(), Error> {
-        Self::assert_initialized(&env)?;
-        validate_nonzero_address(&caller).map_err(|_| Error::InvalidAddress)?;
-        validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
-        caller.require_auth();
-        Self::assert_admin_or_trusted(&env, &caller)?;
-
-        let key = DataKey::Provider(provider.clone());
-        let mut profile: ProviderProfile = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::NotAProvider)?;
-        profile.active = true;
-        env.storage().persistent().set(&key, &profile);
-        env.events().publish(
-            (symbol_short!("react_pr"), provider),
-            true,
-        );
-        Ok(())
-    }
-
-    /// Revoke a provider's credential. Admin or trusted authority only. Marks the
-    /// credential as revoked and deactivates the provider.
-    pub fn revoke_credential(
-        env: Env,
-        caller: Address,
-        provider: Address,
-    ) -> Result<(), Error> {
-        Self::assert_initialized(&env)?;
-        validate_nonzero_address(&caller).map_err(|_| Error::InvalidAddress)?;
-        validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
-        caller.require_auth();
-        Self::assert_admin_or_trusted(&env, &caller)?;
-
-        let now = env.ledger().timestamp();
-        let key = DataKey::Provider(provider.clone());
-        let mut profile: ProviderProfile = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::NotAProvider)?;
-        profile.credential.revoked_at = Some(now);
-        profile.active = false;
-        env.storage().persistent().set(&key, &profile);
-        env.events().publish(
-            (symbol_short!("revoke_cr"), provider),
-            now,
-        );
-        Ok(())
-    }
-
-    // ── Internal helpers ──────────────────────────────────────────────────────
-
-    /// Single internal "is active" predicate shared by `is_active_provider` and
-    /// `is_provider`. A credential with `expires_at == 0` is treated as invalid
-    /// (never active), matching `register_provider` which rejects `expires_at <= now`.
-    fn is_active(profile: &ProviderProfile, now: u64) -> bool {
         if !profile.active {
             return false;
         }
         if profile.credential.revoked_at.is_some() {
             return false;
         }
-        if profile.credential.expires_at == 0 {
+        if profile.credential.expires_at <= env.ledger().timestamp() {
             return false;
         }
-        profile.credential.expires_at > now
+        true
     }
+
+    // ── Internal helpers ──────────────────────────────────────────────────────
 
     fn assert_initialized(env: &Env) -> Result<(), Error> {
         if env
