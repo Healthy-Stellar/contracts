@@ -637,6 +637,7 @@ _No `DataKey` enum found; contract may use inline keys or instance storage only.
 | `TotalAccessGrants` | Persistent storage entry |
 | `ShareNonce(Address)` | Persistent storage entry |
 | `ExportNonce(Address)` | Persistent storage entry |
+| `ExportTicketRecord(BytesN<32>)` | Persistent storage entry |
 | `ShareLink(BytesN<32>)` | Persistent storage entry |
 | `Deregistered(Address)` | Persistent storage entry |
 | `Frozen` | Persistent storage entry |

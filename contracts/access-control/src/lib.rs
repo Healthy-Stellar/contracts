@@ -79,6 +79,8 @@ pub enum ContractError {
     BatchTooLarge = 26,
     /// #625: grantor or grantee entity has been deactivated via `deactivate_entity`.
     EntityInactive = 27,
+    /// #1069: grantor is neither the registered owner of the resource nor an admin.
+    NotResourceOwner = 28,
 }
 
 /// Maximum number of access permissions a single grantee may accumulate.
@@ -270,6 +272,8 @@ pub enum DataKey {
     RateLimit(Address, u32),
     // #489: (responder, patient) -> EmergencyAccessRecord
     EmergencyAccess(Address, Address),
+    // #1069: resource_id -> owner Address (only the owner or an admin may grant access)
+    ResourceOwner(String),
 }
 
 #[contract]
@@ -574,7 +578,37 @@ impl AccessControl {
         Ok(())
     }
 
+    /// Register the owner of a resource (admin only). `register_entity` is
+    /// permissionless, so ownership cannot be self-claimed by the grantor.
+    ///
+    /// # Arguments
+    /// * `admin`       - Must hold the `Admin` role (or be the stored admin)
+    /// * `resource_id` - The identifier of the resource
+    /// * `owner`       - The address allowed to grant access to the resource
+    pub fn set_resource_owner(
+        env: Env,
+        admin: Address,
+        resource_id: String,
+        owner: Address,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        Self::require_role(&env, &admin, &Role::Admin)?;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::ResourceOwner(resource_id.clone()), &owner);
+
+        env.events().publish(
+            (symbol_short!("res_own"), resource_id),
+            owner,
+        );
+        Ok(())
+    }
+
     /// Grant access permission to an entity for a specific resource.
+    ///
+    /// The grantor must be the registered owner of `resource_id` (see
+    /// `set_resource_owner`) or hold the `Admin` role (#1069).
     ///
     /// For sensitive operations, callers should first call `commit_grant` with
     /// hash(nonce || grantor || grantee || resource_id) and pass the same
@@ -623,6 +657,18 @@ impl AccessControl {
             .ok_or(ContractError::GranteeNotRegistered)?;
         if !grantee_entity.active {
             return Err(ContractError::EntityInactive);
+        }
+
+        // #1069: grantor must own the resource (or be an admin). Without this,
+        // any self-registered entity could grant access to any resource_id.
+        let owner: Option<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ResourceOwner(resource_id.clone()));
+        if owner.as_ref() != Some(&grantor)
+            && Self::require_role(&env, &grantor, &Role::Admin).is_err()
+        {
+            return Err(ContractError::NotResourceOwner);
         }
 
         // #220: composite uniqueness check — (grantor, grantee, resource_id)
@@ -715,14 +761,19 @@ impl AccessControl {
     ///   3. composite GrantIndex
     ///
     /// # Arguments
-    /// * `revoker`     - The address revoking access (must be the original grantor or admin)
+    /// * `revoker`     - The address revoking access (must be the grantor of the
+    ///                   targeted permission, the admin, or hold PayerReviewer)
     /// * `revokee`     - The address losing access
     /// * `resource_id` - The identifier of the resource
+    /// * `grantor`     - Optional grantor whose grant to revoke. If `None`, the
+    ///                   revoker's own grant is preferred, else the first grant
+    ///                   on the resource is targeted.
     pub fn revoke_access(
         env: Env,
         revoker: Address,
         revokee: Address,
         resource_id: String,
+        grantor: Option<Address>,
     ) -> Result<u64, ContractError> {
         revoker.require_auth();
 
@@ -732,7 +783,7 @@ impl AccessControl {
             .get(&DataKey::Admin)
             .ok_or(ContractError::ContractNotInitialized)?;
 
-        // --- Step 1: remove from grantee's access list, capture grantor ---
+        // --- Step 1: remove one matching grant from grantee's access list ---
         let access_key = DataKey::AccessList(revokee.clone());
         let access_list: Vec<AccessPermission> = env
             .storage()
@@ -740,14 +791,34 @@ impl AccessControl {
             .get(&access_key)
             .unwrap_or(Vec::new(&env));
 
+        let target_grantor = grantor.unwrap_or_else(|| {
+            let mut first: Option<Address> = None;
+            for i in 0..access_list.len() {
+                if let Some(permission) = access_list.get(i) {
+                    if permission.resource_id == resource_id {
+                        if permission.granted_by == revoker {
+                            return revoker.clone();
+                        }
+                        if first.is_none() {
+                            first = Some(permission.granted_by.clone());
+                        }
+                    }
+                }
+            }
+            first.unwrap_or_else(|| revoker.clone())
+        });
+
         let mut new_access_list: Vec<AccessPermission> = Vec::new(&env);
         let mut found_grantor: Option<Address> = None;
         let mut revoked_op_id: u64 = 0;
 
         for i in 0..access_list.len() {
             if let Some(permission) = access_list.get(i) {
-                if permission.resource_id == resource_id && permission.granted_by == revoker && found_grantor.is_none() {
-                    // Verify revoker is either the original grantor, admin, or holds PayerReviewer role
+                if permission.resource_id == resource_id
+                    && permission.granted_by == target_grantor
+                    && found_grantor.is_none()
+                {
+                    // Authorize against the matched grant: grantor, admin, or PayerReviewer
                     let is_grantor = permission.granted_by == revoker;
                     let is_admin = revoker == admin;
                     let is_payer_reviewer =
@@ -770,7 +841,9 @@ impl AccessControl {
             .persistent()
             .set(&access_key, &new_access_list);
 
-        // --- Step 2: remove from resource's authorized parties (#224 atomic) ---
+        // --- Step 2: remove exactly one entry for this grant from resource's authorized parties (#224 atomic) ---
+        // ResourceAccess holds one entry per grant, so removing every occurrence
+        // would drop other grantors' grants and desync it from check_access.
         let resource_key = DataKey::ResourceAccess(resource_id.clone());
         let authorized: Vec<Address> = env
             .storage()
@@ -779,9 +852,12 @@ impl AccessControl {
             .unwrap_or(Vec::new(&env));
 
         let mut new_authorized: Vec<Address> = Vec::new(&env);
+        let mut removed_authorized = false;
         for i in 0..authorized.len() {
             if let Some(addr) = authorized.get(i) {
-                if addr != revokee {
+                if addr == revokee && !removed_authorized {
+                    removed_authorized = true;
+                } else {
                     new_authorized.push_back(addr);
                 }
             }
