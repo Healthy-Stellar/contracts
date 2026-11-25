@@ -8,6 +8,20 @@ pub enum Error {
     NotFound = 2,
     InvalidParameter = 3,
     InvalidPage = 4,
+    /// #1121: an alert for this (patient, vital_type) was raised less than
+    /// `ALERT_COOLDOWN_SECONDS` ago.
+    AlertCooldown = 5,
+}
+
+/// #1121: alert severity, as produced by threshold classification. Replaces
+/// the previous free-form `Symbol`.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Severity {
+    CriticalLow,
+    Low,
+    High,
+    CriticalHigh,
 }
 
 #[contracttype]
@@ -54,6 +68,9 @@ pub const AGG_WINDOW_SECONDS: u64 = 86400;  // 24-hour aggregate buckets
 pub const PAGE_SIZE: u32 = 50;
 /// Minimum seconds between repeated alerts for the same patient+vital_type.
 pub const ALERT_COOLDOWN_SECONDS: u64 = 300; // 5 minutes
+/// #1121: ring-buffer capacity of stored alerts per (patient, vital_type).
+/// Once full, the oldest alert slot is overwritten.
+pub const MAX_ALERTS_PER_VITAL: u32 = 100;
 
 #[contracttype]
 #[derive(Clone)]
@@ -63,7 +80,11 @@ pub enum DataKey {
     DeviceReg(Address, String),        // map to DeviceRegistration
     /// Reverse mapping: (patient_id, device_address) → () — used for trigger_vital_alert auth.
     DeviceAddress(Address, Address),
-    VitalsAlerts(Address, Symbol),     // map to Vec<VitalAlert>
+    /// #1121: one alert per ledger entry, ring-buffered:
+    /// (patient, vital_type, seq % MAX_ALERTS_PER_VITAL) → VitalAlert
+    Alert(Address, Symbol, u32),
+    /// #1121: total alerts ever written for (patient, vital_type) → u64
+    AlertSeq(Address, Symbol),
     /// Raw readings bucketed by hour window index
     RawWindow(Address, u64),
     /// Aggregated stats bucketed by day window index
@@ -144,8 +165,11 @@ pub struct DeviceRegistration {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VitalAlert {
-    pub value: String,
-    pub severity: Symbol,
+    /// #1121: monotonically increasing sequence number per (patient, vital_type).
+    pub seq: u64,
+    pub value: u32,
+    pub severity: Severity,
+    /// Ledger time for manual alerts; reading time for threshold alerts.
     pub alert_time: u64,
 }
 
