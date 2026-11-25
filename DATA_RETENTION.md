@@ -470,7 +470,9 @@ _No `DataKey` enum found; contract may use inline keys or instance storage only.
 | `AccessControlId` | Persistent storage entry |
 | `FinancialRecordsId` | Persistent storage entry |
 | `ReconciliationThreshold` | configurable threshold in seconds for unreconciled claims |
-| `InsurerUnreconciledClaims(Address)` | insurer_id -> Vec<u64> of claim_ids |
+| `InsurerUnreconciledPage(Address, u32)` | insurer_id, page -> Vec<u64> of unreconciled claim_ids (max 100 per page) |
+| `InsurerUnreconciledPageCount(Address)` | insurer_id -> number of unreconciled pages |
+| `UnreconciledSlot(u64)` | claim_id -> (page, index) of the claim in its insurer's unreconciled index |
 | `InsurerRegistryId` | Persistent storage entry |
 
 ### `medical-device-tracking`
