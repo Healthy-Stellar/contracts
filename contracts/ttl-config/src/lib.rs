@@ -16,7 +16,10 @@
 //! configuration changes auditable.
 //!
 //! **Data Retention Policy:** Three retention classes enforce HIPAA minimum timelines:
-//! - **Critical** (31-day minimum): Patient records, medical history, prescriptions, clinical trials
+//! - **Critical** (network maximum entry TTL, never less than 31 days): Patient records, medical
+//!   history, prescriptions, clinical trials
+//! - **Instance** (network maximum entry TTL): admin, id counters, registry pointers and the
+//!   contract-instance record itself — see [`extend_instance_ttl`]
 //! - **Operational** (7-day minimum): Temporary data, session info, audit logs
 //! - **Ephemeral** (1-day minimum): Transient state, counters, temporary caches
 //! Prevents accidental or malicious data deletion via Soroban's automatic TTL expiry.
@@ -27,7 +30,37 @@
 
 use soroban_sdk::Env;
 
-/// Critical retention class: ~31 days (535,680 ledgers at ~5s/ledger)
+/// Re-bump margin used by the network-maximum helpers: an entry is only
+/// re-extended once its remaining TTL drops more than ~1 day (17,280 ledgers at
+/// ~5s/ledger) below the network maximum, so repeated calls within a day do not
+/// pay for redundant extensions.
+pub const MAX_TTL_REBUMP_MARGIN: u32 = 17_280;
+
+/// Returns the network's current maximum entry TTL (in ledgers), read from the
+/// live network configuration (`max_entry_ttl`) rather than hard-coded, so the
+/// value tracks whatever the network the contract is deployed on allows.
+#[inline]
+pub fn max_entry_ttl(env: &Env) -> u32 {
+    env.storage().max_ttl()
+}
+
+/// Returns `(threshold, extend_to)` for extending an entry to the network
+/// maximum. `extend_to` can never exceed the network maximum, so it is the
+/// maximum itself.
+#[inline]
+fn max_ttl_params(env: &Env) -> (u32, u32) {
+    let extend_to = max_entry_ttl(env);
+    let threshold = extend_to.saturating_sub(MAX_TTL_REBUMP_MARGIN);
+    (threshold, extend_to)
+}
+
+/// Critical retention class.
+///
+/// The helpers ([`extend_critical_ttl`], [`extend_critical_ttl_if_exists`])
+/// extend entries to the **network maximum entry TTL** (read from config via
+/// [`max_entry_ttl`]); the constants below are the previous fixed ~31-day
+/// values (535,680 ledgers at ~5s/ledger), kept for callers that pass explicit
+/// values to `extend_ttl` and as the minimum the class guarantees.
 /// Used for: Patient records, medical history, prescriptions, clinical trials
 pub mod critical {
     /// Bump persistent entries by ~31 days
@@ -66,15 +99,30 @@ pub mod ephemeral {
     pub const MIN_TTL_LEDGERS: u32 = 17_280;
 }
 
-/// Helper function to extend TTL for a key using critical retention class
+/// Extend the contract **instance** entry (admin, counters, registry pointers,
+/// config and the contract-instance record itself) to the network maximum
+/// entry TTL.
+///
+/// If the instance entry is archived, *every* call to the contract fails until
+/// it is restored, so every state-changing entry point must call this.
+/// The extension is skipped while the remaining TTL is within
+/// [`MAX_TTL_REBUMP_MARGIN`] of the maximum.
+#[inline]
+pub fn extend_instance_ttl(env: &Env) {
+    let (threshold, extend_to) = max_ttl_params(env);
+    env.storage().instance().extend_ttl(threshold, extend_to);
+}
+
+/// Helper function to extend TTL for a key using critical retention class.
+///
+/// Extends the entry to the network maximum entry TTL (see [`max_entry_ttl`]).
 #[inline]
 pub fn extend_critical_ttl<K: soroban_sdk::IntoVal<soroban_sdk::Env, soroban_sdk::Val>>(
     env: &Env,
     key: &K,
 ) {
-    env.storage()
-        .persistent()
-        .extend_ttl(key, critical::LEDGER_THRESHOLD, critical::LEDGER_BUMP_AMOUNT);
+    let (threshold, extend_to) = max_ttl_params(env);
+    env.storage().persistent().extend_ttl(key, threshold, extend_to);
 }
 
 /// Helper function to extend TTL for a key using operational retention class

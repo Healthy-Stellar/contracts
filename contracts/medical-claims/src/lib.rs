@@ -28,14 +28,38 @@ mod test;
 mod types;
 
 use shared::privacy::{validate_policy_metadata, PolicyMetadata};
-use soroban_sdk::{contract, contractclient, contractimpl, symbol_short, Address, BytesN, Env, String, Vec};
+use soroban_sdk::{
+    contract, contractclient, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
+    Vec,
+};
 use types::{
-    ClaimRecord, ClaimReconciledEvent, ClaimStatus, DataKey, DenialInfo, DisputeRecord,
-    DisputeStatus, Error, InsurerPaymentRecord,
-    PatientPaymentRecord, ReconciliationStatus, ServiceLine,
+    ClaimAdjudicatedEvent, ClaimDisputedEvent, ClaimRecord, ClaimReconciledEvent, ClaimStatus,
+    DataKey, DenialInfo, DisputeEscalatedEvent, DisputeOpenedEvent, DisputeRecord,
+    DisputeResolvedEvent, DisputeStatus, Error, InsurerPaymentRecord, PatientPaymentRecord,
+    PaymentRecordedEvent, ReconciliationStatus, ServiceLine,
 };
 
+/// Max claim ids stored per insurer unreconciled page (keeps each entry small).
+const UNRECONCILED_PAGE_SIZE: u32 = 100;
+
 // ── Cross-contract interface for consent verification (#300) ──────────────────
+//
+// #1118: mirror of access-control's `ConsentPurpose`. Unit variants of a
+// `#[contracttype]` enum are encoded by variant name, so this matches the
+// access-control definition on the wire.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConsentPurpose {
+    Treatment,
+    Payment,
+    Operations,
+    Research,
+    Imaging,
+}
+
+/// #1118: access-control scope bit 0x02 = write. Creating a claim record is a
+/// write, so a read-only consent must not authorize it.
+pub const CONSENT_SCOPE_WRITE: u32 = 0x02;
 //
 // Defines only the one method we need; the generated `AccessControlClient`
 // calls the access-control contract by function name at runtime.
@@ -48,7 +72,7 @@ pub trait AccessControlInterface {
         env: Env,
         subject: Address,
         grantee: Address,
-        purpose_code: String,
+        purpose_code: ConsentPurpose,
         required_scope: u32,
     );
 }
@@ -89,6 +113,7 @@ impl MedicalClaimsSystem {
         reconciliation_threshold: u64,
         insurer_registry_id: Address,
     ) {
+        ttl_config::extend_instance_ttl(&env);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
@@ -106,6 +131,7 @@ impl MedicalClaimsSystem {
 
     /// Admin-only: authorize an insurer address to adjudicate and pay claims.
     pub fn register_insurer(env: Env, admin: Address, insurer: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -147,6 +173,7 @@ impl MedicalClaimsSystem {
         policy: PolicyMetadata,
         total_amount: i128,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         Self::require_insurer(&env, &insurer_id)?;
 
@@ -163,11 +190,21 @@ impl MedicalClaimsSystem {
         validate_policy_metadata(&policy).map_err(|_| Error::InvalidPolicyMetadata)?;
         Self::validate_claim_amounts(&service_codes, total_amount)?;
 
+        // Ageing uses the contract-stamped submitted_at; service_date is provider-supplied
+        // and must not be in the future.
+        let now = env.ledger().timestamp();
+        if service_date > now {
+            return Err(Error::InvalidServiceDate);
+        }
+
         // #300: Verify that the patient has granted consent to this provider
         // before creating a claim record (HIPAA compliance).
         //
         // We look up the access-control contract stored at initialization time,
-        // then call check_consent(patient, provider, "treatment", 0x01 = read).
+        // then call check_consent(patient, provider, Payment, 0x02 = write).
+        // #1118: billing is a HIPAA *payment* action, distinct from treatment,
+        // and creating a claim is a write — a treatment / read-only consent
+        // must not authorize it.
         // Any failure (ConsentNotFound / ConsentRevoked / ConsentExpired /
         // ConsentDenied) is surfaced as Error::ConsentNotVerified so callers
         // receive a clear, auditable rejection.
@@ -182,8 +219,8 @@ impl MedicalClaimsSystem {
             .try_check_consent(
                 &patient_id,
                 &provider_id,
-                &String::from_str(&env, "treatment"),
-                &1u32, // scope bit 0x01 = read
+                &ConsentPurpose::Payment,
+                &CONSENT_SCOPE_WRITE,
             )
             .map_err(|_| Error::ConsentNotVerified)?;
 
@@ -204,6 +241,7 @@ impl MedicalClaimsSystem {
             insurer_id: insurer_id.clone(),
             policy_id,
             service_date,
+            submitted_at: now,
             service_codes,
             diagnosis_hashes,
             details_hash: claim_details_hash,
@@ -243,15 +281,7 @@ impl MedicalClaimsSystem {
             .set(&DataKey::PatientClaims(patient_id), &pat_claims);
 
         // Track unreconciled claims by insurer
-        let mut insurer_claims: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::InsurerUnreconciledClaims(insurer_id.clone()))
-            .unwrap_or(Vec::new(&env));
-        insurer_claims.push_back(claim_id);
-        env.storage()
-            .persistent()
-            .set(&DataKey::InsurerUnreconciledClaims(insurer_id), &insurer_claims);
+        Self::add_to_unreconciled_index(&env, &insurer_id, claim_id);
 
         Ok(claim_id)
     }
@@ -266,6 +296,7 @@ impl MedicalClaimsSystem {
         approved_amount: i128,
         patient_responsibility: i128,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         insurer_id.require_auth();
         Self::require_insurer(&env, &insurer_id)?;
 
@@ -321,6 +352,11 @@ impl MedicalClaimsSystem {
             );
         }
 
+        // Fully denied (nothing owed by either party) claims leave the unreconciled set.
+        if claim.reconciliation_status == ReconciliationStatus::FullyReconciled {
+            Self::remove_from_unreconciled_list(&env, &insurer_id, claim_id);
+        }
+
         Ok(())
     }
 
@@ -331,6 +367,7 @@ impl MedicalClaimsSystem {
         appeal_level: u32,
         _appeal_details_hash: BytesN<32>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let mut claim = Self::load_claim(&env, claim_id)?;
@@ -362,6 +399,7 @@ impl MedicalClaimsSystem {
         payment_date: u64,
         payment_reference_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         insurer_id.require_auth();
         Self::require_insurer(&env, &insurer_id)?;
         let mut claim = Self::load_claim(&env, claim_id)?;
@@ -372,6 +410,10 @@ impl MedicalClaimsSystem {
 
         if claim.insurer_id != insurer_id {
             return Err(Error::NotAuthorized);
+        }
+
+        if claim.reconciliation_status == ReconciliationStatus::Disputed {
+            return Err(Error::ClaimDisputed);
         }
 
         if claim.status != ClaimStatus::Adjudicated {
@@ -415,6 +457,10 @@ impl MedicalClaimsSystem {
             .persistent()
             .set(&DataKey::ClaimPayment(claim_id), &payments);
 
+        if claim.status == ClaimStatus::Closed {
+            Self::remove_from_unreconciled_list(&env, &claim.insurer_id, claim_id);
+        }
+
         Ok(())
     }
 
@@ -425,6 +471,7 @@ impl MedicalClaimsSystem {
         payment_amount: i128,
         payment_date: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
 
         if payment_amount <= 0 {
@@ -434,6 +481,10 @@ impl MedicalClaimsSystem {
         let mut claim = Self::load_claim(&env, claim_id)?;
         if claim.patient_id != patient_id {
             return Err(Error::NotAuthorized);
+        }
+
+        if claim.reconciliation_status == ReconciliationStatus::Disputed {
+            return Err(Error::ClaimDisputed);
         }
 
         if claim.status != ClaimStatus::Paid && claim.status != ClaimStatus::Adjudicated {
@@ -467,6 +518,10 @@ impl MedicalClaimsSystem {
         env.storage()
             .persistent()
             .set(&DataKey::PatientPayment(claim_id), &payments);
+
+        if claim.status == ClaimStatus::Closed {
+            Self::remove_from_unreconciled_list(&env, &claim.insurer_id, claim_id);
+        }
 
         Ok(())
     }
@@ -600,13 +655,16 @@ impl MedicalClaimsSystem {
         let insurer_due = Self::checked_sub(approved_amount, claim.insurer_paid_amount)?;
         let patient_due = Self::checked_sub(patient_responsibility, claim.patient_paid_amount)?;
 
-        claim.reconciliation_status = if insurer_due == 0 && patient_due == 0 {
-            ReconciliationStatus::FullyReconciled
-        } else if claim.insurer_paid_amount > 0 || claim.patient_paid_amount > 0 {
-            ReconciliationStatus::PartiallyPaid
-        } else {
-            ReconciliationStatus::Pending
-        };
+        // Disputed is sticky: only resolve_dispute may clear it.
+        if claim.reconciliation_status != ReconciliationStatus::Disputed {
+            claim.reconciliation_status = if insurer_due == 0 && patient_due == 0 {
+                ReconciliationStatus::FullyReconciled
+            } else if claim.insurer_paid_amount > 0 || claim.patient_paid_amount > 0 {
+                ReconciliationStatus::PartiallyPaid
+            } else {
+                ReconciliationStatus::Pending
+            };
+        }
 
         Ok((insurer_due, patient_due))
     }
@@ -633,6 +691,7 @@ impl MedicalClaimsSystem {
         financial_record_idx: u32,
         caller: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         caller.require_auth();
 
         let mut claim = Self::load_claim(&env, claim_id)?;
@@ -745,6 +804,7 @@ impl MedicalClaimsSystem {
         claim_id: u64,
         caller: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         caller.require_auth();
 
         let mut claim = Self::load_claim(&env, claim_id)?;
@@ -759,15 +819,23 @@ impl MedicalClaimsSystem {
             .persistent()
             .set(&DataKey::Claim(claim_id), &claim);
 
+        env.events().publish(
+            (symbol_short!("disputed"), claim_id),
+            ClaimDisputedEvent { claim_id, caller },
+        );
+
         Ok(())
     }
 
-    /// Get all unreconciled claims for a specific insurer that are older than
-    /// the configured threshold.
+    /// Get unreconciled claims for a specific insurer that are older than the
+    /// configured threshold. Scans `limit` index pages starting at page `cursor`
+    /// and returns the matches plus the next cursor (`None` when exhausted).
     pub fn get_unreconciled_claims(
         env: Env,
         insurer_id: Address,
-    ) -> Result<Vec<u64>, Error> {
+        cursor: u32,
+        limit: u32,
+    ) -> Result<(Vec<u64>, Option<u32>), Error> {
         insurer_id.require_auth();
         Self::require_insurer(&env, &insurer_id)?;
 
@@ -780,26 +848,36 @@ impl MedicalClaimsSystem {
         let current_time = env.ledger().timestamp();
         let cutoff_time = current_time.saturating_sub(threshold);
 
-        let all_claims: Vec<u64> = env
+        let page_count: u32 = env
             .storage()
             .persistent()
-            .get(&DataKey::InsurerUnreconciledClaims(insurer_id.clone()))
-            .unwrap_or(Vec::new(&env));
+            .get(&DataKey::InsurerUnreconciledPageCount(insurer_id.clone()))
+            .unwrap_or(0);
+        let end = cursor.saturating_add(limit.max(1)).min(page_count);
 
         let mut unreconciled = Vec::new(&env);
 
-        for claim_id in all_claims.iter() {
-            if let Ok(claim) = Self::load_claim(&env, claim_id) {
-                // Check if claim is still unreconciled and older than threshold
-                if claim.reconciliation_status != ReconciliationStatus::FullyReconciled
-                    && claim.service_date <= cutoff_time
-                {
-                    unreconciled.push_back(claim_id);
+        for page_idx in cursor..end {
+            let page_claims: Vec<u64> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::InsurerUnreconciledPage(insurer_id.clone(), page_idx))
+                .unwrap_or(Vec::new(&env));
+
+            for claim_id in page_claims.iter() {
+                if let Ok(claim) = Self::load_claim(&env, claim_id) {
+                    // Check if claim is still unreconciled and older than threshold
+                    if claim.reconciliation_status != ReconciliationStatus::FullyReconciled
+                        && claim.service_date <= cutoff_time
+                    {
+                        unreconciled.push_back(claim_id);
+                    }
                 }
             }
         }
 
-        Ok(unreconciled)
+        let next = if end < page_count { Some(end) } else { None };
+        Ok((unreconciled, next))
     }
 
     /// Update the reconciliation threshold (admin only).
@@ -808,6 +886,7 @@ impl MedicalClaimsSystem {
         admin: Address,
         threshold: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -824,24 +903,67 @@ impl MedicalClaimsSystem {
         Ok(())
     }
 
-    /// Helper function to remove a claim from the unreconciled list
-    fn remove_from_unreconciled_list(env: &Env, insurer_id: &Address, claim_id: u64) {
-        let claims: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::InsurerUnreconciledClaims(insurer_id.clone()))
-            .unwrap_or(Vec::new(env));
+    /// Helper function to append a claim to the insurer's paged unreconciled index
+    fn add_to_unreconciled_index(env: &Env, insurer_id: &Address, claim_id: u64) {
+        let count_key = DataKey::InsurerUnreconciledPageCount(insurer_id.clone());
+        let mut page_count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
 
-        let mut new_claims = Vec::new(env);
-        for id in claims.iter() {
-            if id != claim_id {
-                new_claims.push_back(id);
-            }
+        let mut page_idx = page_count.saturating_sub(1);
+        let mut page: Vec<u64> = if page_count == 0 {
+            Vec::new(env)
+        } else {
+            env.storage()
+                .persistent()
+                .get(&DataKey::InsurerUnreconciledPage(insurer_id.clone(), page_idx))
+                .unwrap_or(Vec::new(env))
+        };
+
+        if page_count == 0 || page.len() >= UNRECONCILED_PAGE_SIZE {
+            page_idx = page_count;
+            page = Vec::new(env);
+            page_count += 1;
+            env.storage().persistent().set(&count_key, &page_count);
         }
 
+        let slot = page.len();
+        page.push_back(claim_id);
         env.storage()
             .persistent()
-            .set(&DataKey::InsurerUnreconciledClaims(insurer_id.clone()), &new_claims);
+            .set(&DataKey::InsurerUnreconciledPage(insurer_id.clone(), page_idx), &page);
+        env.storage()
+            .persistent()
+            .set(&DataKey::UnreconciledSlot(claim_id), &(page_idx, slot));
+    }
+
+    /// Helper function to remove a claim from the insurer's unreconciled index.
+    /// O(1): the claim's slot is swap-removed and the moved claim's slot updated.
+    fn remove_from_unreconciled_list(env: &Env, insurer_id: &Address, claim_id: u64) {
+        let slot_key = DataKey::UnreconciledSlot(claim_id);
+        let (page_idx, slot): (u32, u32) = match env.storage().persistent().get(&slot_key) {
+            Some(s) => s,
+            None => return, // not in the unreconciled set (already removed)
+        };
+
+        let page_key = DataKey::InsurerUnreconciledPage(insurer_id.clone(), page_idx);
+        let mut page: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&page_key)
+            .unwrap_or(Vec::new(env));
+
+        if let Some(last) = page.len().checked_sub(1) {
+            if slot != last {
+                let moved = page.get(last).unwrap();
+                page.set(slot, moved);
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::UnreconciledSlot(moved), &(page_idx, slot));
+            }
+            page.pop_back();
+        }
+
+        env.storage().persistent().set(&page_key, &page);
+        env.storage().persistent().remove(&slot_key);
     }
 
     // ── Dispute Resolution Functions (Issue #520) ────────────────────────────────
@@ -853,6 +975,7 @@ impl MedicalClaimsSystem {
 
     /// Admin-only: register an address as an authorized dispute reviewer.
     pub fn register_reviewer(env: Env, admin: Address, reviewer: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -891,6 +1014,7 @@ impl MedicalClaimsSystem {
 
     /// Admin-only: deactivate an authorized dispute reviewer, preventing them from resolving disputes.
     pub fn deactivate_reviewer(env: Env, admin: Address, reviewer: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -915,6 +1039,7 @@ impl MedicalClaimsSystem {
         claimant: Address,
         reason_hash: BytesN<32>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         claimant.require_auth();
 
         let claim = Self::load_claim(&env, claim_id)?;
@@ -962,6 +1087,16 @@ impl MedicalClaimsSystem {
             .persistent()
             .set(&DataKey::ClaimDisputes(claim_id), &claim_disputes);
 
+        env.events().publish(
+            (symbol_short!("dsp_open"), claim_id),
+            DisputeOpenedEvent {
+                dispute_id,
+                claim_id,
+                opened_by: dispute.opened_by.clone(),
+                reason_hash: dispute.reason_hash.clone(),
+            },
+        );
+
         Ok(dispute_id)
     }
 
@@ -972,6 +1107,7 @@ impl MedicalClaimsSystem {
         reviewer: Address,
         resolution_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         reviewer.require_auth();
 
         // Check if reviewer is deactivated
@@ -1014,13 +1150,35 @@ impl MedicalClaimsSystem {
         }
 
         dispute.status = DisputeStatus::Resolved;
-        dispute.resolved_by = Some(reviewer);
-        dispute.resolution_hash = Some(resolution_hash);
+        dispute.resolved_by = Some(reviewer.clone());
+        dispute.resolution_hash = Some(resolution_hash.clone());
         dispute.resolved_at = Some(env.ledger().timestamp());
 
         env.storage()
             .persistent()
             .set(&DataKey::Dispute(dispute_id), &dispute);
+
+        // Clear the Disputed reconciliation state once no open dispute remains on the claim.
+        let mut claim = Self::load_claim(&env, dispute.claim_id)?;
+        if claim.reconciliation_status == ReconciliationStatus::Disputed
+            && !Self::has_open_dispute(&env, dispute.claim_id)
+        {
+            claim.reconciliation_status = ReconciliationStatus::Pending;
+            Self::refresh_reconciliation_status(&mut claim)?;
+            env.storage()
+                .persistent()
+                .set(&DataKey::Claim(dispute.claim_id), &claim);
+        }
+
+        env.events().publish(
+            (symbol_short!("dsp_res"), dispute.claim_id),
+            DisputeResolvedEvent {
+                dispute_id,
+                claim_id: dispute.claim_id,
+                resolved_by: reviewer,
+                resolution_hash,
+            },
+        );
 
         Ok(())
     }
@@ -1031,6 +1189,7 @@ impl MedicalClaimsSystem {
         dispute_id: u64,
         admin: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
 
         let stored_admin: Address = env
@@ -1059,6 +1218,32 @@ impl MedicalClaimsSystem {
             .persistent()
             .set(&DataKey::Dispute(dispute_id), &dispute);
 
+        env.events().publish(
+            (symbol_short!("dsp_esc"), dispute.claim_id),
+            DisputeEscalatedEvent {
+                dispute_id,
+                claim_id: dispute.claim_id,
+                escalated_by: admin,
+                escalation_level: dispute.escalation_level,
+            },
+        );
+
         Ok(())
+    }
+
+    /// True if any dispute on the claim is still Open or Escalated.
+    fn has_open_dispute(env: &Env, claim_id: u64) -> bool {
+        let dispute_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ClaimDisputes(claim_id))
+            .unwrap_or(Vec::new(env));
+        dispute_ids.iter().any(|id| {
+            env.storage()
+                .persistent()
+                .get::<_, DisputeRecord>(&DataKey::Dispute(id))
+                .map(|d| d.status == DisputeStatus::Open || d.status == DisputeStatus::Escalated)
+                .unwrap_or(false)
+        })
     }
 }

@@ -10,6 +10,14 @@ use soroban_sdk::{
 // Helpers
 // -----------------------------------------------------------------------
 
+fn enc_ref(env: &Env) -> EncryptedEnvelopeRef {
+    EncryptedEnvelopeRef {
+        content_hash: BytesN::from_array(env, &[7u8; 32]),
+        envelope_uri: String::from_str(env, "enc+ipfs://bafycareplanref"),
+        key_version_id: String::from_str(env, "kv:v01"),
+    }
+}
+
 fn setup() -> (Env, Address, Address) {
     let env = Env::default();
     env.mock_all_auths();
@@ -24,10 +32,10 @@ fn create_plan(env: &Env, patient: &Address, provider: &Address) -> u64 {
     let client = CarePlanContractClient::new(env, &contract_id);
 
     let mut conditions = Vec::new(env);
-    conditions.push_back(String::from_str(env, "Type 2 Diabetes"));
+    conditions.push_back(enc_ref(env));
 
     let mut goals = Vec::new(env);
-    goals.push_back(String::from_str(env, "Reduce HbA1c to <7%"));
+    goals.push_back(enc_ref(env));
 
     client.create_care_plan(
         patient,
@@ -49,10 +57,10 @@ fn register_and_create_plan(env: &Env) -> (Address, CarePlanContractClient<'_>, 
     let client = CarePlanContractClient::new(env, &contract_id);
 
     let mut conditions = Vec::new(env);
-    conditions.push_back(String::from_str(env, "Hypertension"));
+    conditions.push_back(enc_ref(env));
 
     let mut goals = Vec::new(env);
-    goals.push_back(String::from_str(env, "Lower BP to <130/80"));
+    goals.push_back(enc_ref(env));
 
     let plan_id = client.create_care_plan(
         &patient,
@@ -78,10 +86,10 @@ fn test_create_care_plan_success() {
     let client = CarePlanContractClient::new(&env, &contract_id);
 
     let mut conditions = Vec::new(&env);
-    conditions.push_back(String::from_str(&env, "COPD"));
+    conditions.push_back(enc_ref(&env));
 
     let mut goals = Vec::new(&env);
-    goals.push_back(String::from_str(&env, "Improve oxygen saturation"));
+    goals.push_back(enc_ref(&env));
 
     let plan_id = client.create_care_plan(
         &patient,
@@ -103,9 +111,9 @@ fn test_create_care_plan_increments_ids() {
     let client = CarePlanContractClient::new(&env, &contract_id);
 
     let mut conditions = Vec::new(&env);
-    conditions.push_back(String::from_str(&env, "Diabetes"));
+    conditions.push_back(enc_ref(&env));
     let mut goals = Vec::new(&env);
-    goals.push_back(String::from_str(&env, "Goal 1"));
+    goals.push_back(enc_ref(&env));
 
     let id1 = client.create_care_plan(
         &patient,
@@ -138,9 +146,9 @@ fn test_create_care_plan_next_review_date_calculated() {
     let client = CarePlanContractClient::new(&env, &contract_id);
 
     let mut conditions = Vec::new(&env);
-    conditions.push_back(String::from_str(&env, "Diabetes"));
+    conditions.push_back(enc_ref(&env));
     let mut goals = Vec::new(&env);
-    goals.push_back(String::from_str(&env, "Goal 1"));
+    goals.push_back(enc_ref(&env));
 
     client.create_care_plan(
         &patient,
@@ -169,9 +177,9 @@ fn test_add_care_goal_success() {
         let client = CarePlanContractClient::new(&env, &contract_id);
 
         let mut conditions = Vec::new(&env);
-        conditions.push_back(String::from_str(&env, "Diabetes"));
+        conditions.push_back(enc_ref(&env));
         let mut goals = Vec::new(&env);
-        goals.push_back(String::from_str(&env, "Initial goal"));
+        goals.push_back(enc_ref(&env));
 
         let plan_id = client.create_care_plan(
             &patient,
@@ -228,9 +236,9 @@ fn test_add_intervention_success() {
         let client = CarePlanContractClient::new(&env, &contract_id);
 
         let mut conditions = Vec::new(&env);
-        conditions.push_back(String::from_str(&env, "Diabetes"));
+        conditions.push_back(enc_ref(&env));
         let mut goals = Vec::new(&env);
-        goals.push_back(String::from_str(&env, "Goal"));
+        goals.push_back(enc_ref(&env));
 
         let plan_id = client.create_care_plan(
             &patient,
@@ -286,9 +294,9 @@ fn test_record_goal_progress_success() {
     let client = CarePlanContractClient::new(&env, &contract_id);
 
     let mut conditions = Vec::new(&env);
-    conditions.push_back(String::from_str(&env, "Diabetes"));
+    conditions.push_back(enc_ref(&env));
     let mut goals = Vec::new(&env);
-    goals.push_back(String::from_str(&env, "Goal"));
+    goals.push_back(enc_ref(&env));
 
     let plan_id = client.create_care_plan(
         &patient,
@@ -342,9 +350,9 @@ fn test_record_goal_progress_on_achieved_goal_fails() {
     let client = CarePlanContractClient::new(&env, &contract_id);
 
     let mut conditions = Vec::new(&env);
-    conditions.push_back(String::from_str(&env, "Diabetes"));
+    conditions.push_back(enc_ref(&env));
     let mut goals = Vec::new(&env);
-    goals.push_back(String::from_str(&env, "Goal"));
+    goals.push_back(enc_ref(&env));
 
     let plan_id = client.create_care_plan(
         &patient,
@@ -394,9 +402,9 @@ fn test_mark_goal_achieved_success() {
     let client = CarePlanContractClient::new(&env, &contract_id);
 
     let mut conditions = Vec::new(&env);
-    conditions.push_back(String::from_str(&env, "Diabetes"));
+    conditions.push_back(enc_ref(&env));
     let mut goals = Vec::new(&env);
-    goals.push_back(String::from_str(&env, "Goal"));
+    goals.push_back(enc_ref(&env));
 
     let plan_id = client.create_care_plan(
         &patient,
@@ -432,9 +440,9 @@ fn test_mark_goal_achieved_twice_fails() {
     let client = CarePlanContractClient::new(&env, &contract_id);
 
     let mut conditions = Vec::new(&env);
-    conditions.push_back(String::from_str(&env, "Diabetes"));
+    conditions.push_back(enc_ref(&env));
     let mut goals = Vec::new(&env);
-    goals.push_back(String::from_str(&env, "Goal"));
+    goals.push_back(enc_ref(&env));
 
     let plan_id = client.create_care_plan(
         &patient,
@@ -483,9 +491,9 @@ fn test_add_barrier_success() {
     let client = CarePlanContractClient::new(&env, &contract_id);
 
     let mut conditions = Vec::new(&env);
-    conditions.push_back(String::from_str(&env, "Diabetes"));
+    conditions.push_back(enc_ref(&env));
     let mut goals = Vec::new(&env);
-    goals.push_back(String::from_str(&env, "Goal"));
+    goals.push_back(enc_ref(&env));
 
     let plan_id = client.create_care_plan(
         &patient,
@@ -515,9 +523,9 @@ fn test_resolve_barrier_success() {
     let client = CarePlanContractClient::new(&env, &contract_id);
 
     let mut conditions = Vec::new(&env);
-    conditions.push_back(String::from_str(&env, "Diabetes"));
+    conditions.push_back(enc_ref(&env));
     let mut goals = Vec::new(&env);
-    goals.push_back(String::from_str(&env, "Goal"));
+    goals.push_back(enc_ref(&env));
 
     let plan_id = client.create_care_plan(
         &patient,
@@ -552,9 +560,9 @@ fn test_resolve_barrier_twice_fails() {
     let client = CarePlanContractClient::new(&env, &contract_id);
 
     let mut conditions = Vec::new(&env);
-    conditions.push_back(String::from_str(&env, "Diabetes"));
+    conditions.push_back(enc_ref(&env));
     let mut goals = Vec::new(&env);
-    goals.push_back(String::from_str(&env, "Goal"));
+    goals.push_back(enc_ref(&env));
 
     let plan_id = client.create_care_plan(
         &patient,
@@ -619,9 +627,9 @@ fn test_schedule_review_success() {
     let client = CarePlanContractClient::new(&env, &contract_id);
 
     let mut conditions = Vec::new(&env);
-    conditions.push_back(String::from_str(&env, "Diabetes"));
+    conditions.push_back(enc_ref(&env));
     let mut goals = Vec::new(&env);
-    goals.push_back(String::from_str(&env, "Goal"));
+    goals.push_back(enc_ref(&env));
 
     let plan_id = client.create_care_plan(
         &patient,
@@ -650,9 +658,9 @@ fn test_conduct_review_success() {
     let client = CarePlanContractClient::new(&env, &contract_id);
 
     let mut conditions = Vec::new(&env);
-    conditions.push_back(String::from_str(&env, "Diabetes"));
+    conditions.push_back(enc_ref(&env));
     let mut goals = Vec::new(&env);
-    goals.push_back(String::from_str(&env, "Goal"));
+    goals.push_back(enc_ref(&env));
 
     let plan_id = client.create_care_plan(
         &patient,
@@ -685,9 +693,9 @@ fn test_conduct_review_twice_fails() {
     let client = CarePlanContractClient::new(&env, &contract_id);
 
     let mut conditions = Vec::new(&env);
-    conditions.push_back(String::from_str(&env, "Diabetes"));
+    conditions.push_back(enc_ref(&env));
     let mut goals = Vec::new(&env);
-    goals.push_back(String::from_str(&env, "Goal"));
+    goals.push_back(enc_ref(&env));
 
     let plan_id = client.create_care_plan(
         &patient,
@@ -725,9 +733,9 @@ fn test_conduct_review_updates_plan_dates() {
     let client = CarePlanContractClient::new(&env, &contract_id);
 
     let mut conditions = Vec::new(&env);
-    conditions.push_back(String::from_str(&env, "Diabetes"));
+    conditions.push_back(enc_ref(&env));
     let mut goals = Vec::new(&env);
-    goals.push_back(String::from_str(&env, "Goal"));
+    goals.push_back(enc_ref(&env));
 
     let plan_id = client.create_care_plan(
         &patient,
@@ -768,9 +776,9 @@ fn test_assign_care_team_member_success() {
     let client = CarePlanContractClient::new(&env, &contract_id);
 
     let mut conditions = Vec::new(&env);
-    conditions.push_back(String::from_str(&env, "Diabetes"));
+    conditions.push_back(enc_ref(&env));
     let mut goals = Vec::new(&env);
-    goals.push_back(String::from_str(&env, "Goal"));
+    goals.push_back(enc_ref(&env));
 
     let plan_id = client.create_care_plan(
         &patient,
@@ -806,9 +814,9 @@ fn test_assign_multiple_team_members() {
     let client = CarePlanContractClient::new(&env, &contract_id);
 
     let mut conditions = Vec::new(&env);
-    conditions.push_back(String::from_str(&env, "Diabetes"));
+    conditions.push_back(enc_ref(&env));
     let mut goals = Vec::new(&env);
-    goals.push_back(String::from_str(&env, "Goal"));
+    goals.push_back(enc_ref(&env));
 
     let plan_id = client.create_care_plan(
         &patient,
@@ -869,9 +877,9 @@ fn test_get_care_plan_summary_excludes_achieved_goals() {
     let client = CarePlanContractClient::new(&env, &contract_id);
 
     let mut conditions = Vec::new(&env);
-    conditions.push_back(String::from_str(&env, "Diabetes"));
+    conditions.push_back(enc_ref(&env));
     let mut goals = Vec::new(&env);
-    goals.push_back(String::from_str(&env, "Goal"));
+    goals.push_back(enc_ref(&env));
 
     let plan_id = client.create_care_plan(
         &patient,
@@ -925,11 +933,11 @@ fn test_full_care_plan_workflow() {
 
     // 1. Create care plan
     let mut conditions = Vec::new(&env);
-    conditions.push_back(String::from_str(&env, "Type 2 Diabetes"));
-    conditions.push_back(String::from_str(&env, "Hypertension"));
+    conditions.push_back(enc_ref(&env));
+    conditions.push_back(enc_ref(&env));
 
     let mut initial_goals = Vec::new(&env);
-    initial_goals.push_back(String::from_str(&env, "Reduce HbA1c"));
+    initial_goals.push_back(enc_ref(&env));
 
     let plan_id = client.create_care_plan(
         &patient,
@@ -1049,9 +1057,9 @@ fn test_deregister_patient_discontinues_active_plans() {
     let provider = Address::generate(&env);
 
     let mut conditions = Vec::new(&env);
-    conditions.push_back(String::from_str(&env, "Hypertension"));
+    conditions.push_back(enc_ref(&env));
     let mut goals = Vec::new(&env);
-    goals.push_back(String::from_str(&env, "Lower BP"));
+    goals.push_back(enc_ref(&env));
 
     let plan_id = client.create_care_plan(
         &patient,
@@ -1088,9 +1096,9 @@ fn test_deregister_patient_removes_patient_plans_index() {
     let provider = Address::generate(&env);
 
     let mut conditions = Vec::new(&env);
-    conditions.push_back(String::from_str(&env, "Diabetes"));
+    conditions.push_back(enc_ref(&env));
     let mut goals = Vec::new(&env);
-    goals.push_back(String::from_str(&env, "Control glucose"));
+    goals.push_back(enc_ref(&env));
 
     client.create_care_plan(
         &patient,
@@ -1128,9 +1136,9 @@ fn test_add_care_goal_after_deregister_patient_fails() {
     let provider = Address::generate(&env);
 
     let mut conditions = Vec::new(&env);
-    conditions.push_back(String::from_str(&env, "Hypertension"));
+    conditions.push_back(enc_ref(&env));
     let mut goals = Vec::new(&env);
-    goals.push_back(String::from_str(&env, "Lower BP"));
+    goals.push_back(enc_ref(&env));
 
     let plan_id = client.create_care_plan(
         &patient,
@@ -1167,9 +1175,9 @@ fn test_plan_child_mutators_reject_on_closed_plan() {
     let provider = Address::generate(&env);
 
     let mut conditions = Vec::new(&env);
-    conditions.push_back(String::from_str(&env, "Hypertension"));
+    conditions.push_back(enc_ref(&env));
     let mut goals = Vec::new(&env);
-    goals.push_back(String::from_str(&env, "Lower BP"));
+    goals.push_back(enc_ref(&env));
 
     let plan_id = client.create_care_plan(
         &patient,
@@ -1223,9 +1231,9 @@ fn test_mark_goal_achieved_and_resolve_barrier_allowed_on_closed_plan() {
     let provider = Address::generate(&env);
 
     let mut conditions = Vec::new(&env);
-    conditions.push_back(String::from_str(&env, "Hypertension"));
+    conditions.push_back(enc_ref(&env));
     let mut goals = Vec::new(&env);
-    goals.push_back(String::from_str(&env, "Lower BP"));
+    goals.push_back(enc_ref(&env));
 
     let plan_id = client.create_care_plan(
         &patient,
@@ -1406,9 +1414,9 @@ fn test_get_care_plan_summary_allows_patient_and_care_team_member() {
     let contract_id = env.register(CarePlanContract, ());
     let client = CarePlanContractClient::new(&env, &contract_id);
     let mut conditions = Vec::new(&env);
-    conditions.push_back(String::from_str(&env, "Hypertension"));
+    conditions.push_back(enc_ref(&env));
     let mut goals = Vec::new(&env);
-    goals.push_back(String::from_str(&env, "Lower BP to <130/80"));
+    goals.push_back(enc_ref(&env));
     let plan_id = client.create_care_plan(
         &patient,
         &provider,
