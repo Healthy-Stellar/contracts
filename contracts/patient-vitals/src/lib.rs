@@ -23,6 +23,13 @@
 //! **Encryption/Integrity:** Vital sign values stored encrypted. Timestamp immutable once recorded.
 //! Value range validation prevents invalid measurements. Reference ranges enforced per vital type.
 //! Abnormal thresholds configured and immutable.
+//!
+//! ## Event Privacy (see EVENTS.md)
+//!
+//! Contract events are public and permanent. Event payloads and topics therefore carry only
+//! record ids, content hashes and actor roles — never a patient address alongside clinical
+//! values or condition-revealing event names. Where a patient correlator is needed, a
+//! per-contract salted pseudonym is used instead of the raw patient address.
 
 mod contract;
 mod types;

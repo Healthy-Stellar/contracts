@@ -669,10 +669,10 @@ fn test_repropose_while_active_still_blocked() {
     assert_eq!(err, Error::ProposalExists);
 }
 
-/// A finalized (Executed) proposal must not block re-proposal of the same
-/// action_id, even within the original TTL window.
+/// An Executed proposal's action_id may not be re-used: the execution record
+/// must survive so the first approval stays auditable.
 #[test]
-fn test_repropose_after_execution_succeeds() {
+fn test_repropose_after_execution_rejected() {
     // threshold=2, quorum_min=2 → s0 propose + s1 approve = Executed.
     let (env, signers, client) = setup_with_quorum(3, 2, 2);
     let s0 = signers.get(0).unwrap();
@@ -683,10 +683,11 @@ fn test_repropose_after_execution_succeeds() {
     let p = client.get_proposal(&symbol_short!("export"));
     assert_eq!(p.status, ProposalStatus::Executed);
 
-    // Re-proposing an Executed action_id must succeed.
-    client.propose_multisig_action(&s0, &symbol_short!("export"), &payload(&env));
-    let p2 = client.get_proposal(&symbol_short!("export"));
-    assert_eq!(p2.status, ProposalStatus::Pending);
+    let err = client
+        .try_propose_multisig_action(&s0, &symbol_short!("export"), &payload(&env))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::AlreadyExecuted);
 }
 
 #[test]

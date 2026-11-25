@@ -255,6 +255,7 @@ impl EmergencyMedicalInfo {
         alert_text_hash: BytesN<32>,
         severity: Symbol,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider.require_auth();
         Self::assert_responder(&env, &provider)?;
 

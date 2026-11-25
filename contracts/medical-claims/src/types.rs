@@ -123,6 +123,31 @@ pub struct DisputeEscalatedEvent {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimAdjudicatedEvent {
+    pub claim_id: u64,
+    pub approved_amount: i128,
+    pub patient_responsibility: i128,
+    pub reconciliation_status: ReconciliationStatus,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PaymentRecordedEvent {
+    pub claim_id: u64,
+    pub payment_amount: i128,
+    pub is_insurer_payment: bool,
+    pub reconciliation_status: ReconciliationStatus,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimDisputedEvent {
+    pub claim_id: u64,
+    pub caller: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServiceLine {
     pub procedure_code: String,
     pub modifier: Option<String>,
@@ -171,6 +196,7 @@ pub struct ClaimRecord {
     pub insurer_id: Address, // bound payer identity
     pub policy_id: u64,
     pub service_date: u64,
+    pub submitted_at: u64, // contract-stamped ledger time; used for ageing
     pub service_codes: Vec<ServiceLine>,
     pub diagnosis_hashes: Vec<BytesN<32>>,
     pub details_hash: BytesN<32>,
@@ -204,7 +230,12 @@ pub enum DataKey {
     AccessControlId,
     FinancialRecordsId,
     ReconciliationThreshold, // configurable threshold in seconds for unreconciled claims
-    InsurerUnreconciledClaims(Address), // insurer_id -> Vec<u64> of claim_ids
+    /// insurer_id -> page index -> Vec<u64> of unreconciled claim_ids (bounded page size).
+    InsurerUnreconciledPage(Address, u32),
+    /// insurer_id -> number of allocated unreconciled pages.
+    InsurerUnreconciledPageCount(Address),
+    /// claim_id -> (page, index) of the claim's entry in its insurer's unreconciled index.
+    UnreconciledSlot(u64),
     /// #527: Address of the deployed insurer-registry contract.
     InsurerRegistryId,
     /// #520: Vec<Address> of addresses authorized to resolve disputes.

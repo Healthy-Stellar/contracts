@@ -134,6 +134,8 @@ pub enum DataKey {
     /// Per-caller nonce for replay attack protection: (caller) -> u64
     CallerNonce(Address),
     ProviderHospital(Address, Address),
+    /// Addresses authorised to update the `active` flag (e.g. credentialing committee).
+    TrustedAuthority(Address),
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -143,13 +145,12 @@ pub struct ProviderRegistry;
 
 #[contractimpl]
 impl ProviderRegistry {
-    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
-        Self::assert_not_initialized(&env)?;
-        validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
-        admin.require_auth();
+    /// Runs atomically at deployment, so no one can front-run it to become admin
+    /// of the root of trust for `is_provider`.
+    pub fn __constructor(env: Env, admin: Address) {
+        validate_nonzero_address(&admin).expect("admin address must not be zero");
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage().persistent().set(&DataKey::Initialized, &true);
-        Ok(())
     }
 
     /// Authorise an external contract (e.g. healthcare-credentialing) to update the
@@ -161,6 +162,7 @@ impl ProviderRegistry {
         authority: Address,
         trusted: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
         validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&authority).map_err(|_| Error::InvalidAddress)?;
@@ -190,6 +192,7 @@ impl ProviderRegistry {
         provider: Address,
         active: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
         validate_nonzero_address(&caller).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
@@ -226,170 +229,34 @@ impl ProviderRegistry {
         if profile.credential.revoked_at.is_some() {
             return false;
         }
-        if profile.credential.expires_at != 0
-            && env.ledger().timestamp() >= profile.credential.expires_at
-        {
+        if profile.credential.expires_at <= env.ledger().timestamp() {
             return false;
         }
         true
     }
 
-    pub fn register_provider(
-        env: Env,
-        admin: Address,
-        provider: Address,
-        name: String,
-        specialty: String,
-        license_number: String,
-        credential_hash: BytesN<32>,
-        issuer: Address,
-        attestation_hash: BytesN<32>,
-        expires_at: u64,
-        revocation_reference: BytesN<32>,
-    ) -> Result<(), Error> {
-        Self::assert_initialized(&env)?;
-        validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
-        validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
-        validate_nonzero_address(&issuer).map_err(|_| Error::InvalidAddress)?;
-        Self::assert_admin(&env, &admin)?;
-        if expires_at <= env.ledger().timestamp() {
-            return Err(Error::CredentialExpired);
-        }
-        let key = DataKey::Provider(provider.clone());
-        if env.storage().persistent().has(&key) {
-            return Err(Error::AlreadyExists);
-        }
-        let profile = ProviderProfile {
-            name,
-            specialty,
-            license_number,
-            credential: CredentialAnchor {
-                credential_hash,
-                issuer,
-                attestation_hash,
-                expires_at,
-                revocation_reference,
-                revoked_at: None,
-            },
-            active: true,
-        };
-        env.storage().persistent().set(&key, &profile);
-        env.events()
-            .publish((symbol_short!("reg_prov"), provider), symbol_short!("ok"));
-        Ok(())
-    }
-
-    /// Register multiple providers in one transaction.
-    ///
-    /// Returns a `Vec<BatchEntryStatus>` aligned 1-to-1 with `entries`.
-    /// Already-registered providers produce `AlreadyExists` (no overwrite).
-    /// Enforces `MAX_BATCH_SIZE`; returns `BatchTooLarge` if exceeded.
-    pub fn batch_register_providers(
-        env: Env,
-        admin: Address,
-        entries: Vec<BatchProviderEntry>,
-    ) -> Result<Vec<BatchEntryStatus>, Error> {
-        Self::assert_initialized(&env)?;
-        Self::assert_admin(&env, &admin)?;
-
-        if entries.len() > MAX_BATCH_SIZE {
-            return Err(Error::BatchTooLarge);
-        }
-
-        let mut results: Vec<BatchEntryStatus> = Vec::new(&env);
-
-        for entry in entries.iter() {
-            if validate_nonzero_address(&entry.provider).is_err()
-                || validate_nonzero_address(&entry.issuer).is_err()
-            {
-                results.push_back(BatchEntryStatus::InvalidAddress);
-                continue;
-            }
-
-            if entry.expires_at <= env.ledger().timestamp() {
-                results.push_back(BatchEntryStatus::CredentialExpired);
-                continue;
-            }
-
-            let key = DataKey::Provider(entry.provider.clone());
-            if env.storage().persistent().has(&key) {
-                results.push_back(BatchEntryStatus::AlreadyExists);
-                continue;
-            }
-
-            let profile = ProviderProfile {
-                name: entry.name.clone(),
-                specialty: entry.specialty.clone(),
-                license_number: entry.license_number.clone(),
-                credential: CredentialAnchor {
-                    credential_hash: entry.credential_hash.clone(),
-                    issuer: entry.issuer.clone(),
-                    attestation_hash: entry.attestation_hash.clone(),
-                    expires_at: entry.expires_at,
-                    revocation_reference: entry.revocation_reference.clone(),
-                    revoked_at: None,
-                },
-                active: true,
-            };
-            env.storage().persistent().set(&key, &profile);
-            results.push_back(BatchEntryStatus::Success);
-        }
-
-        Ok(results)
-    }
-
     // ── Internal helpers ──────────────────────────────────────────────────────
 
-        env.events()
-            .publish((symbol_short!("react_pr"), provider), symbol_short!("ok"));
-        Ok(())
-    }
-
-    pub fn is_provider(env: Env, provider: Address) -> bool {
-        Self::is_provider_active(&env, &provider)
-    }
-
-    pub fn set_provider_hospital(
-        env: Env,
-        admin: Address,
-        provider: Address,
-        hospital: Address,
-        affiliated: bool,
-    ) -> Result<(), Error> {
-        Self::assert_initialized(&env)?;
-        validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
-        validate_nonzero_address(&hospital).map_err(|_| Error::InvalidAddress)?;
-        Self::assert_admin(&env, &admin)?;
-        if affiliated && !Self::is_provider_active(&env, &provider) {
-            return Err(Error::NotAProvider);
-        }
-
-        env.storage().persistent().set(
-            &DataKey::ProviderHospital(provider.clone(), hospital.clone()),
-            &affiliated,
-        );
-        Ok(())
-    }
-
-    pub fn is_provider_affiliated(env: Env, provider: Address, hospital: Address) -> bool {
-        Self::is_provider_active(&env, &provider)
-            && env
-                .storage()
-                .persistent()
-                .get(&DataKey::ProviderHospital(provider, hospital))
-                .unwrap_or(false)
-    }
-
-    fn is_provider_active(env: &Env, provider: &Address) -> bool {
-        if let Some(profile) = env.storage().persistent().get::<DataKey, ProviderProfile>(&DataKey::Provider(provider.clone())) {
-            profile.active && profile.credential.revoked_at.is_none() && profile.credential.expires_at > env.ledger().timestamp()
+    fn assert_initialized(env: &Env) -> Result<(), Error> {
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::Initialized)
+            .unwrap_or(false)
+        {
+            Ok(())
         } else {
             Err(Error::NotInitialized)
         }
     }
 
     fn assert_not_initialized(env: &Env) -> Result<(), Error> {
-        if env.storage().persistent().has(&DataKey::Initialized) {
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::Initialized)
+            .unwrap_or(false)
+        {
             Err(Error::AlreadyInitialized)
         } else {
             Ok(())
@@ -402,11 +269,11 @@ impl ProviderRegistry {
             .persistent()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
-        if &admin != caller {
-            return Err(Error::Unauthorized);
+        if &admin == caller {
+            Ok(())
+        } else {
+            Err(Error::Unauthorized)
         }
-        caller.require_auth();
-        Ok(())
     }
 
     fn assert_admin_or_trusted(env: &Env, caller: &Address) -> Result<(), Error> {
@@ -418,13 +285,15 @@ impl ProviderRegistry {
         if &admin == caller {
             return Ok(());
         }
-        if env
+        let trusted: bool = env
             .storage()
             .persistent()
-            .has(&DataKey::TrustedAuthority(caller.clone()))
-        {
-            return Ok(());
+            .get(&DataKey::TrustedAuthority(caller.clone()))
+            .unwrap_or(false);
+        if trusted {
+            Ok(())
+        } else {
+            Err(Error::Unauthorized)
         }
-        Err(Error::Unauthorized)
     }
 }

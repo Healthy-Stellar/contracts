@@ -71,7 +71,8 @@ pub enum DataKey {
     Proposal(Symbol),
     /// Pending signer-change proposal (only one active at a time).
     SignerProposal,
-    /// Catalog of all proposal IDs for enumeration / cleanup.
+    /// Catalog of IDs of proposals still open (Pending). Bounded: an ID is
+    /// dropped once its proposal is Executed, and cleanup prunes the rest.
     ProposalIds,
 }
 
@@ -145,6 +146,7 @@ impl MultisigGovernance {
         ttl_seconds: u64,
         quorum_min: u32,
     ) {
+        ttl_config::extend_instance_ttl(&env);
         if threshold == 0 || threshold as usize > signers.len() as usize {
             panic!("invalid threshold");
         }
@@ -168,6 +170,7 @@ impl MultisigGovernance {
         action_id: Symbol,
         payload: Bytes,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         signer.require_auth();
         Self::assert_signer(&env, &signer)?;
 
@@ -184,13 +187,17 @@ impl MultisigGovernance {
         // Fix: read the full proposal in one operation, then decide:
         //   • Pending + still within TTL  → block; return ProposalExists
         //   • Pending + TTL elapsed       → allow; overwrite the stale entry
-        //   • Executed / Failed           → allow; the slot is logically free
+        //   • Executed                    → block; the execution record is permanent
+        //   • Failed                      → allow; the slot is logically free
         //   • No entry                   → allow
         if let Some(existing) = env
             .storage()
             .persistent()
             .get::<_, Proposal>(&key)
         {
+            if existing.status == ProposalStatus::Executed {
+                return Err(Error::AlreadyExecuted);
+            }
             if existing.status == ProposalStatus::Pending {
                 let ttl: u64 = env
                     .storage()
@@ -230,22 +237,19 @@ impl MultisigGovernance {
 
         env.storage().persistent().set(&key, &proposal);
 
-        // Track proposal ID for cleanup enumeration.
-        let mut ids: Vec<Symbol> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::ProposalIds)
-            .unwrap_or(Vec::new(&env));
-        ids.push_back(action_id.clone());
-        env.storage().persistent().set(&DataKey::ProposalIds, &ids);
+        // Track the pending ID for cleanup enumeration (de-duplicated: an expired
+        // pending entry being overwritten is already tracked).
+        Self::track_pending(&env, &action_id);
 
         env.events()
             .publish((symbol_short!("proposed"), action_id), signer);
         Ok(())
     }
 
-    /// Delete all proposals whose TTL has elapsed. Callable by anyone.
+    /// Delete expired Pending and Failed proposals. Callable by anyone.
+    /// Executed proposals are never deleted: they are the approval audit record.
     pub fn cleanup_expired_proposals(env: Env) -> Result<u32, Error> {
+        ttl_config::extend_instance_ttl(&env);
         let ttl: u64 = env
             .storage()
             .persistent()
@@ -270,11 +274,20 @@ impl MultisigGovernance {
                 .persistent()
                 .get::<_, Proposal>(&key)
             {
-                if now > proposal.proposed_at + ttl {
-                    env.storage().persistent().remove(&key);
-                    removed += 1;
-                } else {
-                    remaining.push_back(id);
+                match proposal.status {
+                    ProposalStatus::Executed => {}
+                    ProposalStatus::Failed => {
+                        env.storage().persistent().remove(&key);
+                        removed += 1;
+                    }
+                    ProposalStatus::Pending => {
+                        if now > proposal.proposed_at + ttl {
+                            env.storage().persistent().remove(&key);
+                            removed += 1;
+                        } else {
+                            remaining.push_back(id);
+                        }
+                    }
                 }
             }
             // If the entry is already gone, drop it from the catalog too.
@@ -297,6 +310,7 @@ impl MultisigGovernance {
         signer: Address,
         action_id: Symbol,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         signer.require_auth();
         Self::assert_signer(&env, &signer)?;
 
@@ -332,12 +346,22 @@ impl MultisigGovernance {
                 return Err(Error::AlreadyVoted);
             }
         }
+        // A signer who abstained cannot also approve; otherwise they count twice toward quorum.
+        for i in 0..proposal.abstentions.len() {
+            if proposal.abstentions.get(i).ok_or(Error::NotASigner)? == signer {
+                return Err(Error::AlreadyVoted);
+            }
+        }
 
         proposal.approvals.push_back(signer.clone());
 
         Self::try_finalize(&env, &mut proposal)?;
 
         env.storage().persistent().set(&key, &proposal);
+        if proposal.status == ProposalStatus::Executed {
+            // Executed records stay in storage but leave the pending catalog.
+            Self::untrack_pending(&env, &action_id);
+        }
 
         env.events()
             .publish((symbol_short!("approved"), action_id), signer);
@@ -361,6 +385,7 @@ impl MultisigGovernance {
         signer: Address,
         action_id: Symbol,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         signer.require_auth();
         Self::assert_signer(&env, &signer)?;
 
@@ -427,6 +452,7 @@ impl MultisigGovernance {
     /// Returns `Expired` (re-used as "not yet expired") if the TTL has not
     /// elapsed — callers should check the error meaning.
     pub fn finalize_expired(env: Env, action_id: Symbol) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let key = DataKey::Proposal(action_id.clone());
         let mut proposal: Proposal = env
             .storage()
@@ -466,6 +492,7 @@ impl MultisigGovernance {
         kind: SignerChangeKind,
         target: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
         proposer.require_auth();
         Self::assert_signer(&env, &proposer)?;
@@ -601,6 +628,7 @@ impl MultisigGovernance {
     /// Approve the active signer-change proposal.  Executes immediately when
     /// the approval threshold is reached.
     pub fn approve_signer_change(env: Env, signer: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
         signer.require_auth();
         Self::assert_signer(&env, &signer)?;
@@ -784,6 +812,38 @@ impl MultisigGovernance {
             }
         }
         false
+    }
+
+    /// Add `action_id` to the pending catalog unless it is already present.
+    fn track_pending(env: &Env, action_id: &Symbol) {
+        let mut ids: Vec<Symbol> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProposalIds)
+            .unwrap_or(Vec::new(env));
+        for id in ids.iter() {
+            if &id == action_id {
+                return;
+            }
+        }
+        ids.push_back(action_id.clone());
+        env.storage().persistent().set(&DataKey::ProposalIds, &ids);
+    }
+
+    /// Remove `action_id` from the pending catalog.
+    fn untrack_pending(env: &Env, action_id: &Symbol) {
+        let ids: Vec<Symbol> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProposalIds)
+            .unwrap_or(Vec::new(env));
+        let mut remaining: Vec<Symbol> = Vec::new(env);
+        for id in ids.iter() {
+            if &id != action_id {
+                remaining.push_back(id);
+            }
+        }
+        env.storage().persistent().set(&DataKey::ProposalIds, &remaining);
     }
 
     /// Remove `removed` signer's approvals and abstentions from every in-flight

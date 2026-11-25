@@ -92,6 +92,14 @@ pub const BATCH_SIZE_LIMIT: u32 = 20;
 /// Commit-reveal window: commits older than this many seconds are rejected.
 pub const COMMIT_EXPIRY_SECS: u64 = 3600;
 
+/// #1118: consent scope bits. `check_consent` requires an explicit, non-zero
+/// combination of these; `0` is rejected as `InvalidScopeMask`.
+pub const SCOPE_READ: u32 = 0x01;
+pub const SCOPE_WRITE: u32 = 0x02;
+pub const SCOPE_SHARE: u32 = 0x04;
+/// #1118: maximum byte length of a consent `legal_basis` string.
+pub const MAX_LEGAL_BASIS_LEN: u32 = 64;
+
 /// --------------------
 /// Role Types (RBAC)
 /// --------------------
@@ -177,12 +185,26 @@ pub enum ConsentStatus {
     Expired,
 }
 
+/// #1118: closed set of consent purposes. HIPAA treats treatment, payment and
+/// health-care operations as separate purposes, so each one needs its own
+/// consent; a free-form string allowed `"Treatment"` and `"treatment"` to be
+/// two different purposes.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConsentPurpose {
+    Treatment,
+    Payment,
+    Operations,
+    Research,
+    Imaging,
+}
+
 /// Index entry for subject's consent list.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConsentIndexEntry {
     pub grantee: Address,
-    pub purpose_code: String,
+    pub purpose_code: ConsentPurpose,
 }
 
 /// #676: index entry recording one (grantee, resource) grant a grantor made,
@@ -204,8 +226,8 @@ pub struct ConsentRecord {
     pub grantee: Address,
     /// Bitmask of permitted operations (e.g. 0x01=read, 0x02=write, 0x04=share).
     pub scope_mask: u32,
-    /// Purpose code (e.g. "treatment", "research", "billing").
-    pub purpose_code: String,
+    /// Purpose of the consent (#1118: closed enum, not a free-form string).
+    pub purpose_code: ConsentPurpose,
     /// Legal basis (e.g. "explicit_consent", "vital_interest", "legal_obligation").
     pub legal_basis: String,
     /// Unix timestamp when consent was granted.
@@ -261,7 +283,7 @@ pub enum DataKey {
     Commit(BytesN<32>),
     // #223: unified consent engine
     // (subject, grantee, purpose_code) -> ConsentRecord
-    Consent(Address, Address, String),
+    Consent(Address, Address, ConsentPurpose),
     // subject -> Vec<(grantee, purpose_code)> for enumeration
     SubjectConsents(Address),
     // #676: grantor -> Vec<GrantorIndexEntry> of every (grantee, resource) it granted access to
@@ -272,6 +294,8 @@ pub enum DataKey {
     RateLimit(Address, u32),
     // #489: (responder, patient) -> EmergencyAccessRecord
     EmergencyAccess(Address, Address),
+    // #1069: resource_id -> owner Address (only the owner or an admin may grant access)
+    ResourceOwner(String),
 }
 
 #[contract]
@@ -366,12 +390,9 @@ impl AccessControl {
     // Initialize
     // -------------------------------------------------------------------------
 
-    /// Initialize the contract with an admin
-    pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
-        if env.storage().persistent().has(&DataKey::Admin) {
-            return Err(ContractError::AlreadyInitialized);
-        }
-        admin.require_auth();
+    /// Store the admin and bootstrap its role. Runs atomically at deployment, so
+    /// it cannot be front-run by a caller passing their own address as admin.
+    pub fn __constructor(env: Env, admin: Address) {
         env.storage().persistent().set(&DataKey::Admin, &admin);
 
         // Bootstrap: give the admin the Admin role so role checks are uniform.
@@ -387,7 +408,6 @@ impl AccessControl {
 
         env.events()
             .publish((symbol_short!("init"), admin), symbol_short!("success"));
-        Ok(())
     }
 
     // -------------------------------------------------------------------------
@@ -418,6 +438,7 @@ impl AccessControl {
         role: Role,
         expires_at: u64,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         granter.require_auth();
 
         // Determine the granter's highest active role level.
@@ -463,6 +484,7 @@ impl AccessControl {
         revokee: Address,
         role: Role,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         revoker.require_auth();
         Self::require_role(&env, &revoker, &Role::Admin)?;
 
@@ -511,6 +533,7 @@ impl AccessControl {
         name: String,
         metadata: String,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         wallet.require_auth();
 
         let key = DataKey::Entity(wallet.clone());
@@ -552,6 +575,7 @@ impl AccessControl {
         committer: Address,
         commit_hash: BytesN<32>,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         committer.require_auth();
 
         let key = DataKey::Commit(commit_hash.clone());
@@ -576,7 +600,37 @@ impl AccessControl {
         Ok(())
     }
 
+    /// Register the owner of a resource (admin only). `register_entity` is
+    /// permissionless, so ownership cannot be self-claimed by the grantor.
+    ///
+    /// # Arguments
+    /// * `admin`       - Must hold the `Admin` role (or be the stored admin)
+    /// * `resource_id` - The identifier of the resource
+    /// * `owner`       - The address allowed to grant access to the resource
+    pub fn set_resource_owner(
+        env: Env,
+        admin: Address,
+        resource_id: String,
+        owner: Address,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        Self::require_role(&env, &admin, &Role::Admin)?;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::ResourceOwner(resource_id.clone()), &owner);
+
+        env.events().publish(
+            (symbol_short!("res_own"), resource_id),
+            owner,
+        );
+        Ok(())
+    }
+
     /// Grant access permission to an entity for a specific resource.
+    ///
+    /// The grantor must be the registered owner of `resource_id` (see
+    /// `set_resource_owner`) or hold the `Admin` role (#1069).
     ///
     /// For sensitive operations, callers should first call `commit_grant` with
     /// hash(nonce || grantor || grantee || resource_id) and pass the same
@@ -598,6 +652,7 @@ impl AccessControl {
         expires_at: u64,
         nonce: Option<BytesN<32>>,
     ) -> Result<u64, ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         grantor.require_auth();
 
         // #228: verify commit if nonce provided
@@ -625,6 +680,18 @@ impl AccessControl {
             .ok_or(ContractError::GranteeNotRegistered)?;
         if !grantee_entity.active {
             return Err(ContractError::EntityInactive);
+        }
+
+        // #1069: grantor must own the resource (or be an admin). Without this,
+        // any self-registered entity could grant access to any resource_id.
+        let owner: Option<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ResourceOwner(resource_id.clone()));
+        if owner.as_ref() != Some(&grantor)
+            && Self::require_role(&env, &grantor, &Role::Admin).is_err()
+        {
+            return Err(ContractError::NotResourceOwner);
         }
 
         // #220: composite uniqueness check — (grantor, grantee, resource_id)
@@ -717,15 +784,21 @@ impl AccessControl {
     ///   3. composite GrantIndex
     ///
     /// # Arguments
-    /// * `revoker`     - The address revoking access (must be the original grantor or admin)
+    /// * `revoker`     - The address revoking access (must be the grantor of the
+    ///                   targeted permission, the admin, or hold PayerReviewer)
     /// * `revokee`     - The address losing access
     /// * `resource_id` - The identifier of the resource
+    /// * `grantor`     - Optional grantor whose grant to revoke. If `None`, the
+    ///                   revoker's own grant is preferred, else the first grant
+    ///                   on the resource is targeted.
     pub fn revoke_access(
         env: Env,
         revoker: Address,
         revokee: Address,
         resource_id: String,
+        grantor: Option<Address>,
     ) -> Result<u64, ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         revoker.require_auth();
 
         let admin: Address = env
@@ -734,7 +807,7 @@ impl AccessControl {
             .get(&DataKey::Admin)
             .ok_or(ContractError::ContractNotInitialized)?;
 
-        // --- Step 1: remove from grantee's access list, capture grantor ---
+        // --- Step 1: remove one matching grant from grantee's access list ---
         let access_key = DataKey::AccessList(revokee.clone());
         let access_list: Vec<AccessPermission> = env
             .storage()
@@ -742,14 +815,34 @@ impl AccessControl {
             .get(&access_key)
             .unwrap_or(Vec::new(&env));
 
+        let target_grantor = grantor.unwrap_or_else(|| {
+            let mut first: Option<Address> = None;
+            for i in 0..access_list.len() {
+                if let Some(permission) = access_list.get(i) {
+                    if permission.resource_id == resource_id {
+                        if permission.granted_by == revoker {
+                            return revoker.clone();
+                        }
+                        if first.is_none() {
+                            first = Some(permission.granted_by.clone());
+                        }
+                    }
+                }
+            }
+            first.unwrap_or_else(|| revoker.clone())
+        });
+
         let mut new_access_list: Vec<AccessPermission> = Vec::new(&env);
         let mut found_grantor: Option<Address> = None;
         let mut revoked_op_id: u64 = 0;
 
         for i in 0..access_list.len() {
             if let Some(permission) = access_list.get(i) {
-                if permission.resource_id == resource_id && permission.granted_by == revoker && found_grantor.is_none() {
-                    // Verify revoker is either the original grantor, admin, or holds PayerReviewer role
+                if permission.resource_id == resource_id
+                    && permission.granted_by == target_grantor
+                    && found_grantor.is_none()
+                {
+                    // Authorize against the matched grant: grantor, admin, or PayerReviewer
                     let is_grantor = permission.granted_by == revoker;
                     let is_admin = revoker == admin;
                     let is_payer_reviewer =
@@ -772,7 +865,9 @@ impl AccessControl {
             .persistent()
             .set(&access_key, &new_access_list);
 
-        // --- Step 2: remove from resource's authorized parties (#224 atomic) ---
+        // --- Step 2: remove exactly one entry for this grant from resource's authorized parties (#224 atomic) ---
+        // ResourceAccess holds one entry per grant, so removing every occurrence
+        // would drop other grantors' grants and desync it from check_access.
         let resource_key = DataKey::ResourceAccess(resource_id.clone());
         let authorized: Vec<Address> = env
             .storage()
@@ -781,9 +876,12 @@ impl AccessControl {
             .unwrap_or(Vec::new(&env));
 
         let mut new_authorized: Vec<Address> = Vec::new(&env);
+        let mut removed_authorized = false;
         for i in 0..authorized.len() {
             if let Some(addr) = authorized.get(i) {
-                if addr != revokee {
+                if addr == revokee && !removed_authorized {
+                    removed_authorized = true;
+                } else {
                     new_authorized.push_back(addr);
                 }
             }
@@ -838,6 +936,7 @@ impl AccessControl {
 
     /// Check if an entity has access to a specific resource
     pub fn check_access(env: Env, entity: Address, resource_id: String) -> bool {
+        ttl_config::extend_instance_ttl(&env);
         if let Some(data) = env
             .storage()
             .persistent()
@@ -899,6 +998,7 @@ impl AccessControl {
 
     /// Update entity metadata
     pub fn update_entity(env: Env, wallet: Address, metadata: String) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         wallet.require_auth();
 
         let key = DataKey::Entity(wallet.clone());
@@ -929,6 +1029,7 @@ impl AccessControl {
         admin: Address,
         wallet: Address,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
 
         let stored_admin: Address = env
@@ -1131,7 +1232,7 @@ impl AccessControl {
                 let consent_key = DataKey::Consent(
                     wallet.clone(),
                     entry.grantee.clone(),
-                    entry.purpose_code.clone(),
+                    entry.purpose_code,
                 );
                 if let Some(mut record) = env
                     .storage()
@@ -1147,7 +1248,7 @@ impl AccessControl {
                                 wallet.clone(),
                                 entry.grantee.clone(),
                             ),
-                            (entry.purpose_code.clone(), record.op_id),
+                            (entry.purpose_code, record.op_id),
                         );
                     }
                     record.status = ConsentStatus::Revoked;
@@ -1199,6 +1300,7 @@ impl AccessControl {
 
     /// Register or update a W3C DID for the provided address.
     pub fn register_did(env: Env, address: Address, did: Bytes) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         address.require_auth();
         Self::validate_did(&did)?;
 
@@ -1228,24 +1330,48 @@ impl AccessControl {
     /// * `subject`      - The data subject granting consent (must auth)
     /// * `grantee`      - The party receiving access
     /// * `scope_mask`   - Bitmask: 0x01=read, 0x02=write, 0x04=share
-    /// * `purpose_code` - e.g. "treatment", "research", "billing"
-    /// * `legal_basis`  - e.g. "explicit_consent", "vital_interest"
-    /// * `expires_at`   - Unix timestamp; 0 = no expiry
+    /// * `purpose_code` - One of [`ConsentPurpose`]
+    /// * `legal_basis`  - e.g. "explicit_consent", "vital_interest" (1..=64 bytes)
+    /// * `expires_at`   - Unix timestamp strictly in the future; 0 = no expiry
+    ///
+    /// #1118: the grantee must be a registered, active entity so that the
+    /// consent can later be centrally suspended via `deactivate_entity`.
     pub fn grant_consent(
         env: Env,
         subject: Address,
         grantee: Address,
         scope_mask: u32,
-        purpose_code: String,
+        purpose_code: ConsentPurpose,
         legal_basis: String,
         expires_at: u64,
     ) -> Result<u64, ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         subject.require_auth();
 
         Self::check_rate_limit(&env, &subject)?;
 
-        if scope_mask == 0 {
+        if scope_mask == 0 || (scope_mask & !(SCOPE_READ | SCOPE_WRITE | SCOPE_SHARE)) != 0 {
             return Err(ContractError::InvalidScopeMask);
+        }
+
+        if expires_at != 0 && expires_at <= env.ledger().timestamp() {
+            return Err(ContractError::InvalidExpiry);
+        }
+
+        if legal_basis.is_empty() {
+            return Err(ContractError::InvalidLegalBasis);
+        }
+        if legal_basis.len() > MAX_LEGAL_BASIS_LEN {
+            return Err(ContractError::InputTooLarge);
+        }
+
+        let grantee_data: EntityData = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Entity(grantee.clone()))
+            .ok_or(ContractError::GranteeNotRegistered)?;
+        if !grantee_data.active {
+            return Err(ContractError::EntityInactive);
         }
 
         let op_id: u64 = env
@@ -1260,7 +1386,7 @@ impl AccessControl {
             subject: subject.clone(),
             grantee: grantee.clone(),
             scope_mask,
-            purpose_code: purpose_code.clone(),
+            purpose_code,
             legal_basis,
             granted_at: env.ledger().timestamp(),
             expires_at,
@@ -1268,7 +1394,7 @@ impl AccessControl {
             op_id,
         };
 
-        let key = DataKey::Consent(subject.clone(), grantee.clone(), purpose_code.clone());
+        let key = DataKey::Consent(subject.clone(), grantee.clone(), purpose_code);
         env.storage().persistent().set(&key, &record);
 
         // Update subject's consent index.
@@ -1291,7 +1417,7 @@ impl AccessControl {
         if !found {
             index.push_back(ConsentIndexEntry {
                 grantee: grantee.clone(),
-                purpose_code: purpose_code.clone(),
+                purpose_code,
             });
             env.storage().persistent().set(&idx_key, &index);
         }
@@ -1309,13 +1435,14 @@ impl AccessControl {
         env: Env,
         subject: Address,
         grantee: Address,
-        purpose_code: String,
+        purpose_code: ConsentPurpose,
     ) -> Result<u64, ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         subject.require_auth();
 
         Self::check_rate_limit(&env, &subject)?;
 
-        let key = DataKey::Consent(subject.clone(), grantee.clone(), purpose_code.clone());
+        let key = DataKey::Consent(subject.clone(), grantee.clone(), purpose_code);
         let mut record: ConsentRecord = env
             .storage()
             .persistent()
@@ -1344,21 +1471,27 @@ impl AccessControl {
     /// Check whether active consent exists for (subject, grantee, purpose_code)
     /// and that the requested scope bits are all covered.
     /// Returns `Ok(())` if access is permitted, or an error otherwise.
+    ///
+    /// #1118: `required_scope` must name at least one explicit scope bit;
+    /// `0` is rejected with `InvalidScopeMask` instead of matching any
+    /// consent. The grantee must be a registered, active entity — an
+    /// unregistered grantee could never be deactivated, so its consent could
+    /// not be centrally suspended.
     pub fn check_consent(
         env: Env,
         subject: Address,
         grantee: Address,
-        purpose_code: String,
+        purpose_code: ConsentPurpose,
         required_scope: u32,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         if let Some(data) = env
             .storage()
             .persistent()
-            .get::<DataKey, EntityData>(&DataKey::Entity(grantee.clone()))
-        {
-            if !data.active {
-                return Err(ContractError::ConsentDenied);
-            }
+            .get(&DataKey::Entity(grantee.clone()))
+            .ok_or(ContractError::ConsentDenied)?;
+        if !grantee_data.active {
+            return Err(ContractError::ConsentDenied);
         }
         if let Some(data) = env
             .storage()
@@ -1388,7 +1521,7 @@ impl AccessControl {
             return Err(ContractError::ConsentExpired);
         }
 
-        if required_scope != 0 && (record.scope_mask & required_scope) != required_scope {
+        if (record.scope_mask & required_scope) != required_scope {
             return Err(ContractError::ConsentDenied);
         }
 
@@ -1400,7 +1533,7 @@ impl AccessControl {
         env: Env,
         subject: Address,
         grantee: Address,
-        purpose_code: String,
+        purpose_code: ConsentPurpose,
     ) -> Result<ConsentRecord, ContractError> {
         env.storage()
             .persistent()
@@ -1429,6 +1562,7 @@ impl AccessControl {
         patient: Address,
         justification_hash: BytesN<32>,
     ) -> Result<u64, ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         responder.require_auth();
 
         // Only EmergencyResponder role (or admin) may call this.
@@ -1470,6 +1604,7 @@ impl AccessControl {
     /// Check whether an active (non-expired) emergency access grant exists for
     /// `(responder, patient)`.  Safe to call as a view.
     pub fn check_emergency_access(env: Env, responder: Address, patient: Address) -> bool {
+        ttl_config::extend_instance_ttl(&env);
         let key = DataKey::EmergencyAccess(responder, patient);
         let record: Option<EmergencyAccessRecord> = env.storage().temporary().get(&key);
         match record {
@@ -1497,6 +1632,7 @@ impl AccessControl {
     ///
     /// Only callable by the stored admin.
     pub fn deregister_patient(env: Env, patient: Address) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         let admin: Address = env
             .storage()
             .persistent()
@@ -1795,6 +1931,7 @@ impl AccessControl {
         admin: Address,
         assignments: Vec<RoleBatchEntry>,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
 
         if assignments.len() > BATCH_SIZE_LIMIT {
