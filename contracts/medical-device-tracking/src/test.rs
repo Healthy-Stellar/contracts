@@ -124,8 +124,7 @@ fn test_implant_device() {
     );
     assert_eq!(implant_id, 1);
 
-    let requester = Address::generate(&env);
-    let implants = client.get_patient_implants(&patient_id, &requester, &true);
+    let implants = client.get_patient_implants(&patient_id, &patient_id, &true);
     assert_eq!(implants.len(), 1);
 
     let record = implants.get(0).unwrap();
@@ -133,6 +132,84 @@ fn test_implant_device() {
     assert_eq!(record.device_id, device_id);
     assert!(record.is_active);
     assert!(record.removal_date.is_none());
+}
+
+#[test]
+fn test_get_patient_implants_rejects_stranger() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = setup_client(&env);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    let manufacturer = Address::generate(&env);
+
+    let device_id = register_device_helper(&env, &client, &manufacturer);
+    client.implant_device(
+        &patient_id,
+        &get_udi(&client, device_id),
+        &provider_id,
+        &1700000000u64,
+        &String::from_str(&env, "Left Hip"),
+        &dummy_hash(&env),
+    );
+
+    // A caller who is neither the patient nor the implanting provider must
+    // not be able to read the patient's implant history.
+    let res = client.try_get_patient_implants(&patient_id, &stranger, &false);
+    assert_eq!(res.unwrap_err().unwrap(), Error::NotAuthorized);
+}
+
+#[test]
+fn test_get_patient_implants_allows_patient() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = setup_client(&env);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+    let manufacturer = Address::generate(&env);
+
+    let device_id = register_device_helper(&env, &client, &manufacturer);
+    client.implant_device(
+        &patient_id,
+        &get_udi(&client, device_id),
+        &provider_id,
+        &1700000000u64,
+        &String::from_str(&env, "Left Hip"),
+        &dummy_hash(&env),
+    );
+
+    let implants = client.get_patient_implants(&patient_id, &patient_id, &false);
+    assert_eq!(implants.len(), 1);
+}
+
+#[test]
+fn test_get_patient_implants_allows_implanting_provider() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = setup_client(&env);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+    let manufacturer = Address::generate(&env);
+
+    let device_id = register_device_helper(&env, &client, &manufacturer);
+    client.implant_device(
+        &patient_id,
+        &get_udi(&client, device_id),
+        &provider_id,
+        &1700000000u64,
+        &String::from_str(&env, "Left Hip"),
+        &dummy_hash(&env),
+    );
+
+    let implants = client.get_patient_implants(&patient_id, &provider_id, &false);
+    assert_eq!(implants.len(), 1);
 }
 
 #[test]
@@ -228,8 +305,7 @@ fn test_record_device_maintenance() {
         &dummy_hash(&env),
     );
 
-    let requester = Address::generate(&env);
-    let implants = client.get_patient_implants(&patient_id, &requester, &true);
+    let implants = client.get_patient_implants(&patient_id, &patient_id, &true);
     let record = implants.get(0).unwrap();
     assert_eq!(record.maintenance_history.len(), 2);
 }
@@ -511,11 +587,10 @@ fn test_remove_implant() {
         &Some(dummy_hash(&env)),
     );
 
-    let requester = Address::generate(&env);
-    let active_implants = client.get_patient_implants(&patient_id, &requester, &true);
+    let active_implants = client.get_patient_implants(&patient_id, &patient_id, &true);
     assert_eq!(active_implants.len(), 0);
 
-    let all_implants = client.get_patient_implants(&patient_id, &requester, &false);
+    let all_implants = client.get_patient_implants(&patient_id, &patient_id, &false);
     assert_eq!(all_implants.len(), 1);
     let record = all_implants.get(0).unwrap();
     assert!(!record.is_active);
@@ -759,7 +834,6 @@ fn test_get_patient_implants_active_only_filter() {
 
     let patient_id = Address::generate(&env);
     let provider_id = Address::generate(&env);
-    let requester = Address::generate(&env);
     let manufacturer = Address::generate(&env);
 
     let device_id = register_device_helper(&env, &client, &manufacturer);
@@ -791,10 +865,10 @@ fn test_get_patient_implants_active_only_filter() {
         &None,
     );
 
-    let active = client.get_patient_implants(&patient_id, &requester, &true);
+    let active = client.get_patient_implants(&patient_id, &patient_id, &true);
     assert_eq!(active.len(), 1);
 
-    let all = client.get_patient_implants(&patient_id, &requester, &false);
+    let all = client.get_patient_implants(&patient_id, &patient_id, &false);
     assert_eq!(all.len(), 2);
 }
 
@@ -1189,8 +1263,7 @@ fn test_implant_device_resolves_udi_correctly() {
     );
     assert_eq!(implant_id, 1);
 
-    let requester = Address::generate(&env);
-    let implants = client.get_patient_implants(&patient_id, &requester, &true);
+    let implants = client.get_patient_implants(&patient_id, &patient_id, &true);
     assert_eq!(implants.len(), 1);
     assert_eq!(implants.get(0).unwrap().device_id, dev_id);
 }

@@ -6,6 +6,10 @@ use crate::types::{
 };
 use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, String, Symbol, Vec};
 
+/// Maximum number of day-window indices a single `get_aggregate_page` query may
+/// span. Bounds the work done per call and prevents sweeping the whole history.
+const MAX_AGG_RANGE: u64 = 366;
+
 // Error codes
 // 1 = Unauthorized
 // 2 = Not Found
@@ -684,10 +688,20 @@ impl PatientVitalsContract {
     /// `page` is 0-based; returns up to PAGE_SIZE readings.
     pub fn get_raw_window_page(
         env: Env,
+        requester: Address,
         patient_id: Address,
         window_idx: u64,
         page: u32,
     ) -> Result<PagedRawResult, Error> {
+        requester.require_auth();
+
+        // Authorization: requester must be the patient or an authorized provider.
+        if requester != patient_id
+            && !Self::is_authorized_provider(&env, &patient_id, &requester)
+        {
+            return Err(Error::Unauthorized);
+        }
+
         let key = DataKey::RawWindow(patient_id, window_idx);
         let all: Vec<VitalReading> = env
             .storage()
@@ -713,13 +727,27 @@ impl PatientVitalsContract {
     /// `from_agg_idx` and `to_agg_idx` are inclusive day-window indices.
     pub fn get_aggregate_page(
         env: Env,
+        requester: Address,
         patient_id: Address,
         from_agg_idx: u64,
         to_agg_idx: u64,
         page: u32,
     ) -> Result<PagedAggResult, Error> {
+        requester.require_auth();
+
+        // Authorization: requester must be the patient or an authorized provider.
+        if requester != patient_id
+            && !Self::is_authorized_provider(&env, &patient_id, &requester)
+        {
+            return Err(Error::Unauthorized);
+        }
+
         let total_windows = if to_agg_idx >= from_agg_idx {
-            (to_agg_idx - from_agg_idx + 1) as u32
+            let span = to_agg_idx - from_agg_idx;
+            if span > MAX_AGG_RANGE {
+                return Err(Error::InvalidParameter);
+            }
+            (span + 1) as u32
         } else {
             return Err(Error::InvalidParameter);
         };

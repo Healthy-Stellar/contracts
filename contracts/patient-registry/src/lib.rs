@@ -1355,11 +1355,27 @@ impl MedicalRegistry {
     //              INSTITUTION MANAGEMENT
     // =====================================================
 
-    pub fn register_institution(env: Env, institution_wallet: Address) {
-        ttl_config::extend_instance_ttl(&env);
+    /// Register an institution wallet as an authorized verifier.
+    ///
+    /// Admin-only: institutions are vetted off-chain by registry governance and
+    /// then whitelisted here. Self-registration is not permitted — otherwise any
+    /// account could register itself, verify a sock-puppet doctor, and have that
+    /// doctor pass every "verified doctor" check.
+    ///
+    /// Idempotent: re-registering an already-registered wallet is a no-op and
+    /// does not increment `TotalProviders` again.
+    pub fn register_institution(
+        env: Env,
+        institution_wallet: Address,
+    ) -> Result<(), ContractError> {
         Self::require_not_frozen(&env);
-        institution_wallet.require_auth();
-        let key = DataKey::Institution(institution_wallet);
+        Self::require_admin(&env);
+
+        let key = DataKey::Institution(institution_wallet.clone());
+        if env.storage().persistent().has(&key) {
+            return Ok(());
+        }
+
         env.storage().persistent().set(&key, &true);
 
         let total_providers: u64 = env
@@ -1370,6 +1386,53 @@ impl MedicalRegistry {
         env.storage()
             .instance()
             .set(&DataKey::TotalProviders, &(total_providers + 1));
+
+        env.events().publish(
+            (symbol_short!("reg_inst"), institution_wallet),
+            symbol_short!("success"),
+        );
+        Ok(())
+    }
+
+    /// Revoke an institution's authorization to verify doctors.
+    ///
+    /// Admin-only. Removes the institution flag and decrements `TotalProviders`
+    /// if the wallet was registered. Returns `NotFound` when the wallet is not
+    /// a registered institution.
+    pub fn revoke_institution(
+        env: Env,
+        institution_wallet: Address,
+    ) -> Result<(), ContractError> {
+        Self::require_not_frozen(&env);
+        Self::require_admin(&env);
+
+        let key = DataKey::Institution(institution_wallet.clone());
+        if !env.storage().persistent().has(&key) {
+            return Err(ContractError::NotFound);
+        }
+        env.storage().persistent().remove(&key);
+
+        let total_providers: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalProviders)
+            .unwrap_or(0u64);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalProviders, &total_providers.saturating_sub(1));
+
+        env.events().publish(
+            (symbol_short!("rev_inst"), institution_wallet),
+            symbol_short!("revoked"),
+        );
+        Ok(())
+    }
+
+    /// Returns true iff `institution_wallet` is a registered institution.
+    pub fn is_institution(env: Env, institution_wallet: Address) -> bool {
+        env.storage()
+            .persistent()
+            .has(&DataKey::Institution(institution_wallet))
     }
 
     /// Store the provider-registry contract address (admin-only).

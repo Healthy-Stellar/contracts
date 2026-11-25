@@ -717,6 +717,10 @@ impl MedicalDeviceRegistry {
     }
 
     /// Retrieve all implant records for a patient, optionally filtered to active implants only.
+    ///
+    /// Implant records are sensitive PHI, so access is restricted to the patient
+    /// themselves, the provider who implanted the device, or a provider holding
+    /// the patient's consent. Any other caller receives `Error::NotAuthorized`.
     pub fn get_patient_implants(
         env: Env,
         patient_id: Address,
@@ -728,7 +732,7 @@ impl MedicalDeviceRegistry {
         let implant_ids: Vec<u64> = env
             .storage()
             .persistent()
-            .get(&DataKey::PatientImplants(patient_id))
+            .get(&DataKey::PatientImplants(patient_id.clone()))
             .unwrap_or(Vec::new(&env));
 
         let mut implants: Vec<ImplantRecord> = Vec::new(&env);
@@ -744,7 +748,50 @@ impl MedicalDeviceRegistry {
             }
         }
 
+        Self::assert_authorized_for_patient_implants(
+            &env,
+            &patient_id,
+            &requester,
+            &implants,
+        )?;
+
         Ok(implants)
+    }
+
+    /// Verify that `requester` may read `patient_id`'s implant records.
+    ///
+    /// Allowed when the requester is the patient, the implanting provider of at
+    /// least one of the patient's implants, or a provider holding the patient's
+    /// consent (mirroring `track_device_performance` / `notify_affected_patients`).
+    fn assert_authorized_for_patient_implants(
+        env: &Env,
+        patient_id: &Address,
+        requester: &Address,
+        implants: &Vec<ImplantRecord>,
+    ) -> Result<(), Error> {
+        if *requester == *patient_id {
+            return Ok(());
+        }
+
+        for implant in implants.iter() {
+            if implant.implanting_provider == *requester {
+                return Ok(());
+            }
+        }
+
+        if Self::has_patient_consent(env, patient_id, requester) {
+            return Ok(());
+        }
+
+        Err(Error::NotAuthorized)
+    }
+
+    /// Check whether `provider` holds recorded consent for `patient`.
+    fn has_patient_consent(env: &Env, patient: &Address, provider: &Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PatientConsent(patient.clone(), provider.clone()))
+            .unwrap_or(false)
     }
 
     /// Retrieve all recalls associated with a specific device ID.

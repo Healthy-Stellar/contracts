@@ -95,6 +95,15 @@ pub struct BalanceMobilityAssessment {
     pub fall_risk: Symbol,
 }
 
+/// Lifecycle status of a rehabilitation treatment plan.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum PlanStatus {
+    Active = 0,
+    Discharged = 1,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RehabTreatmentPlan {
@@ -107,6 +116,7 @@ pub struct RehabTreatmentPlan {
     pub frequency: String,
     pub duration_weeks: u32,
     pub prognosis: Symbol,
+    pub status: PlanStatus,
 }
 
 #[contracttype]
@@ -146,6 +156,12 @@ pub struct TherapyAuthorization {
     pub requested_visits: u32,
     pub justification_hash: BytesN<32>,
     pub status: Symbol,
+    /// Visits approved by the payer (0 until approved).
+    pub approved_visits: u32,
+    /// Payer that decided the authorization, if any.
+    pub decided_by: Option<Address>,
+    /// Ledger timestamp of the decision, if any.
+    pub decided_at: Option<u64>,
 }
 
 #[contracttype]
@@ -248,6 +264,8 @@ pub enum DataKey {
     PlanVersionHistory(u64),
     /// plan_id -> u64 (number of goals set for this plan, used as plan_version)
     PlanGoalCount(u64),
+    /// auth_id -> Address (payer authorized to decide the authorization)
+    AuthorizationPayer(u64),
 }
 
 #[contracttype]
@@ -302,6 +320,14 @@ fn is_bound_to_plan(env: &Env, plan: &RehabTreatmentPlan, caller: &Address) -> b
         return *caller == eval.patient_id;
     }
     false
+}
+
+/// Reject clinical writes on a plan that has already been discharged.
+fn require_active(plan: &RehabTreatmentPlan) -> Result<(), Error> {
+    if plan.status != PlanStatus::Active {
+        return Err(Error::InvalidInput);
+    }
+    Ok(())
 }
 
 #[contract]
@@ -522,6 +548,7 @@ impl RehabilitationServicesContract {
             frequency,
             duration_weeks,
             prognosis,
+            status: PlanStatus::Active,
         };
 
         env.storage()
@@ -572,6 +599,11 @@ impl RehabilitationServicesContract {
             .ok_or(Error::NotFound)?;
 
         plan.therapist_id.require_auth();
+        require_active(&plan)?;
+
+        if session_date > env.ledger().timestamp() {
+            return Err(Error::InvalidInput);
+        }
 
         let session = TherapySession {
             session_date,
@@ -617,6 +649,7 @@ impl RehabilitationServicesContract {
             .ok_or(Error::NotFound)?;
 
         plan.therapist_id.require_auth();
+        require_active(&plan)?;
 
         let measurement = PainMeasurement {
             measurement_date,
@@ -661,6 +694,7 @@ impl RehabilitationServicesContract {
             .ok_or(Error::NotFound)?;
 
         plan.therapist_id.require_auth();
+        require_active(&plan)?;
 
         let outcome = FunctionalOutcome {
             measurement_date,
@@ -702,6 +736,11 @@ impl RehabilitationServicesContract {
             .ok_or(Error::NotFound)?;
 
         plan.therapist_id.require_auth();
+        require_active(&plan)?;
+
+        if requested_visits == 0 {
+            return Err(Error::InvalidInput);
+        }
 
         let auth_id = env
             .storage()
@@ -716,6 +755,9 @@ impl RehabilitationServicesContract {
             requested_visits,
             justification_hash,
             status: Symbol::new(&env, "pending"),
+            approved_visits: 0,
+            decided_by: None,
+            decided_at: None,
         };
 
         env.storage()
@@ -730,7 +772,123 @@ impl RehabilitationServicesContract {
             .persistent()
             .set(&DataKey::AuthorizationCounter, &auth_id);
 
+        env.events().publish(
+            (Symbol::new(&env, "therapy_authorization_requested"), auth_id),
+            (treatment_plan_id, requested_visits),
+        );
+
         Ok(auth_id)
+    }
+
+    /// Decide a pending therapy authorization.
+    ///
+    /// `payer` must authenticate and is recorded as the deciding party. `decision`
+    /// must be `approved` or `denied`. On approval, `approved_visits` is recorded
+    /// (clamped to the requested visits); on denial it is set to 0. An
+    /// authorization can only be decided once.
+    pub fn decide_therapy_authorization(
+        env: Env,
+        payer: Address,
+        auth_id: u64,
+        approved_visits: u32,
+        decision: Symbol,
+    ) -> Result<(), Error> {
+        payer.require_auth();
+
+        let mut authorization: TherapyAuthorization = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Authorization(auth_id))
+            .ok_or(Error::NotFound)?;
+
+        let pending = Symbol::new(&env, "pending");
+        if authorization.status != pending {
+            return Err(Error::InvalidInput);
+        }
+
+        let approved = Symbol::new(&env, "approved");
+        let denied = Symbol::new(&env, "denied");
+
+        if decision == approved {
+            if approved_visits == 0 || approved_visits > authorization.requested_visits {
+                return Err(Error::InvalidInput);
+            }
+            authorization.approved_visits = approved_visits;
+        } else if decision == denied {
+            authorization.approved_visits = 0;
+        } else {
+            return Err(Error::InvalidInput);
+        }
+
+        authorization.status = decision.clone();
+        authorization.decided_by = Some(payer.clone());
+        authorization.decided_at = Some(env.ledger().timestamp());
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Authorization(auth_id), &authorization);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Authorization(auth_id),
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_BUMP,
+        );
+        env.storage()
+            .persistent()
+            .set(&DataKey::AuthorizationPayer(auth_id), &payer);
+        env.storage().persistent().extend_ttl(
+            &DataKey::AuthorizationPayer(auth_id),
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_BUMP,
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "therapy_authorization_decided"), auth_id),
+            (
+                authorization.treatment_plan_id,
+                decision,
+                authorization.approved_visits,
+                payer,
+            ),
+        );
+
+        Ok(())
+    }
+
+    /// Read a therapy authorization back.
+    ///
+    /// `caller` must be the plan's treating therapist, the plan's patient, or the
+    /// payer that decided the authorization.
+    pub fn get_therapy_authorization(
+        env: Env,
+        caller: Address,
+        auth_id: u64,
+    ) -> Result<TherapyAuthorization, Error> {
+        caller.require_auth();
+
+        let authorization: TherapyAuthorization = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Authorization(auth_id))
+            .ok_or(Error::NotFound)?;
+
+        let plan: RehabTreatmentPlan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TreatmentPlan(authorization.treatment_plan_id))
+            .ok_or(Error::NotFound)?;
+
+        let is_payer = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&DataKey::AuthorizationPayer(auth_id))
+            .map(|p| p == caller)
+            .unwrap_or(false);
+
+        if !is_payer && !is_bound_to_plan(&env, &plan, &caller) {
+            return Err(Error::Unauthorized);
+        }
+
+        Ok(authorization)
     }
 
     pub fn document_progress_note(
@@ -750,6 +908,7 @@ impl RehabilitationServicesContract {
             .ok_or(Error::NotFound)?;
 
         plan.therapist_id.require_auth();
+        require_active(&plan)?;
 
         let note = ProgressNote {
             note_date,
@@ -787,14 +946,48 @@ impl RehabilitationServicesContract {
         final_outcomes_hash: BytesN<32>,
         home_exercise_program_hash: BytesN<32>,
     ) -> Result<(), Error> {
-        ttl_config::extend_instance_ttl(&env);
-        let plan: RehabTreatmentPlan = env
+        let mut plan: RehabTreatmentPlan = env
             .storage()
             .persistent()
             .get(&DataKey::TreatmentPlan(treatment_plan_id))
             .ok_or(Error::NotFound)?;
 
         plan.therapist_id.require_auth();
+
+        // Discharge is one-time: a discharged plan cannot be discharged again.
+        if plan.status != PlanStatus::Active {
+            return Err(Error::InvalidInput);
+        }
+
+        let now = env.ledger().timestamp();
+        if discharge_date > now {
+            return Err(Error::InvalidInput);
+        }
+
+        // Discharge cannot predate the most recent documented session.
+        if let Some(sessions) = env
+            .storage()
+            .persistent()
+            .get::<_, Vec<TherapySession>>(&DataKey::TherapySessions(treatment_plan_id))
+        {
+            for session in sessions.iter() {
+                if discharge_date < session.session_date {
+                    return Err(Error::InvalidInput);
+                }
+            }
+        }
+
+        // Every goal marked met must exist, belong to this plan, and be achieved.
+        for goal_id in goals_met.iter() {
+            let goal: MeasurableGoal = env
+                .storage()
+                .persistent()
+                .get(&DataKey::MeasurableGoal(goal_id))
+                .ok_or(Error::NotFound)?;
+            if goal.plan_id != treatment_plan_id || !goal.achieved {
+                return Err(Error::InvalidInput);
+            }
+        }
 
         let discharge = DischargeRecord {
             discharge_date,
@@ -811,6 +1004,21 @@ impl RehabilitationServicesContract {
             &DataKey::Discharge(treatment_plan_id),
             PERSISTENT_TTL_THRESHOLD,
             PERSISTENT_TTL_BUMP,
+        );
+
+        plan.status = PlanStatus::Discharged;
+        env.storage()
+            .persistent()
+            .set(&DataKey::TreatmentPlan(treatment_plan_id), &plan);
+        env.storage().persistent().extend_ttl(
+            &DataKey::TreatmentPlan(treatment_plan_id),
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_BUMP,
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "therapy_discharged"), treatment_plan_id),
+            (discharge_date, discharge_reason),
         );
 
         Ok(())
@@ -845,6 +1053,7 @@ impl RehabilitationServicesContract {
         if plan.therapist_id != therapist_id {
             return Err(Error::Unauthorized);
         }
+        require_active(&plan)?;
 
         plan.stg_goals = stg_goals;
         plan.ltg_goals = ltg_goals;
@@ -1176,6 +1385,7 @@ impl RehabilitationServicesContract {
             .ok_or(Error::NotFound)?;
 
         plan.therapist_id.require_auth();
+        require_active(&plan)?;
 
         let goal_id = env
             .storage()
@@ -1244,6 +1454,7 @@ impl RehabilitationServicesContract {
             .ok_or(Error::NotFound)?;
 
         plan.therapist_id.require_auth();
+        require_active(&plan)?;
 
         let mut goal: MeasurableGoal = env
             .storage()
