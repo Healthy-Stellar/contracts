@@ -632,24 +632,22 @@ pub struct PrescriptionContract;
 
 #[contractimpl]
 impl PrescriptionContract {
-    /// Initialize the contract with the admin, and the provider-registry
-    /// contract address used for cross-contract provider verification.
+    /// Set the admin and the provider-registry contract used for cross-contract
+    /// provider verification, and make the admin the registry governor.
     ///
-    /// `admin` must authorize this call, so an attacker cannot front-run
-    /// deployment and point `provider_registry` at a malicious contract whose
-    /// `is_provider` always returns `true`. Fails with `AlreadyExists` if
-    /// called more than once.
-    pub fn initialize(env: Env, admin: Address, provider_registry: Address) -> Result<(), Error> {
-        ttl_config::extend_instance_ttl(&env);
-        if env.storage().persistent().has(&DataKey::ProviderRegistry) {
-            return Err(Error::AlreadyExists);
-        }
-        admin.require_auth();
+    /// Runs atomically at deployment, so no one can front-run it and point
+    /// `provider_registry` at a contract whose `is_provider` always returns `true`.
+    pub fn __constructor(env: Env, admin: Address, provider_registry: Address) {
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage()
             .persistent()
             .set(&DataKey::ProviderRegistry, &provider_registry);
-        Ok(())
+        env.storage()
+            .persistent()
+            .set(&DataKey::RegistryAdmin, &admin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::RegistryWriter(admin.clone()), &true);
     }
 
     /// Replace the configured provider-registry contract (admin only).
@@ -1168,21 +1166,6 @@ impl PrescriptionContract {
                 interaction_profile_hash,
             },
         )
-    }
-
-    pub fn initialize_registry_governance(env: Env, admin: Address) -> Result<(), Error> {
-        ttl_config::extend_instance_ttl(&env);
-        admin.require_auth();
-        if is_registry_governed(&env) {
-            return Err(Error::AlreadyExists);
-        }
-        env.storage()
-            .persistent()
-            .set(&DataKey::RegistryAdmin, &admin);
-        env.storage()
-            .persistent()
-            .set(&DataKey::RegistryWriter(admin.clone()), &true);
-        Ok(())
     }
 
     pub fn add_registry_writer(env: Env, admin: Address, writer: Address) -> Result<(), Error> {

@@ -613,19 +613,12 @@ impl MedicalRegistry {
     //                    ADMIN / CONSENT
     // =====================================================
 
-    pub fn initialize(
-        env: Env,
-        admin: Address,
-        treasury: Address,
-        fee_token: Address,
-    ) -> Result<(), ContractError> {
-        ttl_config::extend_instance_ttl(&env);
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(ContractError::AlreadyInitialized);
-        }
-        validate_nonzero_address(&admin).map_err(|_| ContractError::InvalidAddress)?;
-        validate_nonzero_address(&treasury).map_err(|_| ContractError::InvalidAddress)?;
-        validate_nonzero_address(&fee_token).map_err(|_| ContractError::InvalidAddress)?;
+    /// Runs atomically at deployment and cannot be called again, so no one can
+    /// front-run it to set themselves as admin or pick the fee treasury/token.
+    pub fn __constructor(env: Env, admin: Address, treasury: Address, fee_token: Address) {
+        validate_nonzero_address(&admin).expect("admin address must not be zero");
+        validate_nonzero_address(&treasury).expect("treasury address must not be zero");
+        validate_nonzero_address(&fee_token).expect("fee token address must not be zero");
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Treasury, &treasury);
         env.storage().instance().set(&DataKey::FeeToken, &fee_token);
@@ -640,7 +633,6 @@ impl MedicalRegistry {
         env.storage()
             .instance()
             .set(&DataKey::TotalAccessGrants, &0u64);
-        Ok(())
     }
 
     // =====================================================

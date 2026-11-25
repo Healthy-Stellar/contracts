@@ -232,16 +232,10 @@ pub struct HealthcareCredentialingSystem;
 
 #[contractimpl]
 impl HealthcareCredentialingSystem {
-    /// Initialize the contract with an admin, who alone may register authorized
+    /// Set the admin at deployment; the admin alone may register authorized
     /// verifiers and credentialing-committee members.
-    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
-        ttl_config::extend_instance_ttl(&env);
-        admin.require_auth();
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::AlreadyInitialized);
-        }
+    pub fn __constructor(env: Env, admin: Address) {
         env.storage().instance().set(&DataKey::Admin, &admin);
-        Ok(())
     }
 
     /// Register an address as an authorized credential verifier. Admin only.

@@ -392,13 +392,9 @@ impl AccessControl {
     // Initialize
     // -------------------------------------------------------------------------
 
-    /// Initialize the contract with an admin
-    pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
-        ttl_config::extend_instance_ttl(&env);
-        if env.storage().persistent().has(&DataKey::Admin) {
-            return Err(ContractError::AlreadyInitialized);
-        }
-        admin.require_auth();
+    /// Store the admin and bootstrap its role. Runs atomically at deployment, so
+    /// it cannot be front-run by a caller passing their own address as admin.
+    pub fn __constructor(env: Env, admin: Address) {
         env.storage().persistent().set(&DataKey::Admin, &admin);
 
         // Bootstrap: give the admin the Admin role so role checks are uniform.
@@ -414,7 +410,6 @@ impl AccessControl {
 
         env.events()
             .publish((symbol_short!("init"), admin), symbol_short!("success"));
-        Ok(())
     }
 
     // -------------------------------------------------------------------------

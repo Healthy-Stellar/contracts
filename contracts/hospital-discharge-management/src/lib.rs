@@ -52,22 +52,12 @@ pub struct HospitalDischargeContract;
 
 #[contractimpl]
 impl HospitalDischargeContract {
-    /// Initialize the contract with its administrator and registries.
-    pub fn initialize(
-        env: Env,
-        admin: Address,
-        hospital_registry: Address,
-        provider_registry: Address,
-    ) -> Result<(), Error> {
-        ttl_config::extend_instance_ttl(&env);
-        if is_initialized(&env) {
-            return Err(Error::AlreadyInitialized);
-        }
-        admin.require_auth();
+    /// Set the administrator and registries at deployment. Runs atomically, so
+    /// no one can front-run it to take over admin or swap the registries.
+    pub fn __constructor(env: Env, admin: Address, hospital_registry: Address, provider_registry: Address) {
         set_admin(&env, &admin);
         set_hospital_registry(&env, &hospital_registry);
         set_provider_registry(&env, &provider_registry);
-        Ok(())
     }
 
     /// Initialize a new discharge planning process
