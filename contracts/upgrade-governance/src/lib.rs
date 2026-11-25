@@ -628,181 +628,11 @@ impl UpgradeGovernance {
         Ok(())
     }
 
-    pub fn get_proposal(env: Env, proposal_id: u64) -> Result<UpgradeProposal, Error> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Proposal(proposal_id))
-            .ok_or(Error::ProposalNotFound)
-    }
-
-    // ── signer lifecycle ──────────────────────────────────────────────────────
-
-    /// Propose adding or removing a signer.  Only one signer-change proposal
-    /// may be active at a time.  The proposer's approval is counted immediately.
-    pub fn propose_signer_change(
-        env: Env,
-        proposer: Address,
-        kind: SignerChangeKind,
-        target: Address,
-    ) -> Result<(), Error> {
-        Self::assert_initialized(&env)?;
-        proposer.require_auth();
-        Self::assert_signer(&env, &proposer)?;
-
-        if let Some(existing) = env
-            .storage()
-            .persistent()
-            .get::<_, SignerProposal>(&DataKey::SignerProposal)
-        {
-            if existing.status == SignerProposalStatus::Pending {
-                if env.ledger().timestamp() <= existing.proposed_at + VOTING_WINDOW {
-                    // Active proposal still within its TTL — reject.
-                    return Err(Error::ProposalExists);
-                }
-                // Expired pending proposal — fall through and overwrite.
-            }
-            // Finalized (Executed) proposals do not block new ones.
-        }
-
-        let signers: Vec<Address> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Signers)
-            .ok_or(Error::NotInitialized)?;
-
-        match kind {
-            SignerChangeKind::Add => {
-                for s in signers.iter() {
-                    if s == target {
-                        return Err(Error::AlreadySigner);
-                    }
-                }
-            }
-            SignerChangeKind::Remove => {
-                let threshold: u32 = env
-                    .storage()
-                    .persistent()
-                    .get(&DataKey::Threshold)
-                    .ok_or(Error::NotInitialized)?;
-                if signers.len() <= threshold {
-                    return Err(Error::ThresholdBreached);
-                }
-                let mut found = false;
-                for s in signers.iter() {
-                    if s == target {
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    return Err(Error::NotASigner);
-                }
-            }
-        }
-
-        let mut approvals: Vec<Address> = Vec::new(&env);
-        approvals.push_back(proposer.clone());
-
-        let proposal = SignerProposal {
-            kind: kind.clone(),
-            target: target.clone(),
-            approvals,
-            proposed_at: env.ledger().timestamp(),
-            status: SignerProposalStatus::Pending,
-        };
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::SignerProposal, &proposal);
-        env.events()
-            .publish((symbol_short!("sg_prop"), kind), (proposer, target));
-        Ok(())
-    }
-
-    /// Approve the active signer-change proposal.  Executes immediately when
-    /// the approval threshold is reached.
-    pub fn approve_signer_change(env: Env, signer: Address) -> Result<(), Error> {
-        Self::assert_initialized(&env)?;
-        signer.require_auth();
-        Self::assert_signer(&env, &signer)?;
-
-        let mut proposal: SignerProposal = env
-            .storage()
-            .persistent()
-            .get(&DataKey::SignerProposal)
-            .ok_or(Error::ProposalNotFound)?;
-
-        if proposal.status != SignerProposalStatus::Pending {
-            return Err(Error::AlreadyFinalized);
-        }
-
-        if env.ledger().timestamp() > proposal.proposed_at + VOTING_WINDOW {
-            return Err(Error::Expired);
-        }
-
-        for i in 0..proposal.approvals.len() {
-            if proposal.approvals.get(i).unwrap() == signer {
-                return Err(Error::AlreadyVoted);
-            }
-        }
-
-        proposal.approvals.push_back(signer.clone());
-
-        let threshold: u32 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Threshold)
-            .ok_or(Error::NotInitialized)?;
-
-        if proposal.approvals.len() >= threshold {
-            let mut signers: Vec<Address> = env
-                .storage()
-                .persistent()
-                .get(&DataKey::Signers)
-                .ok_or(Error::NotInitialized)?;
-
-            match proposal.kind {
-                SignerChangeKind::Add => {
-                    signers.push_back(proposal.target.clone());
-                }
-                SignerChangeKind::Remove => {
-                    let mut new_signers: Vec<Address> = Vec::new(&env);
-                    for s in signers.iter() {
-                        if s != proposal.target {
-                            new_signers.push_back(s);
-                        }
-                    }
-                    signers = new_signers;
-                }
-            }
-
-            env.storage().persistent().set(&DataKey::Signers, &signers);
-            proposal.status = SignerProposalStatus::Executed;
-            env.storage().persistent().remove(&DataKey::SignerProposal);
-            env.events().publish(
-                (symbol_short!("sg_exec"), proposal.kind.clone()),
-                proposal.target.clone(),
-            );
-        } else {
-            env.storage()
-                .persistent()
-                .set(&DataKey::SignerProposal, &proposal);
-        }
-
-        env.events()
-            .publish((symbol_short!("sg_appr"), signer.clone()), signer);
-        Ok(())
-    }
-
-    pub fn get_signer_proposal(env: Env) -> Result<SignerProposal, Error> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::SignerProposal)
-            .ok_or(Error::ProposalNotFound)
-    }
-
-    /// Persistently remove an expired proposal. Returns `Ok(())` so the storage
-    /// removal is committed (an `Err` return would roll it back).
+    /// Persistently remove an expired proposal that never reached threshold.
+    /// Only `Active` proposals are prunable: `Approved` proposals are timelocked
+    /// and `Executed`/`Cancelled` ones are kept as the on-chain audit record.
+    /// Returns `Ok(())` so the storage removal is committed (an `Err` return
+    /// would roll it back).
     pub fn prune_expired(env: Env, proposal_id: u64) -> Result<(), Error> {
         ttl_config::extend_instance_ttl(&env);
         let proposal: UpgradeProposal = env
@@ -810,6 +640,13 @@ impl UpgradeGovernance {
             .persistent()
             .get(&DataKey::Proposal(proposal_id))
             .ok_or(Error::ProposalNotFound)?;
+
+        match proposal.status {
+            ProposalStatus::Active => {}
+            ProposalStatus::Approved => return Err(Error::AlreadyFinalized),
+            ProposalStatus::Executed => return Err(Error::AlreadyExecuted),
+            ProposalStatus::Cancelled => return Err(Error::Cancelled),
+        }
 
         let now = env.ledger().timestamp();
         if now <= proposal.proposed_at + VOTING_WINDOW {
