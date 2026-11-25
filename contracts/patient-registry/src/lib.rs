@@ -80,6 +80,38 @@ pub struct PatientStatusChanged {
     pub timestamp: u64,
 }
 
+/// #1119: emitted when a provider is granted access to a patient's records.
+/// The patient is identified only by a pseudonymous hash (see
+/// `patient_event_id`), never by address.
+#[contractevent]
+pub struct AccessGranted {
+    pub patient_id_hash: BytesN<32>,
+    pub provider: Address,
+    /// `patient` or `guardian` — who authorised the change.
+    pub actor_role: Symbol,
+    pub op_id: u64,
+}
+
+/// #1119: emitted when a provider's access to a patient's records is removed.
+#[contractevent]
+pub struct AccessRevoked {
+    pub patient_id_hash: BytesN<32>,
+    pub provider: Address,
+    /// `patient` or `guardian` — who authorised the change.
+    pub actor_role: Symbol,
+    pub op_id: u64,
+}
+
+/// #1119: emitted when field-level access to a record is granted.
+#[contractevent]
+pub struct FieldAccessGranted {
+    pub patient_id_hash: BytesN<32>,
+    pub provider: Address,
+    pub actor_role: Symbol,
+    pub record_id: u64,
+    pub op_id: u64,
+}
+
 /// --------------------
 /// Patient Structures
 /// --------------------
@@ -146,6 +178,8 @@ pub enum DataKey {
     ShareNonce(Address),
     /// Nonce counter per patient for data export ticket generation.
     ExportNonce(Address),
+    /// Issued export ticket record keyed by its nonce.
+    ExportTicketRecord(BytesN<32>),
     /// Share link data keyed by token hash.
     ShareLink(BytesN<32>),
     /// Marks a patient as deregistered (value: timestamp of deregistration).
@@ -183,6 +217,8 @@ pub enum DataKey {
     CallerNonce(Address),
     /// Test helper key for simulating fail-closed registry behavior
     FailClosedRegistry,
+    /// #1119: monotonic operation counter for access-change events (u64, instance).
+    AccessOpCounter,
 }
 
 /// --------------------
@@ -205,7 +241,17 @@ pub struct ExportTicket {
     pub issued_at: u64,
     pub expires_at: u64,
     pub nonce: BytesN<32>,
-    pub signature: BytesN<32>,
+}
+
+/// Contract-side record of an issued export ticket; a ticket is valid only if
+/// it matches this record and the record has not been used yet.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredExportTicket {
+    pub patient: Address,
+    pub issued_at: u64,
+    pub expires_at: u64,
+    pub used: bool,
 }
 
 /// One entry in the platform-wide secondary index.
@@ -366,6 +412,42 @@ fn require_patient_or_guardian(
     }
 }
 
+/// #1119: the role of `caller` relative to `patient` for audit events.
+/// Must only be called after `require_patient_or_guardian` has succeeded.
+fn actor_role(patient: &Address, caller: &Address) -> Symbol {
+    if caller == patient {
+        symbol_short!("patient")
+    } else {
+        symbol_short!("guardian")
+    }
+}
+
+/// #1119: pseudonymous patient identifier for events. Uses the patient's
+/// registered `id_commitment` when available, otherwise `sha256(address_xdr)`,
+/// so events never carry the patient's address in the clear.
+fn patient_event_id(env: &Env, patient: &Address) -> BytesN<32> {
+    if let Some(data) = env
+        .storage()
+        .persistent()
+        .get::<DataKey, PatientData>(&DataKey::Patient(patient.clone()))
+    {
+        return data.id_commitment;
+    }
+    env.crypto().sha256(&patient.clone().to_xdr(env)).into()
+}
+
+/// #1119: next value of the monotonic access-change operation id.
+fn next_access_op_id(env: &Env) -> u64 {
+    let op_id: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::AccessOpCounter)
+        .unwrap_or(0u64)
+        + 1;
+    env.storage().instance().set(&DataKey::AccessOpCounter, &op_id);
+    op_id
+}
+
 fn next_export_nonce(env: &Env, patient: &Address, issued_at: u64) -> BytesN<32> {
     let nonce_key = DataKey::ExportNonce(patient.clone());
     let nonce_counter: u64 = env.storage().persistent().get(&nonce_key).unwrap_or(0u64) + 1;
@@ -377,22 +459,6 @@ fn next_export_nonce(env: &Env, patient: &Address, issued_at: u64) -> BytesN<32>
     preimage.extend_from_array(&nonce_counter.to_be_bytes());
 
     env.crypto().sha256(&preimage).into()
-}
-
-fn sign_export_ticket(
-    env: &Env,
-    patient: &Address,
-    issued_at: u64,
-    expires_at: u64,
-    nonce: &BytesN<32>,
-) -> BytesN<32> {
-    let mut payload = Bytes::new(env);
-    payload.append(&patient.clone().to_xdr(env));
-    payload.extend_from_array(&issued_at.to_be_bytes());
-    payload.extend_from_array(&expires_at.to_be_bytes());
-    payload.append(&Bytes::from(nonce.clone()));
-
-    env.crypto().sha256(&payload).into()
 }
 
 /// Enforces that `caller` is the patient, their guardian, or an authorized doctor.
@@ -1372,6 +1438,14 @@ impl MedicalRegistry {
 
         map.set(doctor.clone(), true);
         env.storage().persistent().set(&key, &map);
+
+        AccessGranted {
+            patient_id_hash: patient_event_id(&env, &patient),
+            provider: doctor,
+            actor_role: actor_role(&patient, &caller),
+            op_id: next_access_op_id(&env),
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -1428,6 +1502,15 @@ impl MedicalRegistry {
             grants.push_back(record_id);
             env.storage().persistent().set(&grants_key, &grants);
         }
+
+        FieldAccessGranted {
+            patient_id_hash: patient_event_id(&env, &patient),
+            provider: grantee,
+            actor_role: symbol_short!("patient"),
+            record_id,
+            op_id: next_access_op_id(&env),
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -1479,10 +1562,28 @@ impl MedicalRegistry {
             env.storage().persistent().remove(&grants_key);
         }
 
+        AccessRevoked {
+            patient_id_hash: patient_event_id(&env, &patient),
+            provider: doctor,
+            actor_role: actor_role(&patient, &caller),
+            op_id: next_access_op_id(&env),
+        }
+        .publish(&env);
         Ok(())
     }
 
-    pub fn get_authorized_doctors(env: Env, patient: Address) -> Vec<Address> {
+    /// Return every provider with access to `patient`'s records.
+    ///
+    /// #1119: a patient's care team is itself sensitive (an oncologist or an
+    /// addiction-medicine provider can reveal a diagnosis), so only the
+    /// patient or their guardian may enumerate it. `caller` must authorize.
+    pub fn get_authorized_doctors(
+        env: Env,
+        patient: Address,
+        caller: Address,
+    ) -> Result<Vec<Address>, ContractError> {
+        require_patient_or_guardian(&env, &patient, &caller)?;
+
         let key = DataKey::AuthorizedDoctors(patient);
         let map: Map<Address, bool> = env
             .storage()
@@ -1490,7 +1591,7 @@ impl MedicalRegistry {
             .get(&key)
             .unwrap_or(Map::new(&env));
 
-        map.keys()
+        Ok(map.keys())
     }
 
     // =====================================================
@@ -2740,33 +2841,36 @@ impl MedicalRegistry {
         let issued_at = env.ledger().timestamp();
         let expires_at = issued_at.saturating_add(3600);
         let nonce = next_export_nonce(&env, &patient, issued_at);
-        let signature = sign_export_ticket(&env, &patient, issued_at, expires_at, &nonce);
+
+        let record = StoredExportTicket {
+            patient: patient.clone(),
+            issued_at,
+            expires_at,
+            used: false,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::ExportTicketRecord(nonce.clone()), &record);
 
         ExportTicket {
             patient,
             issued_at,
             expires_at,
             nonce,
-            signature,
         }
     }
 
-    /// Validate a patient data export ticket for expiry and integrity.
+    /// Validate a patient data export ticket and consume it (single use).
+    /// Only tickets issued by `request_data_export` and not yet used are accepted.
     pub fn validate_export_ticket(env: Env, ticket: ExportTicket) -> bool {
         ttl_config::extend_instance_ttl(&env);
         if env.ledger().timestamp() > ticket.expires_at {
             return false;
         }
 
-        let expected_signature = sign_export_ticket(
-            &env,
-            &ticket.patient,
-            ticket.issued_at,
-            ticket.expires_at,
-            &ticket.nonce,
-        );
-
-        expected_signature == ticket.signature
+        record.used = true;
+        env.storage().persistent().set(&key, &record);
+        true
     }
 
     // =====================================================
@@ -3142,6 +3246,9 @@ impl MedicalRegistry {
 
 #[cfg(test)]
 mod test_issues_959_960_963;
+
+#[cfg(test)]
+mod test_issue_1119;
 
 // #[cfg(test)]
 // mod test;

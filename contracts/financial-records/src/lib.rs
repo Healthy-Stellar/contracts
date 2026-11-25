@@ -68,7 +68,8 @@ pub enum DataKey {
     AccessList(Address),          // owner -> Vec<Address> of currently granted accessors
     TypeIndex(Address, u32, u32), // (owner, record_type as u32, seq) -> record idx
     TypeCount(Address, u32),      // (owner, record_type as u32) -> u32
-    DateIndex(Address, u32),      // (owner, seq) -> record idx  (insertion order)
+    DateIndex(Address, u32),      // (owner, seq) -> record idx  (insertion order; seq == idx)
+    RecordTypeSeq(Address, u32),  // (owner, record idx) -> TypeIndex seq (reverse pointer)
     DateCount(Address),           // owner -> u32
     Deregistering(Address),       // owner -> bool tombstone blocking new writes
     DeregisterCursor(Address),    // owner -> u32 next record idx to delete
@@ -132,6 +133,9 @@ impl FinancialRecordContract {
         e.storage()
             .persistent()
             .set(&DataKey::TypeIndex(owner.clone(), rt, type_seq), &count);
+        e.storage()
+            .persistent()
+            .set(&DataKey::RecordTypeSeq(owner.clone(), count), &type_seq);
         e.storage()
             .persistent()
             .set(&DataKey::TypeCount(owner.clone(), rt), &(type_seq + 1));
@@ -370,32 +374,33 @@ impl FinancialRecordContract {
 
         let mut budget = max_items;
 
-        // 1. Delete access grants + access list.
-        let list: Vec<Address> = e
+        // 1. Delete access grants from the end of the list, persisting the shortened list so
+        //    the next call resumes where this one stopped.
+        let mut list: Vec<Address> = e
             .storage()
             .persistent()
             .get(&DataKey::AccessList(owner.clone()))
             .unwrap_or_else(|| vec![&e]);
-        for a in list.iter() {
-            if budget == 0 {
-                return Ok(Self::remaining_items(&e, &owner));
-            }
+        while !list.is_empty() && budget > 0 {
+            let a = list.last().unwrap();
             e.storage()
                 .persistent()
                 .remove(&DataKey::Access(owner.clone(), a));
+            list.pop_back();
             budget -= 1;
         }
-        if !list.is_empty() {
-            if budget == 0 {
-                return Ok(Self::remaining_items(&e, &owner));
-            }
+        if budget == 0 {
             e.storage()
                 .persistent()
-                .remove(&DataKey::AccessList(owner.clone()));
-            budget -= 1;
+                .set(&DataKey::AccessList(owner.clone()), &list);
+            return Ok(Self::remaining_items(&e, &owner));
         }
+        e.storage()
+            .persistent()
+            .remove(&DataKey::AccessList(owner.clone()));
+        budget -= 1;
 
-        // 2. Delete records + their type/date index entries, resuming from a cursor.
+        // 2. Delete records + their index entries, resuming from a cursor.
         let count: u32 = e
             .storage()
             .persistent()
@@ -408,8 +413,8 @@ impl FinancialRecordContract {
             .unwrap_or(0);
 
         while cursor < count {
-            // Each record needs: Record, TypeIndex, DateIndex = 3 deletions.
-            if budget < 3 {
+            // Each record needs: Record, TypeIndex, DateIndex, RecordTypeSeq = 4 deletions.
+            if budget < 4 {
                 e.storage()
                     .persistent()
                     .set(&DataKey::DeregisterCursor(owner.clone()), &cursor);
@@ -422,53 +427,28 @@ impl FinancialRecordContract {
                 .get(&DataKey::Record(owner.clone(), cursor));
 
             if let Some(rec) = record {
-                let rt = rec.record_type as u32;
-                // Remove the type index entry pointing at this record idx.
-                let type_count: u32 = e
+                // O(1): the reverse pointer gives the TypeIndex slot for this record.
+                if let Some(seq) = e
                     .storage()
                     .persistent()
-                    .get(&DataKey::TypeCount(owner.clone(), rt))
-                    .unwrap_or(0);
-                for seq in 0..type_count {
-                    if let Some(idx) = e
-                        .storage()
+                    .get::<DataKey, u32>(&DataKey::RecordTypeSeq(owner.clone(), cursor))
+                {
+                    e.storage()
                         .persistent()
-                        .get::<DataKey, u32>(&DataKey::TypeIndex(owner.clone(), rt, seq))
-                    {
-                        if idx == cursor {
-                            e.storage()
-                                .persistent()
-                                .remove(&DataKey::TypeIndex(owner.clone(), rt, seq));
-                            break;
-                        }
-                    }
-                }
-                // Remove the date index entry pointing at this record idx.
-                let date_count: u32 = e
-                    .storage()
-                    .persistent()
-                    .get(&DataKey::DateCount(owner.clone()))
-                    .unwrap_or(0);
-                for seq in 0..date_count {
-                    if let Some(idx) = e
-                        .storage()
-                        .persistent()
-                        .get::<DataKey, u32>(&DataKey::DateIndex(owner.clone(), seq))
-                    {
-                        if idx == cursor {
-                            e.storage()
-                                .persistent()
-                                .remove(&DataKey::DateIndex(owner.clone(), seq));
-                            break;
-                        }
-                    }
+                        .remove(&DataKey::TypeIndex(owner.clone(), rec.record_type as u32, seq));
                 }
             }
-
+            // DateIndex seq always equals the record idx (written together in add_financial_record).
+            e.storage()
+                .persistent()
+                .remove(&DataKey::DateIndex(owner.clone(), cursor));
+            e.storage()
+                .persistent()
+                .remove(&DataKey::RecordTypeSeq(owner.clone(), cursor));
             e.storage()
                 .persistent()
                 .remove(&DataKey::Record(owner.clone(), cursor));
-            budget -= 3;
+            budget -= 4;
             cursor += 1;
         }
 
@@ -535,14 +515,15 @@ impl FinancialRecordContract {
             .get(&DataKey::AccessList(owner.clone()))
             .unwrap_or_else(|| vec![e]);
         let records_left = count.saturating_sub(cursor);
-        // 3 deletions per remaining record + access grants + count keys.
+        // 4 deletions per remaining record + access grants + count keys.
         records_left
-            .saturating_mul(3)
+            .saturating_mul(4)
             .saturating_add(list.len())
             .saturating_add(7)
     }
 
     fn check_access(e: &Env, caller: &Address, owner: &Address) -> Result<(), ContractError> {
+        caller.require_auth();
         if caller == owner {
             return Ok(());
         }

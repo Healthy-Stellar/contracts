@@ -23,7 +23,11 @@
 //!
 //! **Data Retention Policy:** Records retained indefinitely with version history (prior versions
 //! in RecordVersion storage). Record category index enables efficient queries. Consent scope
-//! expiration enforced at check time. Deregistration removes all patient records and consent.
+//! expiration enforced at check time. Every record is also indexed per patient
+//! (`PatientRecords(patient, page)`), so deregistration can locate and erase it: the resumable
+//! `deregister_patient(patient, nonce, max_items)` removes consents, records, prior versions and
+//! category-index entries, keeping only a `RecordTombstone` (record id, final integrity hash,
+//! version count, erasure time) for legal retention. See `DATA_RETENTION.md`.
 //! Policy metadata enforces per-record retention rules.
 //!
 //! **Encryption/Integrity:** EncryptedEnvelopeRef with content hashing validates encrypted data.
@@ -38,8 +42,8 @@ use shared::privacy::{
     validate_encrypted_ref, validate_nonzero_address, validate_policy_metadata, EncryptedEnvelopeRef, PolicyMetadata,
 };
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, xdr::ToXdr, Address, Bytes, BytesN, Env,
-    String, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, xdr::ToXdr, Address, Bytes,
+    BytesN, Env, String, Vec,
 };
 
 /// Maximum number of records allowed in a single `create_records_batch` call.
@@ -104,6 +108,22 @@ pub struct MedicalRecord {
 /// Maximum number of record IDs stored per CategoryIndex page.
 pub const CATEGORY_PAGE_SIZE: u32 = 100;
 
+/// #1120: maximum number of record IDs stored per PatientRecords page.
+pub const PATIENT_RECORDS_PAGE_SIZE: u32 = 100;
+
+/// #1120: what is retained on-chain for a record after its patient is
+/// deregistered. Only the final integrity hash is kept (for legal retention /
+/// tamper evidence); the patient, provider, encrypted reference, category,
+/// description, policy and every prior version are deleted.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecordTombstone {
+    pub record_id: u64,
+    pub integrity_hash: BytesN<32>,
+    pub version: u32,
+    pub erased_at: u64,
+}
+
 #[contracttype]
 pub enum DataKey {
     Record(u64),
@@ -119,6 +139,18 @@ pub enum DataKey {
     CallerNonce(Address),
     Admin,
     Analytics,
+    /// #1120: (patient, page) -> Vec<u64> of the patient's record ids.
+    PatientRecords(Address, u32),
+    /// #1120: patient -> total number of record ids ever appended to PatientRecords.
+    PatientRecordCount(Address),
+    /// #1120: patient -> true while a resumable deregistration is in progress.
+    Deregistering(Address),
+    /// #1120: patient -> u64 position in PatientRecords of the next record to erase.
+    DeregisterCursor(Address),
+    /// #1120: patient -> u32 next prior version of the current record to erase.
+    DeregisterVersionCursor(Address),
+    /// #1120: record_id -> RecordTombstone retained after erasure.
+    RecordTombstone(u64),
 }
 
 #[contracterror]
@@ -135,6 +167,9 @@ pub enum Error {
     ProviderNotRegistered = 8,
     VersionNotFound = 9,
     StaleNonce = 10,
+    /// #1120: the patient is being deregistered; new writes are rejected
+    /// until `deregister_patient` has completed.
+    Deregistering = 11,
 }
 
 #[soroban_sdk::contractclient(name = "ProviderRegistryClient")]
@@ -153,6 +188,26 @@ fn index_record_by_category(env: &Env, category: RecordCategory, record_id: u64)
     env.storage().persistent().set(&page_key, &ids);
     env.storage().persistent().set(&count_key, &(count + 1));
     env.storage().persistent().set(&DataKey::RecordCategoryLoc(record_id), &(category, page));
+}
+
+/// #1120: append record ID to the patient's paged PatientRecords index.
+fn index_record_by_patient(env: &Env, patient: &Address, record_id: u64) {
+    let count_key = DataKey::PatientRecordCount(patient.clone());
+    let count: u64 = env.storage().persistent().get(&count_key).unwrap_or(0);
+    let page = (count / (PATIENT_RECORDS_PAGE_SIZE as u64)) as u32;
+    let page_key = DataKey::PatientRecords(patient.clone(), page);
+    let mut ids: Vec<u64> = env.storage().persistent().get(&page_key).unwrap_or(Vec::new(env));
+    ids.push_back(record_id);
+    env.storage().persistent().set(&page_key, &ids);
+    env.storage().persistent().set(&count_key, &(count + 1));
+}
+
+/// #1120: true while `deregister_patient` is in progress for `patient`.
+fn is_deregistering(env: &Env, patient: &Address) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Deregistering(patient.clone()))
+        .unwrap_or(false)
 }
 
 fn remove_record_from_category_index(env: &Env, category: RecordCategory, record_id: u64) {
@@ -254,6 +309,9 @@ impl HealthRecords {
         validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
         patient.require_auth();
         Self::verify_and_increment_nonce(&env, &patient, patient_nonce)?;
+        if is_deregistering(&env, &patient) {
+            return Err(Error::Deregistering);
+        }
         env.storage().persistent().set(
             &DataKey::Consent(patient.clone(), provider.clone()),
             &scope,
@@ -309,28 +367,174 @@ impl HealthRecords {
         Ok(())
     }
 
-    /// Remove all health-records state for a deregistered patient.
+    /// Resumable erasure of all health-records state for a deregistering patient (#1120).
     ///
-    /// Revokes consent for every provider that was ever granted access.
+    /// Deletes at most `max_items` ledger entries per call and returns the
+    /// approximate number of items still remaining. While the result is
+    /// non-zero a `Deregistering` flag blocks new consents, records and
+    /// updates for the patient; the caller must invoke again (with a fresh
+    /// nonce) until it returns `0`. On completion a `pat_dreg` event is emitted.
+    ///
+    /// Order of work:
+    /// 1. every `Consent(patient, provider)` and the `PatientProviders` index —
+    ///    providers lose access immediately;
+    /// 2. for each record in `PatientRecords(patient, page)`: every prior
+    ///    `RecordVersion(record_id, v)`, then its `CategoryIndex` entry and
+    ///    `RecordCategoryLoc`, then `Record(record_id)` is replaced by a
+    ///    `RecordTombstone` that keeps only the final integrity hash;
+    /// 3. the `PatientRecords` pages and count.
+    ///
+    /// `CallerNonce(patient)` is intentionally kept: resetting it to zero would
+    /// let previously used nonces be replayed. See `DATA_RETENTION.md`.
+    ///
     /// Only callable by the patient themselves (they must auth before
     /// deregistering from patient-registry).
     pub fn deregister_patient(env: Env, patient: Address, patient_nonce: u64) -> Result<(), Error> {
         ttl_config::extend_instance_ttl(&env);
         patient.require_auth();
         Self::verify_and_increment_nonce(&env, &patient, patient_nonce)?;
+
+        // Mark deregistration in progress so new writes are rejected.
+        env.storage()
+            .persistent()
+            .set(&DataKey::Deregistering(patient.clone()), &true);
+
+        let mut budget = max_items;
+
+        // 1. Consents + provider index.
         let idx_key = DataKey::PatientProviders(patient.clone());
-        let providers: Vec<Address> = env
+        if let Some(providers) = env.storage().persistent().get::<DataKey, Vec<Address>>(&idx_key) {
+            let mut remaining: Vec<Address> = Vec::new(&env);
+            for provider in providers.iter() {
+                if budget == 0 {
+                    remaining.push_back(provider);
+                    continue;
+                }
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey::Consent(patient.clone(), provider));
+                budget -= 1;
+            }
+            if !remaining.is_empty() {
+                env.storage().persistent().set(&idx_key, &remaining);
+                return Ok(Self::remaining_items(&env, &patient));
+            }
+            env.storage().persistent().remove(&idx_key);
+        }
+
+        // 2. Records, prior versions and category-index entries.
+        let count_key = DataKey::PatientRecordCount(patient.clone());
+        let cursor_key = DataKey::DeregisterCursor(patient.clone());
+        let vcursor_key = DataKey::DeregisterVersionCursor(patient.clone());
+        let count: u64 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        let mut cursor: u64 = env.storage().persistent().get(&cursor_key).unwrap_or(0);
+        let page_size = PATIENT_RECORDS_PAGE_SIZE as u64;
+
+        while cursor < count {
+            let page = (cursor / page_size) as u32;
+            let slot = (cursor % page_size) as u32;
+            let record_id: Option<u64> = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Vec<u64>>(&DataKey::PatientRecords(patient.clone(), page))
+                .and_then(|ids| ids.get(slot));
+
+            let record: Option<MedicalRecord> =
+                record_id.and_then(|id| env.storage().persistent().get(&DataKey::Record(id)));
+
+            if let Some(rec) = record {
+                // 2a. Prior versions, resumable via the version cursor.
+                let mut v: u32 = env.storage().persistent().get(&vcursor_key).unwrap_or(1);
+                while v < rec.version {
+                    if budget == 0 {
+                        env.storage().persistent().set(&vcursor_key, &v);
+                        env.storage().persistent().set(&cursor_key, &cursor);
+                        return Ok(Self::remaining_items(&env, &patient));
+                    }
+                    env.storage()
+                        .persistent()
+                        .remove(&DataKey::RecordVersion(rec.record_id, v));
+                    budget -= 1;
+                    v += 1;
+                }
+
+                // 2b. Category index entry + location, then tombstone the record.
+                if budget < 2 {
+                    env.storage().persistent().set(&vcursor_key, &v);
+                    env.storage().persistent().set(&cursor_key, &cursor);
+                    return Ok(Self::remaining_items(&env, &patient));
+                }
+                remove_record_from_category_index(&env, rec.record_category, rec.record_id);
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey::Record(rec.record_id));
+                env.storage().persistent().set(
+                    &DataKey::RecordTombstone(rec.record_id),
+                    &RecordTombstone {
+                        record_id: rec.record_id,
+                        integrity_hash: rec.integrity_hash,
+                        version: rec.version,
+                        erased_at: env.ledger().timestamp(),
+                    },
+                );
+                budget -= 2;
+                env.storage().persistent().remove(&vcursor_key);
+            }
+
+            cursor += 1;
+        }
+        env.storage().persistent().set(&cursor_key, &cursor);
+
+        // 3. PatientRecords pages + count.
+        let pages = count.div_ceil(page_size) as u32;
+        for page in 0..pages {
+            let page_key = DataKey::PatientRecords(patient.clone(), page);
+            if !env.storage().persistent().has(&page_key) {
+                continue;
+            }
+            if budget == 0 {
+                return Ok(Self::remaining_items(&env, &patient));
+            }
+            env.storage().persistent().remove(&page_key);
+            budget -= 1;
+        }
+
+        // Fully deregistered: clear the index count, cursors and flag.
+        env.storage().persistent().remove(&count_key);
+        env.storage().persistent().remove(&cursor_key);
+        env.storage().persistent().remove(&vcursor_key);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Deregistering(patient.clone()));
+
+        env.events().publish(
+            (symbol_short!("pat_dreg"), patient),
+            env.ledger().timestamp(),
+        );
+        Ok(0)
+    }
+
+    /// #1120: return the record ids indexed for `patient` on a 0-indexed page
+    /// (capped at `PATIENT_RECORDS_PAGE_SIZE`). Caller must be the patient.
+    pub fn get_patient_records(
+        env: Env,
+        patient: Address,
+        page: u32,
+    ) -> Result<Vec<u64>, Error> {
+        validate_nonzero_address(&patient).map_err(|_| Error::InvalidAddress)?;
+        patient.require_auth();
+        Ok(env
             .storage()
             .persistent()
-            .get(&idx_key)
-            .unwrap_or(Vec::new(&env));
-        for provider in providers.iter() {
-            env.storage()
-                .persistent()
-                .remove(&DataKey::Consent(patient.clone(), provider));
-        }
-        env.storage().persistent().remove(&idx_key);
-        Ok(())
+            .get(&DataKey::PatientRecords(patient, page))
+            .unwrap_or(Vec::new(&env)))
+    }
+
+    /// #1120: return the retention tombstone of an erased record, if any.
+    pub fn get_record_tombstone(env: Env, record_id: u64) -> Option<RecordTombstone> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RecordTombstone(record_id))
     }
 
     /// Create a record. Uses consent-based write authorization matching create_records_batch:
@@ -352,6 +556,9 @@ impl HealthRecords {
         Self::verify_and_increment_nonce(&env, &provider, provider_nonce)?;
         validate_encrypted_ref(&encrypted_ref).map_err(|_| Error::InvalidEncryptedEnvelope)?;
         validate_policy_metadata(&policy).map_err(|_| Error::InvalidPolicyMetadata)?;
+        if is_deregistering(&env, &patient) {
+            return Err(Error::Deregistering);
+        }
 
         let registry_addr: Address = env.storage().instance().get(&DataKey::ProviderRegistry).unwrap();
         let provider_client = ProviderRegistryClient::new(&env, &registry_addr);
@@ -380,6 +587,8 @@ impl HealthRecords {
             &record_description,
             timestamp,
         );
+
+        index_record_by_patient(&env, &patient, record_id);
 
         let record = MedicalRecord {
             record_id,
@@ -508,6 +717,9 @@ impl HealthRecords {
             validate_encrypted_ref(&input.encrypted_ref)
                 .map_err(|_| Error::InvalidEncryptedEnvelope)?;
             validate_policy_metadata(&input.policy).map_err(|_| Error::InvalidPolicyMetadata)?;
+            if is_deregistering(&env, &input.patient) {
+                return Err(Error::Deregistering);
+            }
 
             match get_active_consent(&env, &input.patient, &provider) {
                 None => return Err(Error::ConsentNotGranted),
@@ -546,6 +758,7 @@ impl HealthRecords {
                 .persistent()
                 .set(&DataKey::Record(record_id), &record);
             index_record_by_category(&env, input.record_category, record_id);
+            index_record_by_patient(&env, &input.patient, record_id);
 
             ids.push_back(record_id);
         }
@@ -646,6 +859,10 @@ impl HealthRecords {
             .persistent()
             .get(&DataKey::Record(record_id))
             .ok_or(Error::RecordNotFound)?;
+
+        if is_deregistering(&env, &record.patient) {
+            return Err(Error::Deregistering);
+        }
 
         if caller != record.patient {
             match get_active_consent(&env, &record.patient, &caller) {
@@ -763,6 +980,36 @@ impl HealthRecords {
         correlation_id: BytesN<32>,
     ) -> Vec<u64> {
         shared_get_by_corr(&env, correlation_id)
+    }
+
+    /// #1120: approximate number of ledger entries still to delete for
+    /// `patient`. Always at least 1 while deregistration is incomplete.
+    fn remaining_items(env: &Env, patient: &Address) -> u32 {
+        let providers: u32 = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Vec<Address>>(&DataKey::PatientProviders(patient.clone()))
+            .map(|p| p.len())
+            .unwrap_or(0);
+        let count: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PatientRecordCount(patient.clone()))
+            .unwrap_or(0);
+        let cursor: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DeregisterCursor(patient.clone()))
+            .unwrap_or(0);
+        let records_left = u32::try_from(count.saturating_sub(cursor)).unwrap_or(u32::MAX);
+        let pages = u32::try_from(count.div_ceil(PATIENT_RECORDS_PAGE_SIZE as u64))
+            .unwrap_or(u32::MAX);
+        // 2 deletions per remaining record (versions not counted) + consents + pages.
+        records_left
+            .saturating_mul(2)
+            .saturating_add(providers)
+            .saturating_add(pages)
+            .max(1)
     }
 
     /// Verify and increment caller's nonce for cross-contract call protection.

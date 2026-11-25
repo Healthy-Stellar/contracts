@@ -26,8 +26,9 @@
 
 use soroban_sdk::{
     contract, contractevent, contracterror, contractimpl, contracttype, Address, BytesN, Env,
-    String, Symbol, Vec,
+    IntoVal, String, Symbol, Vec,
 };
+use access_control::{ConsentPurpose, SCOPE_WRITE};
 use shared::{
     pagination::{self, PageResult, MAX_PAGE_SIZE},
     temporal,
@@ -238,8 +239,9 @@ impl ImagingRadiology {
     /// Order a new imaging study
     ///
     /// Requires patient consent via the access-control contract before proceeding.
-    /// The consent check verifies that the patient has granted consent for "imaging" purposes
-    /// to the ordering provider.
+    /// The consent check verifies that the patient has granted consent for the `Imaging`
+    /// purpose to the ordering provider, with the write scope (#1118: ordering a study
+    /// creates a record, so a read-only consent is not sufficient).
     #[allow(clippy::too_many_arguments)]
     pub fn order_imaging_study(
         env: Env,
@@ -260,8 +262,8 @@ impl ImagingRadiology {
             &env,
             patient_id.clone().into_val(&env),
             provider_id.clone().into_val(&env),
-            String::from_str(&env, "imaging").into_val(&env),
-            0u32.into_val(&env),
+            ConsentPurpose::Imaging.into_val(&env),
+            SCOPE_WRITE.into_val(&env),
         ];
         let consent_check: Result<(), soroban_sdk::Error> = env.invoke_contract(
             &access_control,
