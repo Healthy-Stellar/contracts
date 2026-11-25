@@ -117,6 +117,16 @@ Examples of constructor arguments for the migrated contracts:
 | `hospital-registry` | `--admin <address>` |
 | `mental-health` | `--emergency_contract <address or none>` |
 | `zk-eligibility-verifier` | `--admin <address> --zk_eligibility_contract <address>` |
+| `patient-registry` | `--admin <address> --treasury <address> --fee_token <address>` |
+| `access-control` | `--admin <address>` |
+| `doctor-registry` | `--admin <address>` |
+| `emergency-medical-info` | `--admin <address>` |
+| `healthcare-credentialing` | `--admin <address>` |
+| `hospital-discharge-management` | `--admin <address> --hospital_registry <address> --provider_registry <address>` |
+| `provider-registry` | `--admin <address>` |
+| `prescription-management` | `--admin <address> --provider_registry <address>` |
+| `referral` | `--admin <address> --provider_registry <address>` |
+| `telemedicine` | `--admin <address>` |
 
 `scripts/deploy_all.sh` forwards `DEPLOY_CONSTRUCTOR_ARGS` verbatim after `--`.
 

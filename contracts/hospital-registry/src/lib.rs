@@ -261,6 +261,7 @@ impl HospitalRegistry {
     /// Runs atomically as part of contract creation and cannot be called again,
     /// so an attacker cannot front-run deployment and elect themselves admin.
     pub fn __constructor(env: Env, admin: Address) {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&admin).expect("admin address must not be zero");
         env.storage().persistent().set(&DataKey::Admin, &admin);
     }
@@ -308,6 +309,7 @@ impl HospitalRegistry {
 
     /// Set the admin address. Only callable by the current admin.
     pub fn set_admin(env: Env, caller: Address, admin: Address) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&admin).map_err(|_| ContractError::InvalidAddress)?;
         caller.require_auth();
 
@@ -337,6 +339,7 @@ impl HospitalRegistry {
         expires_at: u64,
         revocation_reference: BytesN<32>,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
         validate_nonzero_address(&issuer).map_err(|_| ContractError::InvalidAddress)?;
 
@@ -382,6 +385,7 @@ impl HospitalRegistry {
     }
 
     pub fn update_hospital(env: Env, wallet: Address, metadata: String) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
         wallet.require_auth();
 
@@ -405,6 +409,7 @@ impl HospitalRegistry {
         admin: Address,
         wallet: Address,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&admin).map_err(|_| ContractError::InvalidAddress)?;
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
 
@@ -447,6 +452,7 @@ impl HospitalRegistry {
         wallet: Address,
         config: HospitalConfig,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
         validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
         Self::assert_config_auth(&env, &caller, &wallet)?;
@@ -489,6 +495,7 @@ impl HospitalRegistry {
         wallet: Address,
         departments: Vec<Department>,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
         validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
         Self::assert_config_auth(&env, &caller, &wallet)?;
@@ -514,6 +521,7 @@ impl HospitalRegistry {
         wallet: Address,
         locations: Vec<Location>,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
         validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
         Self::assert_config_auth(&env, &caller, &wallet)?;
@@ -539,6 +547,7 @@ impl HospitalRegistry {
         wallet: Address,
         equipment: Vec<EquipmentResource>,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
         validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
         Self::assert_config_auth(&env, &caller, &wallet)?;
@@ -564,6 +573,7 @@ impl HospitalRegistry {
         wallet: Address,
         policies: Vec<PolicyProcedure>,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
         validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
         Self::assert_config_auth(&env, &caller, &wallet)?;
@@ -589,6 +599,7 @@ impl HospitalRegistry {
         wallet: Address,
         alerts: Vec<AlertSetting>,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
         validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
         Self::assert_config_auth(&env, &caller, &wallet)?;
@@ -614,6 +625,7 @@ impl HospitalRegistry {
         wallet: Address,
         insurance_providers: Vec<InsuranceProviderConfig>,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
         validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
         Self::assert_config_auth(&env, &caller, &wallet)?;
@@ -639,6 +651,7 @@ impl HospitalRegistry {
         wallet: Address,
         billing: BillingConfig,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
         validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
         Self::assert_config_auth(&env, &caller, &wallet)?;
@@ -658,6 +671,7 @@ impl HospitalRegistry {
         wallet: Address,
         protocols: Vec<EmergencyProtocol>,
     ) -> Result<(), ContractError> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
         validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
         Self::assert_config_auth(&env, &caller, &wallet)?;
