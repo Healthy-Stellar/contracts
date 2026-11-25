@@ -334,7 +334,11 @@ impl MentalHealthContract {
         }
     }
 
-    /// Grant explicit consent for sensitive data operations
+    /// Grant explicit consent for sensitive data operations.
+    ///
+    /// `consent_expires_at` may be `None` to grant consent with no scheduled
+    /// expiry; the patient retains the right to revoke at any time via
+    /// [`revoke_data_consent`], which takes effect immediately.
     pub fn grant_data_consent(
         env: Env,
         patient_id: Address,
@@ -361,6 +365,38 @@ impl MentalHealthContract {
         env.events().publish(
             (Symbol::new(&env, "consent_granted"), data_type),
             patient_id,
+        );
+
+        Ok(())
+    }
+
+    /// Revoke a previously granted consent (HIPAA §164.508(b)(5), 42 CFR Part 2).
+    ///
+    /// Must be signed by the patient (or an authorized proxy acting on their
+    /// behalf). The consent record is removed from storage, so
+    /// [`validate_explicit_consent`] rejects any subsequent access by the
+    /// provider immediately. Emits a `consent_revoked` event.
+    pub fn revoke_data_consent(
+        env: Env,
+        patient_id: Address,
+        data_type: Symbol,
+        provider_id: Address,
+    ) -> Result<(), Error> {
+        patient_id.require_auth();
+
+        let consent_key =
+            DataKey::Consent(patient_id.clone(), data_type.clone(), provider_id.clone());
+
+        // Only an existing consent can be revoked.
+        if !env.storage().persistent().has(&consent_key) {
+            return Err(Error::NotFound);
+        }
+
+        env.storage().persistent().remove(&consent_key);
+
+        env.events().publish(
+            (Symbol::new(&env, "consent_revoked"), data_type),
+            (patient_id, provider_id),
         );
 
         Ok(())

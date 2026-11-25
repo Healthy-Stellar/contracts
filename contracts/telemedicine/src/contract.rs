@@ -706,47 +706,59 @@ impl TelemedicineContract {
 }
 
 /// Check whether `state` appears as a comma-separated token inside `list`.
-/// Both are Soroban `String`s; we compare byte-by-byte via XDR encoding.
+///
+/// `String::to_xdr` encodes an `ScVal`, not a bare XDR string: the first 4
+/// bytes are the `ScValType` discriminant (`SCV_STRING`), followed by the
+/// 4-byte big-endian content length, then the content bytes and 0-3 padding.
+/// We must skip the type tag before reading the length (#974).
 fn string_contains_state(env: &Env, list: &String, state: &String) -> bool {
     let list_bytes = list.clone().to_xdr(env);
     let state_bytes = state.clone().to_xdr(env);
 
-    // XDR String: 4-byte big-endian content length, then content bytes, then 0-3 padding.
-    if list_bytes.len() < 4 || state_bytes.len() < 4 {
+    // Layout: [0..4) ScValType tag, [4..8) content length, [8..) content.
+    const TAG_LEN: u32 = 4;
+    const LEN_LEN: u32 = 4;
+    const CONTENT_OFFSET: u32 = TAG_LEN + LEN_LEN;
+
+    if list_bytes.len() < CONTENT_OFFSET || state_bytes.len() < CONTENT_OFFSET {
         return false;
     }
 
-    // Read content lengths from XDR prefix.
-    let lc = ((list_bytes.get(0).unwrap_or(0) as u32) << 24
-        | (list_bytes.get(1).unwrap_or(0) as u32) << 16
-        | (list_bytes.get(2).unwrap_or(0) as u32) << 8
-        | (list_bytes.get(3).unwrap_or(0) as u32)) as usize;
+    // Read content lengths from the XDR length field (bytes 4..8).
+    let lc = ((list_bytes.get(TAG_LEN).unwrap_or(0) as u32) << 24
+        | (list_bytes.get(TAG_LEN + 1).unwrap_or(0) as u32) << 16
+        | (list_bytes.get(TAG_LEN + 2).unwrap_or(0) as u32) << 8
+        | (list_bytes.get(TAG_LEN + 3).unwrap_or(0) as u32)) as usize;
 
-    let sc = ((state_bytes.get(0).unwrap_or(0) as u32) << 24
-        | (state_bytes.get(1).unwrap_or(0) as u32) << 16
-        | (state_bytes.get(2).unwrap_or(0) as u32) << 8
-        | (state_bytes.get(3).unwrap_or(0) as u32)) as usize;
+    let sc = ((state_bytes.get(TAG_LEN).unwrap_or(0) as u32) << 24
+        | (state_bytes.get(TAG_LEN + 1).unwrap_or(0) as u32) << 16
+        | (state_bytes.get(TAG_LEN + 2).unwrap_or(0) as u32) << 8
+        | (state_bytes.get(TAG_LEN + 3).unwrap_or(0) as u32)) as usize;
 
     if sc == 0 || sc > lc {
         return false;
     }
 
-    // Slide a window of size `sc` over the list content (offset 4 in XDR bytes).
+    // Slide a window of size `sc` over the list content (offset CONTENT_OFFSET).
     let mut i: usize = 0;
     while i + sc <= lc {
         let mut matched = true;
         for j in 0..sc {
-            let lb = list_bytes.get((4 + i + j) as u32).unwrap_or(0);
-            let sb = state_bytes.get((4 + j) as u32).unwrap_or(1);
+            let lb = list_bytes
+                .get(CONTENT_OFFSET + (i + j) as u32)
+                .unwrap_or(0);
+            let sb = state_bytes.get(CONTENT_OFFSET + j as u32).unwrap_or(1);
             if lb != sb {
                 matched = false;
                 break;
             }
         }
         if matched {
-            let before_ok = i == 0 || list_bytes.get((4 + i - 1) as u32).unwrap_or(0) == b',';
+            // Whole-token match: must be bounded by start/end or a comma.
+            let before_ok = i == 0
+                || list_bytes.get(CONTENT_OFFSET + i as u32 - 1).unwrap_or(0) == b',';
             let after_ok = (i + sc) == lc
-                || list_bytes.get((4 + i + sc) as u32).unwrap_or(0) == b',';
+                || list_bytes.get(CONTENT_OFFSET + (i + sc) as u32).unwrap_or(0) == b',';
             if before_ok && after_ok {
                 return true;
             }

@@ -670,6 +670,157 @@ fn test_register_license_admin_co_signature_succeeds() {
     assert!(eligibility.is_eligible);
 }
 
+// ── #974 / #1172 interstate-compact licence matching ─────────────────────────
+
+#[test]
+fn test_compact_state_in_middle_of_list_is_eligible() {
+    // Regression for #974/#1172: string_contains_state used to read the ScVal
+    // type tag as the content length, so a state in the middle of a
+    // comma-separated compact_members list never matched.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(TelemedicineContract, ());
+    let client = TelemedicineContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    // Provider is licensed in NY; patient is in CO, which is a member of the
+    // IMLC compact list but sits in the middle of it.
+    client.register_provider_license(
+        &admin,
+        &provider,
+        &String::from_str(&env, "NY"),
+        &String::from_str(&env, "LIC-NY-001"),
+        &0_u64,
+    );
+
+    client.set_jurisdiction_policy(
+        &admin,
+        &String::from_str(&env, "NY"),
+        &true,
+        &String::from_str(&env, "AL,AK,AZ,CO,CT,DE,FL,GA,ID,IA,KS,LA,ME,MD,MI,MN,MS,MO,NE,NV,NH,NJ,NM,NC,ND,OH,OK,PA,RI,SC,SD,TN,TX,UT,VT,VA,WA,WV,WI,WY"),
+    );
+
+    let eligibility = client.verify_telemedicine_eligibility(
+        &patient,
+        &provider,
+        &String::from_str(&env, "CO"),
+        &String::from_str(&env, "NY"),
+    );
+    assert!(
+        eligibility.is_eligible,
+        "provider licensed in a compact member state must be eligible"
+    );
+}
+
+#[test]
+fn test_compact_state_not_in_list_is_ineligible() {
+    // A state that is not a member of the compact list must not match.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(TelemedicineContract, ());
+    let client = TelemedicineContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    client.register_provider_license(
+        &admin,
+        &provider,
+        &String::from_str(&env, "NY"),
+        &String::from_str(&env, "LIC-NY-001"),
+        &0_u64,
+    );
+
+    client.set_jurisdiction_policy(
+        &admin,
+        &String::from_str(&env, "NY"),
+        &true,
+        &String::from_str(&env, "AL,AK,AZ,CO,CT,DE,FL,GA"),
+    );
+
+    // "NY" is not in the compact list.
+    let eligibility = client.verify_telemedicine_eligibility(
+        &patient,
+        &provider,
+        &String::from_str(&env, "NY"),
+        &String::from_str(&env, "NY"),
+    );
+    assert!(
+        !eligibility.is_eligible,
+        "state absent from the compact list must not be eligible"
+    );
+}
+
+#[test]
+fn test_compact_state_prefix_collision_does_not_match() {
+    // "CA" must not match a list entry "CAN" (prefix collision), and "CAN"
+    // must not match a list entry "CA".
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(TelemedicineContract, ());
+    let client = TelemedicineContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    client.register_provider_license(
+        &admin,
+        &provider,
+        &String::from_str(&env, "NY"),
+        &String::from_str(&env, "LIC-NY-001"),
+        &0_u64,
+    );
+
+    // List contains "CAN" but not "CA".
+    client.set_jurisdiction_policy(
+        &admin,
+        &String::from_str(&env, "NY"),
+        &true,
+        &String::from_str(&env, "CAN,NY"),
+    );
+
+    let eligibility = client.verify_telemedicine_eligibility(
+        &patient,
+        &provider,
+        &String::from_str(&env, "CA"),
+        &String::from_str(&env, "NY"),
+    );
+    assert!(
+        !eligibility.is_eligible,
+        "\"CA\" must not match the list entry \"CAN\""
+    );
+
+    // Reverse direction: list contains "CA" but not "CAN".
+    client.set_jurisdiction_policy(
+        &admin,
+        &String::from_str(&env, "NY"),
+        &true,
+        &String::from_str(&env, "CA,NY"),
+    );
+
+    let eligibility = client.verify_telemedicine_eligibility(
+        &patient,
+        &provider,
+        &String::from_str(&env, "CAN"),
+        &String::from_str(&env, "NY"),
+    );
+    assert!(
+        !eligibility.is_eligible,
+        "\"CAN\" must not match the list entry \"CA\""
+    );
+}
+
 #[test]
 fn test_self_attestation_without_admin_blocked_and_has_no_effect() {
     // The core attack: attacker tries to self-register a license with no admin.
