@@ -79,6 +79,8 @@ pub enum ContractError {
     BatchTooLarge = 26,
     /// #625: grantor or grantee entity has been deactivated via `deactivate_entity`.
     EntityInactive = 27,
+    /// #1069: grantor is neither the registered owner of the resource nor an admin.
+    NotResourceOwner = 28,
 }
 
 /// Maximum number of access permissions a single grantee may accumulate.
@@ -270,6 +272,8 @@ pub enum DataKey {
     RateLimit(Address, u32),
     // #489: (responder, patient) -> EmergencyAccessRecord
     EmergencyAccess(Address, Address),
+    // #1069: resource_id -> owner Address (only the owner or an admin may grant access)
+    ResourceOwner(String),
 }
 
 #[contract]
@@ -574,7 +578,37 @@ impl AccessControl {
         Ok(())
     }
 
+    /// Register the owner of a resource (admin only). `register_entity` is
+    /// permissionless, so ownership cannot be self-claimed by the grantor.
+    ///
+    /// # Arguments
+    /// * `admin`       - Must hold the `Admin` role (or be the stored admin)
+    /// * `resource_id` - The identifier of the resource
+    /// * `owner`       - The address allowed to grant access to the resource
+    pub fn set_resource_owner(
+        env: Env,
+        admin: Address,
+        resource_id: String,
+        owner: Address,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        Self::require_role(&env, &admin, &Role::Admin)?;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::ResourceOwner(resource_id.clone()), &owner);
+
+        env.events().publish(
+            (symbol_short!("res_own"), resource_id),
+            owner,
+        );
+        Ok(())
+    }
+
     /// Grant access permission to an entity for a specific resource.
+    ///
+    /// The grantor must be the registered owner of `resource_id` (see
+    /// `set_resource_owner`) or hold the `Admin` role (#1069).
     ///
     /// For sensitive operations, callers should first call `commit_grant` with
     /// hash(nonce || grantor || grantee || resource_id) and pass the same
@@ -623,6 +657,18 @@ impl AccessControl {
             .ok_or(ContractError::GranteeNotRegistered)?;
         if !grantee_entity.active {
             return Err(ContractError::EntityInactive);
+        }
+
+        // #1069: grantor must own the resource (or be an admin). Without this,
+        // any self-registered entity could grant access to any resource_id.
+        let owner: Option<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ResourceOwner(resource_id.clone()));
+        if owner.as_ref() != Some(&grantor)
+            && Self::require_role(&env, &grantor, &Role::Admin).is_err()
+        {
+            return Err(ContractError::NotResourceOwner);
         }
 
         // #220: composite uniqueness check — (grantor, grantee, resource_id)
