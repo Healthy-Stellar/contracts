@@ -32,7 +32,39 @@ mod types;
 use soroban_sdk::{
     contract, contractimpl, symbol_short, Address, BytesN, Env, IntoVal, String, Symbol, Vec,
 };
-use types::{AdverseEvent, DataKey, Error, VaccineRecord, VaccineSeries};
+use types::{AdverseEvent, DataKey, Error, LastDose, VaccineRecord, VaccineSeries};
+
+/// Maximum length of a lot number, in bytes.
+const MAX_LOT_LEN: usize = 64;
+
+/// Maximum number of patients returned by one `get_patients_by_lot` page.
+pub const MAX_LOT_PAGE: u32 = 100;
+
+/// Normalize a lot number so that `"EL9261"`, `"el9261 "` and `" El9261"`
+/// map to the same lot: trims surrounding ASCII whitespace and upper-cases
+/// ASCII letters.
+fn normalize_lot(env: &Env, lot_number: &String) -> Result<String, Error> {
+    let len = lot_number.len() as usize;
+    if len == 0 || len > MAX_LOT_LEN {
+        return Err(Error::InvalidLotNumber);
+    }
+    let mut buf = [0u8; MAX_LOT_LEN];
+    lot_number.copy_into_slice(&mut buf[..len]);
+
+    let mut start = 0;
+    let mut end = len;
+    while start < end && buf[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    while end > start && buf[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    if start == end {
+        return Err(Error::InvalidLotNumber);
+    }
+    buf[start..end].make_ascii_uppercase();
+    Ok(String::from_bytes(env, &buf[start..end]))
+}
 
 #[contract]
 pub struct ImmunizationRegistry;
@@ -45,11 +77,24 @@ impl ImmunizationRegistry {
     /// Runs atomically as part of contract creation and cannot be called again,
     /// so an attacker cannot front-run deployment and choose the regulator.
     pub fn __constructor(env: Env, regulator: Address, provider_registry: Address) {
+        ttl_config::extend_instance_ttl(&env);
         env.storage().instance().set(&DataKey::Regulator, &regulator);
         env.storage().instance().set(&DataKey::ProviderRegistry, &provider_registry);
     }
 
-    pub fn record_immunization(env: Env, record: VaccineRecord) -> Result<u64, Error> {
+    /// Record an administered dose.
+    ///
+    /// - The same `(patient, cvx_code, dose_number)` can only be recorded once.
+    /// - `dose_number` must be the previous dose for that `cvx_code` + 1, and
+    ///   the administration date must be after the previous dose. Doses given
+    ///   outside this registry (or catch-up schedules) can be recorded out of
+    ///   sequence by passing a non-empty `override_reason`.
+    /// - The lot number is normalized (trimmed, upper-cased) before storage.
+    pub fn record_immunization(
+        env: Env,
+        record: VaccineRecord,
+        override_reason: Option<String>,
+    ) -> Result<u64, Error> {
         record.provider_id.require_auth();
         record.patient_id.require_auth();
 
@@ -84,6 +129,35 @@ impl ImmunizationRegistry {
             return Err(Error::VaccineExpired);
         }
 
+        let mut record = record;
+        record.lot_number = normalize_lot(&env, &record.lot_number)?;
+
+        // Reject duplicate doses.
+        let dose_key = DataKey::PatientDose(
+            record.patient_id.clone(),
+            record.cvx_code.clone(),
+            record.dose_number,
+        );
+        if env.storage().persistent().has(&dose_key) {
+            return Err(Error::DuplicateDose);
+        }
+
+        // Enforce dose sequence unless an override reason is supplied.
+        let last_key = DataKey::PatientLastDose(record.patient_id.clone(), record.cvx_code.clone());
+        let last: Option<LastDose> = env.storage().persistent().get(&last_key);
+        let has_override = override_reason.as_ref().map_or(false, |r| !r.is_empty());
+        if !has_override {
+            let expected = last.as_ref().map_or(1, |l| l.dose_number.saturating_add(1));
+            if record.dose_number != expected {
+                return Err(Error::OutOfSequenceDose);
+            }
+            if let Some(ref l) = last {
+                if record.administration_date <= l.administration_date {
+                    return Err(Error::OutOfSequenceDose);
+                }
+            }
+        }
+
         let count: u64 = env
             .storage()
             .instance()
@@ -109,16 +183,54 @@ impl ImmunizationRegistry {
             &patient_records,
         );
 
-        let mut lot_records: Vec<u64> = env
+        env.storage().persistent().set(&dose_key, &new_id);
+        if has_override {
+            // Audit trail for out-of-sequence doses (ids only).
+            env.events()
+                .publish((symbol_short!("dose_ovr"), new_id), record.dose_number);
+        }
+        if last.as_ref().map_or(true, |l| record.dose_number > l.dose_number) {
+            env.storage().persistent().set(
+                &last_key,
+                &LastDose {
+                    dose_number: record.dose_number,
+                    administration_date: record.administration_date,
+                },
+            );
+        }
+
+        // Per-lot index: one entry per dose plus a distinct-patient index, so
+        // each write touches a constant number of ledger entries regardless
+        // of lot size.
+        let lot = record.lot_number.clone();
+        let lot_count: u64 = env
             .storage()
             .persistent()
-            .get(&DataKey::LotImmunizations(record.lot_number.clone()))
-            .unwrap_or(Vec::new(&env));
-        lot_records.push_back(new_id);
-        env.storage().persistent().set(
-            &DataKey::LotImmunizations(record.lot_number.clone()),
-            &lot_records,
-        );
+            .get(&DataKey::LotCount(lot.clone()))
+            .unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&DataKey::LotDose(lot.clone(), lot_count), &new_id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::LotCount(lot.clone()), &(lot_count + 1));
+
+        let lot_patient_key = DataKey::LotPatient(lot.clone(), record.patient_id.clone());
+        if !env.storage().persistent().has(&lot_patient_key) {
+            env.storage().persistent().set(&lot_patient_key, &true);
+            let patient_count: u64 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::LotPatientCount(lot.clone()))
+                .unwrap_or(0);
+            env.storage().persistent().set(
+                &DataKey::LotPatientAt(lot.clone(), patient_count),
+                &record.patient_id,
+            );
+            env.storage()
+                .persistent()
+                .set(&DataKey::LotPatientCount(lot), &(patient_count + 1));
+        }
 
         env.events().publish(
             (
@@ -132,44 +244,91 @@ impl ImmunizationRegistry {
         Ok(new_id)
     }
 
-    /// Return the distinct patients who received a dose from `lot_number`, for recall tracing.
-    /// Restricted to the configured regulator/public-health authority.
+    /// Return a page of the distinct patients who received a dose from
+    /// `lot_number`, for recall tracing. Patients are returned in the order
+    /// they were first vaccinated from the lot, starting at index `cursor`;
+    /// `limit` is capped at `MAX_LOT_PAGE`. Use `get_lot_patient_count` to
+    /// know when to stop. Restricted to the configured regulator/public-health
+    /// authority.
     pub fn get_patients_by_lot(
         env: Env,
         lot_number: String,
         requester: Address,
+        cursor: u64,
+        limit: u32,
     ) -> Result<Vec<Address>, Error> {
-        requester.require_auth();
+        Self::require_regulator(&env, &requester)?;
+        let lot = normalize_lot(&env, &lot_number)?;
 
+        let total: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LotPatientCount(lot.clone()))
+            .unwrap_or(0);
+        let limit = if limit == 0 || limit > MAX_LOT_PAGE {
+            MAX_LOT_PAGE
+        } else {
+            limit
+        };
+        let end = total.min(cursor.saturating_add(limit as u64));
+
+        let mut patients: Vec<Address> = Vec::new(&env);
+        let mut i = cursor;
+        while i < end {
+            if let Some(patient) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Address>(&DataKey::LotPatientAt(lot.clone(), i))
+            {
+                patients.push_back(patient);
+            }
+            i += 1;
+        }
+
+        Ok(patients)
+    }
+
+    /// Number of distinct patients vaccinated from `lot_number`. Regulator only.
+    pub fn get_lot_patient_count(
+        env: Env,
+        lot_number: String,
+        requester: Address,
+    ) -> Result<u64, Error> {
+        Self::require_regulator(&env, &requester)?;
+        let lot = normalize_lot(&env, &lot_number)?;
+        Ok(env
+            .storage()
+            .persistent()
+            .get(&DataKey::LotPatientCount(lot))
+            .unwrap_or(0))
+    }
+
+    /// Number of doses administered from `lot_number`. Regulator only.
+    pub fn get_lot_dose_count(
+        env: Env,
+        lot_number: String,
+        requester: Address,
+    ) -> Result<u64, Error> {
+        Self::require_regulator(&env, &requester)?;
+        let lot = normalize_lot(&env, &lot_number)?;
+        Ok(env
+            .storage()
+            .persistent()
+            .get(&DataKey::LotCount(lot))
+            .unwrap_or(0))
+    }
+
+    fn require_regulator(env: &Env, requester: &Address) -> Result<(), Error> {
+        requester.require_auth();
         let regulator: Address = env
             .storage()
             .instance()
             .get(&DataKey::Regulator)
             .ok_or(Error::NotInitialized)?;
-        if requester != regulator {
+        if *requester != regulator {
             return Err(Error::NotAuthorized);
         }
-
-        let record_ids: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::LotImmunizations(lot_number))
-            .unwrap_or(Vec::new(&env));
-
-        let mut patients: Vec<Address> = Vec::new(&env);
-        for id in record_ids {
-            if let Some(record) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, VaccineRecord>(&DataKey::ImmunizationRecord(id))
-            {
-                if !patients.contains(&record.patient_id) {
-                    patients.push_back(record.patient_id);
-                }
-            }
-        }
-
-        Ok(patients)
+        Ok(())
     }
 
     pub fn record_adverse_event(
@@ -180,6 +339,7 @@ impl ImmunizationRegistry {
         severity: Symbol,
         onset_date: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         reporter.require_auth();
 
         let record: VaccineRecord = env

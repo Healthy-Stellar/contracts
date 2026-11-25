@@ -226,6 +226,7 @@ impl HealthcareAnalytics {
     /// Runs atomically as part of contract creation and cannot be called again,
     /// so an attacker cannot front-run deployment and elect themselves admin.
     pub fn __constructor(env: Env, admin: Address) {
+        ttl_config::extend_instance_ttl(&env);
         env.storage().instance().set(&DataKey::Admin, &admin);
     }
 
@@ -236,6 +237,7 @@ impl HealthcareAnalytics {
     /// requester, so requester quotas and overrun incidents cannot be evaded by
     /// self-reporting `0, 0`.
     pub fn set_executor(env: Env, admin: Address, executor: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
 
         let stored_admin: Address = env
@@ -273,6 +275,7 @@ impl HealthcareAnalytics {
         estimated_memory: u64,
         degradation_mode: DegradationPolicy,
     ) -> Result<ReportJobAccepted, Error> {
+        ttl_config::extend_instance_ttl(&env);
         requester.require_auth();
 
         // Per-requester throttle check — enforced independently of the global budget.
@@ -445,6 +448,7 @@ impl HealthcareAnalytics {
     /// Returns job_id if a job was started, or None if queue empty or resources exhausted
     /// Admin-only operation
     pub fn execute_next_report(env: Env, admin: Address) -> Result<Option<u64>, Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -480,6 +484,7 @@ impl HealthcareAnalytics {
         memory_used: u64,
         wall_time_ms: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         executor.require_auth();
 
         let admin: Address = env
@@ -546,6 +551,7 @@ impl HealthcareAnalytics {
 
     /// Mark a report job as failed and capture incident
     pub fn fail_report(env: Env, job_id: u64, error_message: String, requester: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         requester.require_auth();
 
         let mut job = get_job(&env, job_id).map_err(|_| Error::JobNotFound)?;
@@ -632,6 +638,7 @@ impl HealthcareAnalytics {
         max_concurrent: u32,
         throttle_percent: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -665,6 +672,7 @@ impl HealthcareAnalytics {
 
     /// Propose transferring admin to `new_admin`. Must be confirmed within 24 hours.
     pub fn propose_admin_rotation(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored: Address = env
             .storage()
@@ -694,6 +702,7 @@ impl HealthcareAnalytics {
 
     /// New admin confirms the rotation proposed by the current admin.
     pub fn accept_admin_rotation(env: Env, new_admin: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         new_admin.require_auth();
         let pending: Address = env
             .storage()
@@ -721,6 +730,7 @@ impl HealthcareAnalytics {
 
     /// Cancel a pending admin rotation.
     pub fn cancel_admin_rotation(env: Env, admin: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored: Address = env
             .storage()
@@ -745,6 +755,7 @@ impl HealthcareAnalytics {
         cpu_limit: u64,
         memory_limit: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -770,6 +781,7 @@ impl HealthcareAnalytics {
         report_type: String,
         threshold_pct: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -812,6 +824,7 @@ impl HealthcareAnalytics {
         admin: Address,
         requester: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -832,6 +845,7 @@ impl HealthcareAnalytics {
 
     /// Register `provider` as an authorized analytics data recorder (admin only).
     pub fn authorize_provider(env: Env, admin: Address, provider: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -856,6 +870,7 @@ impl HealthcareAnalytics {
         admin: Address,
         minimum_cohort_size: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -888,6 +903,7 @@ impl HealthcareAnalytics {
         timestamp: u64,
         _metadata_hash: Option<BytesN<32>>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         recorder.require_auth();
         let authorized: bool = env
             .storage()
@@ -1006,6 +1022,7 @@ impl HealthcareAnalytics {
         value: i128,
         period: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let id = env
@@ -1081,6 +1098,7 @@ impl HealthcareAnalytics {
 
     /// Cancel a queued report job.
     pub fn cancel_report(env: Env, requester: Address, job_id: u64) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         requester.require_auth();
 
         let job = get_job(&env, job_id).map_err(|_| Error::JobNotFound)?;

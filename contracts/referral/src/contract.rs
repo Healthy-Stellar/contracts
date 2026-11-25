@@ -1,6 +1,6 @@
 use crate::types::{DataKey, Error, Referral, ReferralStatus};
 use shared::privacy::validate_nonzero_address;
-use shared_contracts::safe_increment;
+use shared::counters::safe_increment;
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, IntoVal, String, Symbol, Vec, vec};
 
 #[contract]
@@ -8,18 +8,15 @@ pub struct ReferralContract;
 
 #[contractimpl]
 impl ReferralContract {
-    pub fn initialize(env: Env, admin: Address, provider_registry: Address) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::AlreadyInitialized);
-        }
-        validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
-        validate_nonzero_address(&provider_registry).map_err(|_| Error::InvalidAddress)?;
-        admin.require_auth();
+    /// Runs atomically at deployment, so the admin and provider registry cannot
+    /// be chosen by a front-runner.
+    pub fn __constructor(env: Env, admin: Address, provider_registry: Address) {
+        validate_nonzero_address(&admin).expect("admin address must not be zero");
+        validate_nonzero_address(&provider_registry).expect("provider registry address must not be zero");
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
             .set(&DataKey::ProviderRegistry, &provider_registry);
-        Ok(())
     }
 
     pub fn set_provider_registry(
@@ -27,6 +24,7 @@ impl ReferralContract {
         admin: Address,
         provider_registry: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let stored_admin: Address = env
             .storage()
             .instance()
@@ -70,6 +68,7 @@ impl ReferralContract {
         clinical_summary_hash: BytesN<32>,
         requested_services: Vec<String>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&referring_provider).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&patient_id).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&referred_to).map_err(|_| Error::InvalidAddress)?;
@@ -122,6 +121,7 @@ impl ReferralContract {
         receiving_provider: Address,
         estimated_appointment_date: Option<u64>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&receiving_provider).map_err(|_| Error::InvalidAddress)?;
         receiving_provider.require_auth();
 
@@ -160,6 +160,7 @@ impl ReferralContract {
         decline_reason: String,
         suggest_alternative: Option<Address>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&receiving_provider).map_err(|_| Error::InvalidAddress)?;
         if let Some(alt) = &suggest_alternative {
             validate_nonzero_address(alt).map_err(|_| Error::InvalidAddress)?;

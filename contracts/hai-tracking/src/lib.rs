@@ -301,6 +301,7 @@ impl HAITrackingContract {
         collection_date: u64,
         culture_result_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let mut case = Self::get_infection_case_internal(&env, infection_id)?;
         case.reported_by.require_auth();
 
@@ -329,6 +330,7 @@ impl HAITrackingContract {
         susceptibility: Symbol,
         mic_value_x100: Option<i64>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let mut case = Self::get_infection_case_internal(&env, infection_id)?;
         case.reported_by.require_auth();
         if !Self::is_valid_susceptibility(&env, &susceptibility) {
@@ -383,6 +385,7 @@ impl HAITrackingContract {
         time_window_days: u32,
         case_threshold: u32,
     ) -> Result<Option<u64>, Error> {
+        ttl_config::extend_instance_ttl(&env);
         facility_id.require_auth();
         if !Self::is_valid_infection_type(&env, &infection_type) || case_threshold == 0 {
             return Err(Error::InvalidData);
@@ -451,6 +454,7 @@ impl HAITrackingContract {
         lead_investigator: Address,
         investigation_protocol: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         lead_investigator.require_auth();
         let outbreak: OutbreakCluster = env
             .storage()
@@ -547,6 +551,7 @@ impl HAITrackingContract {
         patient_days: u32,
         recorded_by: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         recorded_by.require_auth();
 
         let mut case = Self::get_infection_case_internal(&env, infection_id)?;
@@ -579,6 +584,7 @@ impl HAITrackingContract {
         ventilator_days: u32,
         recorded_by: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         recorded_by.require_auth();
         if recorded_by != facility_id {
             return Err(Error::NotAuthorized);
@@ -653,6 +659,7 @@ impl HAITrackingContract {
         compliant_actions: u32,
         observer: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         observer.require_auth();
 
         if opportunities == 0 || compliant_actions > opportunities {
@@ -689,6 +696,7 @@ impl HAITrackingContract {
         time_period_end: u64,
         unit: Option<String>,
     ) -> Result<InfectionRate, Error> {
+        ttl_config::extend_instance_ttl(&env);
         if time_period_start > time_period_end {
             return Err(Error::InvalidData);
         }
@@ -843,6 +851,7 @@ impl HAITrackingContract {
         infection_data_hash: BytesN<32>,
         device_utilization_hash: BytesN<32>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         facility_id.require_auth();
         let report_id = Self::next_id(&env, symbol_short!("nhsn_ctr"));
         let report = NhsnReport {
@@ -868,6 +877,7 @@ impl HAITrackingContract {
         patient_days: u32,
         reporting_period: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         facility_id.require_auth();
         if patient_days == 0 {
             return Err(Error::DivisionByZero);
@@ -901,6 +911,7 @@ impl HAITrackingContract {
         alert_details: String,
         priority: Symbol,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         if !Self::is_valid_priority(&env, &priority) {
             return Err(Error::InvalidPriority);
         }
@@ -950,6 +961,7 @@ impl HAITrackingContract {
         threshold_multiplier_x100: u32,
         baseline_rate_x100: i64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         facility_id.require_auth();
         if window_days == 0 || threshold_multiplier_x100 == 0 || baseline_rate_x100 <= 0 {
             return Err(Error::InvalidData);
@@ -1114,7 +1126,7 @@ impl HAITrackingContract {
     }
 
     fn next_id(env: &Env, counter_key: Symbol) -> u64 {
-        shared_contracts::safe_increment(env, &counter_key)
+        shared::counters::safe_increment(env, &counter_key)
     }
 
     fn push_id(env: &Env, list_key: DataKey, id: u64) {

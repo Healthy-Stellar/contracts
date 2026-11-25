@@ -311,6 +311,127 @@ fn sample_config(env: &Env) -> HospitalConfig {
     }
 }
 
+fn max_config(env: &Env) -> HospitalConfig {
+    let mut departments = Vec::new(env);
+    for _ in 0..MAX_DEPARTMENTS {
+        departments.push_back(Department {
+            name: String::from_str(env, "D"),
+            head: String::from_str(env, "H"),
+            contact: String::from_str(env, "C"),
+        });
+    }
+
+    let mut locations = Vec::new(env);
+    for _ in 0..MAX_LOCATIONS {
+        locations.push_back(Location {
+            name: String::from_str(env, "L"),
+            address: String::from_str(env, "A"),
+            metadata: String::from_str(env, "M"),
+        });
+    }
+
+    let mut equipment = Vec::new(env);
+    for _ in 0..MAX_EQUIPMENT {
+        equipment.push_back(EquipmentResource {
+            name: String::from_str(env, "E"),
+            quantity: 1,
+            status: String::from_str(env, "S"),
+            metadata: String::from_str(env, "M"),
+        });
+    }
+
+    let mut policies = Vec::new(env);
+    for _ in 0..MAX_POLICIES {
+        policies.push_back(PolicyProcedure {
+            title: String::from_str(env, "P"),
+            version: String::from_str(env, "1"),
+            details: String::from_str(env, "D"),
+        });
+    }
+
+    let mut alerts = Vec::new(env);
+    for _ in 0..MAX_ALERTS {
+        alerts.push_back(AlertSetting {
+            alert_type: String::from_str(env, "A"),
+            enabled: true,
+            channels: Vec::new(env),
+            escalation_contact: String::from_str(env, "C"),
+        });
+    }
+
+    let mut insurance_providers = Vec::new(env);
+    for _ in 0..MAX_INSURANCE_PROVIDERS {
+        insurance_providers.push_back(InsuranceProviderConfig {
+            provider_name: String::from_str(env, "I"),
+            plan_codes: Vec::new(env),
+            billing_contact: String::from_str(env, "B"),
+            metadata: String::from_str(env, "M"),
+        });
+    }
+
+    let mut emergency_protocols = Vec::new(env);
+    for _ in 0..MAX_EMERGENCY_PROTOCOLS {
+        emergency_protocols.push_back(EmergencyProtocol {
+            protocol_name: String::from_str(env, "P"),
+            description: String::from_str(env, "D"),
+            last_updated: 1,
+            contact: String::from_str(env, "C"),
+        });
+    }
+
+    HospitalConfig {
+        departments,
+        locations,
+        equipment,
+        policies,
+        alerts,
+        insurance_providers,
+        billing: BillingConfig {
+            currency: String::from_str(env, "USD"),
+            payment_terms: String::from_str(env, "Sensitive payment terms"),
+            tax_id: String::from_str(env, "Sensitive tax ID"),
+        },
+        emergency_protocols,
+    }
+}
+
+#[test]
+fn config_update_with_maximum_lists_emits_bounded_audit_event() {
+    let env = Env::default();
+    let contract_id = env.register(HospitalRegistry, (&Address::generate(&env),));
+    let client = HospitalRegistryClient::new(&env, &contract_id);
+    let hospital_wallet = Address::generate(&env);
+    env.mock_all_auths();
+
+    register_hospital_with_anchor(&env, &client, &hospital_wallet);
+    let config = max_config(&env);
+    client.set_hospital_config(&hospital_wallet, &hospital_wallet, &config);
+
+    // Shrinking one section of a full config must not require emitting the old config.
+    let mut alerts = Vec::new(&env);
+    alerts.push_back(AlertSetting {
+        alert_type: String::from_str(&env, "updated"),
+        enabled: false,
+        channels: Vec::new(&env),
+        escalation_contact: String::from_str(&env, "C"),
+    });
+    client.update_alerts(&hospital_wallet, &hospital_wallet, &alerts);
+
+    let stored = client.get_hospital_config(&hospital_wallet);
+    assert_eq!(stored.departments.len(), MAX_DEPARTMENTS);
+    assert_eq!(stored.locations.len(), MAX_LOCATIONS);
+    assert_eq!(stored.equipment.len(), MAX_EQUIPMENT);
+    assert_eq!(stored.policies.len(), MAX_POLICIES);
+    assert_eq!(stored.alerts.len(), 1);
+    assert_eq!(stored.insurance_providers.len(), MAX_INSURANCE_PROVIDERS);
+    assert_eq!(stored.emergency_protocols.len(), MAX_EMERGENCY_PROTOCOLS);
+    let events = env.events().all();
+    assert_eq!(events.len(), 10);
+    for (_, _, data) in events.iter() {
+        assert!(data.to_xdr(&env).len() < 512);
+    }
+}
+
 #[test]
 fn test_hospital_config_flow() {
     let env = Env::default();
