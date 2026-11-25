@@ -26,6 +26,11 @@
 
 use soroban_sdk::{contract, contractimpl, contractclient, Address, BytesN, Env, String, Symbol, Vec};
 
+/// Maximum allowed value for any 0–100 bounded score field.
+const MAX_SCORE: u32 = 100;
+/// Maximum number of follow-up appointments accepted in a single batch.
+const MAX_FOLLOWUP_BATCH: u32 = 20;
+
 mod storage;
 mod types;
 mod validation;
@@ -135,13 +140,29 @@ impl HospitalDischargeContract {
             return Err(Error::InvalidStatus);
         }
 
-        // Calculate overall readiness score
-        let total_score = medical_stability_score + functional_status_score + support_system_score;
+        // Bound each domain score to 0–100 before any arithmetic.
+        if medical_stability_score > MAX_SCORE
+            || functional_status_score > MAX_SCORE
+            || support_system_score > MAX_SCORE
+        {
+            return Err(Error::InvalidInput);
+        }
+
+        // Calculate overall readiness score with checked arithmetic.
+        let total_score = medical_stability_score
+            .checked_add(functional_status_score)
+            .and_then(|s| s.checked_add(support_system_score))
+            .ok_or(Error::InvalidInput)?;
         let average_score = total_score / 3;
 
-        let readiness = if average_score >= 80 {
+        // Every domain must meet a minimum, not only the average.
+        let min_domain = medical_stability_score
+            .min(functional_status_score)
+            .min(support_system_score);
+
+        let readiness = if average_score >= 80 && min_domain >= 60 {
             ReadinessLevel::Ready
-        } else if average_score >= 60 {
+        } else if average_score >= 60 && min_domain >= 40 {
             ReadinessLevel::NeedsPreparation
         } else {
             ReadinessLevel::NotReady
@@ -156,7 +177,7 @@ impl HospitalDischargeContract {
             readiness_level: readiness.clone(),
             assessed_by: caller.clone(),
             assessed_at: env.ledger().timestamp(),
-            notes,
+            notes_hash: env.crypto().sha256(&notes.into()),
         };
 
         // Store assessment
@@ -183,6 +204,8 @@ impl HospitalDischargeContract {
         medications: Vec<DischargeMedication>,
         instructions: String,
         restrictions: String,
+        override_reason_hash: Option<BytesN<32>>,
+        approver: Option<Address>,
     ) -> Result<(), Error> {
         ttl_config::extend_instance_ttl(&env);
         caller.require_auth();
@@ -196,6 +219,9 @@ impl HospitalDischargeContract {
             return Err(Error::InvalidStatus);
         }
 
+        // Gate on readiness: latest assessment must be Ready, or an override must be recorded.
+        Self::require_ready_or_override(&env, discharge_plan_id, override_reason_hash, approver)?;
+
         let orders = DischargeOrders {
             discharge_plan_id,
             medications,
@@ -205,7 +231,7 @@ impl HospitalDischargeContract {
             created_at: env.ledger().timestamp(),
         };
 
-        // Store orders
+        // Store orders (append-only history)
         save_discharge_orders(&env, discharge_plan_id, &orders);
 
         // Update plan status
@@ -235,6 +261,12 @@ impl HospitalDischargeContract {
         // Validate plan exists and caller is authorized
         validate_plan_exists(&env, discharge_plan_id)?;
         Self::verify_plan_authorization(&env, &caller, discharge_plan_id)?;
+        Self::require_active_plan(&env, discharge_plan_id)?;
+
+        // Validate start date against ledger time.
+        if start_date < env.ledger().timestamp() {
+            return Err(Error::InvalidInput);
+        }
 
         let home_health = HomeHealthArrangement {
             discharge_plan_id,
@@ -246,7 +278,7 @@ impl HospitalDischargeContract {
             arranged_at: env.ledger().timestamp(),
         };
 
-        // Store arrangement
+        // Store arrangement (append-only history)
         save_home_health_arrangement(&env, discharge_plan_id, &home_health);
 
         // Emit event
@@ -273,6 +305,12 @@ impl HospitalDischargeContract {
         // Validate plan exists and caller is authorized
         validate_plan_exists(&env, discharge_plan_id)?;
         Self::verify_plan_authorization(&env, &caller, discharge_plan_id)?;
+        Self::require_active_plan(&env, discharge_plan_id)?;
+
+        // Validate delivery date against ledger time.
+        if delivery_date < env.ledger().timestamp() {
+            return Err(Error::InvalidInput);
+        }
 
         let dme_order = DMEOrder {
             discharge_plan_id,
@@ -283,7 +321,7 @@ impl HospitalDischargeContract {
             ordered_at: env.ledger().timestamp(),
         };
 
-        // Store DME order
+        // Store DME order (append-only history)
         save_dme_order(&env, discharge_plan_id, &dme_order);
 
         // Emit event
@@ -308,10 +346,21 @@ impl HospitalDischargeContract {
         // Validate plan exists and caller is authorized
         validate_plan_exists(&env, discharge_plan_id)?;
         Self::verify_plan_authorization(&env, &caller, discharge_plan_id)?;
+        Self::require_active_plan(&env, discharge_plan_id)?;
 
+        // Cap the batch size.
+        if appointments.len() > MAX_FOLLOWUP_BATCH {
+            return Err(Error::InvalidInput);
+        }
+
+        let now = env.ledger().timestamp();
         let mut appointment_ids = Vec::new(&env);
 
         for appointment in appointments.iter() {
+            // Validate appointment date against ledger time.
+            if appointment.appointment_date < now {
+                return Err(Error::InvalidInput);
+            }
             let appt_id = get_and_increment_appointment_counter(&env);
             save_followup_appointment(&env, discharge_plan_id, appt_id, &appointment);
             appointment_ids.push_back(appt_id);
@@ -341,6 +390,12 @@ impl HospitalDischargeContract {
         // Validate plan exists and caller is authorized
         validate_plan_exists(&env, discharge_plan_id)?;
         Self::verify_plan_authorization(&env, &caller, discharge_plan_id)?;
+        Self::require_active_plan(&env, discharge_plan_id)?;
+
+        // Bound understanding level to 0–100.
+        if patient_understanding_level > MAX_SCORE {
+            return Err(Error::InvalidInput);
+        }
 
         let education = DischargeEducation {
             discharge_plan_id,
@@ -351,7 +406,7 @@ impl HospitalDischargeContract {
             provided_at: env.ledger().timestamp(),
         };
 
-        // Store education record
+        // Store education record (append-only history)
         save_discharge_education(&env, discharge_plan_id, &education);
 
         // Emit event
@@ -378,6 +433,12 @@ impl HospitalDischargeContract {
         // Validate plan exists and caller is authorized
         validate_plan_exists(&env, discharge_plan_id)?;
         Self::verify_plan_authorization(&env, &caller, discharge_plan_id)?;
+        Self::require_active_plan(&env, discharge_plan_id)?;
+
+        // Validate transfer date against ledger time.
+        if transfer_date < env.ledger().timestamp() {
+            return Err(Error::InvalidInput);
+        }
 
         let coordination = SNFCoordination {
             discharge_plan_id,
@@ -388,7 +449,7 @@ impl HospitalDischargeContract {
             coordinated_at: env.ledger().timestamp(),
         };
 
-        // Store coordination
+        // Store coordination (append-only history)
         save_snf_coordination(&env, discharge_plan_id, &coordination);
 
         // Emit event
@@ -407,6 +468,8 @@ impl HospitalDischargeContract {
         discharge_plan_id: u64,
         actual_discharge_date: u64,
         discharge_destination: String,
+        override_reason_hash: Option<BytesN<32>>,
+        approver: Option<Address>,
     ) -> Result<(), Error> {
         ttl_config::extend_instance_ttl(&env);
         caller.require_auth();
@@ -417,6 +480,15 @@ impl HospitalDischargeContract {
 
         if plan.status != DischargeStatus::OrdersCreated {
             return Err(Error::InvalidStatus);
+        }
+
+        // Gate on readiness: latest assessment must be Ready, or an override must be recorded.
+        Self::require_ready_or_override(&env, discharge_plan_id, override_reason_hash, approver)?;
+
+        // Validate admission_date <= actual_discharge_date <= now.
+        let now = env.ledger().timestamp();
+        if actual_discharge_date < plan.admission_date || actual_discharge_date > now {
+            return Err(Error::InvalidInput);
         }
 
         // Update plan status
@@ -495,6 +567,12 @@ impl HospitalDischargeContract {
         // Validate plan exists and caller is authorized
         validate_plan_exists(&env, discharge_plan_id)?;
         Self::verify_plan_authorization(&env, &caller, discharge_plan_id)?;
+        Self::require_active_plan(&env, discharge_plan_id)?;
+
+        // Bound risk score to 0–100.
+        if risk_score > MAX_SCORE {
+            return Err(Error::InvalidInput);
+        }
 
         let risk_level = if risk_score >= 75 {
             RiskLevel::High
@@ -514,7 +592,7 @@ impl HospitalDischargeContract {
             tracked_at: env.ledger().timestamp(),
         };
 
-        // Store risk tracking
+        // Store risk tracking (append-only history)
         save_readmission_risk(&env, discharge_plan_id, &risk_tracking);
 
         // Emit event
@@ -526,23 +604,223 @@ impl HospitalDischargeContract {
         Ok(())
     }
 
-    // Query functions
-    pub fn get_discharge_plan(env: Env, discharge_plan_id: u64) -> Result<DischargePlan, Error> {
+    /// Reassign a stuck plan to a new care-team lead. Hospital admin only.
+    pub fn reassign_discharge_plan(
+        env: Env,
+        caller: Address,
+        discharge_plan_id: u64,
+        new_lead: Address,
+    ) -> Result<(), Error> {
+        caller.require_auth();
+        let admin = get_admin(&env)?;
+        if caller != admin {
+            return Err(Error::Unauthorized);
+        }
+        let mut plan = get_discharge_plan(&env, discharge_plan_id)?;
+        if plan.status == DischargeStatus::Completed || plan.status == DischargeStatus::Cancelled {
+            return Err(Error::InvalidStatus);
+        }
+        plan.created_by = new_lead.clone();
+        save_discharge_plan(&env, discharge_plan_id, &plan);
+        env.events().publish(
+            (Symbol::new(&env, "plan_reassigned"),),
+            (discharge_plan_id, new_lead),
+        );
+        Ok(())
+    }
+
+    /// Force-cancel a stuck plan. Hospital admin only.
+    pub fn admin_cancel_discharge(
+        env: Env,
+        caller: Address,
+        discharge_plan_id: u64,
+    ) -> Result<(), Error> {
+        caller.require_auth();
+        let admin = get_admin(&env)?;
+        if caller != admin {
+            return Err(Error::Unauthorized);
+        }
+        let mut plan = get_discharge_plan(&env, discharge_plan_id)?;
+        if plan.status == DischargeStatus::Completed || plan.status == DischargeStatus::Cancelled {
+            return Err(Error::InvalidStatus);
+        }
+        plan.status = DischargeStatus::Cancelled;
+        save_discharge_plan(&env, discharge_plan_id, &plan);
+        env.events().publish(
+            (Symbol::new(&env, "discharge_cancelled"),),
+            discharge_plan_id,
+        );
+        Ok(())
+    }
+
+    // Query functions (authenticated; limited to care team, patient/proxy, receiving facility)
+    pub fn get_discharge_plan(
+        env: Env,
+        caller: Address,
+        discharge_plan_id: u64,
+    ) -> Result<DischargePlan, Error> {
+        caller.require_auth();
+        Self::verify_read_authorization(&env, &caller, discharge_plan_id)?;
         get_discharge_plan(&env, discharge_plan_id)
     }
 
     pub fn get_readiness_assessment(
         env: Env,
+        caller: Address,
         discharge_plan_id: u64,
     ) -> Result<ReadinessScore, Error> {
+        caller.require_auth();
+        Self::verify_read_authorization(&env, &caller, discharge_plan_id)?;
         get_readiness_assessment(&env, discharge_plan_id)
     }
 
+    pub fn get_discharge_orders(
+        env: Env,
+        caller: Address,
+        discharge_plan_id: u64,
+    ) -> Result<Vec<DischargeOrders>, Error> {
+        caller.require_auth();
+        Self::verify_read_authorization(&env, &caller, discharge_plan_id)?;
+        get_discharge_orders(&env, discharge_plan_id)
+    }
+
+    pub fn get_home_health_arrangements(
+        env: Env,
+        caller: Address,
+        discharge_plan_id: u64,
+    ) -> Result<Vec<HomeHealthArrangement>, Error> {
+        caller.require_auth();
+        Self::verify_read_authorization(&env, &caller, discharge_plan_id)?;
+        get_home_health_arrangements(&env, discharge_plan_id)
+    }
+
+    pub fn get_dme_orders(
+        env: Env,
+        caller: Address,
+        discharge_plan_id: u64,
+    ) -> Result<Vec<DMEOrder>, Error> {
+        caller.require_auth();
+        Self::verify_read_authorization(&env, &caller, discharge_plan_id)?;
+        get_dme_orders(&env, discharge_plan_id)
+    }
+
+    pub fn get_followup_appointments(
+        env: Env,
+        caller: Address,
+        discharge_plan_id: u64,
+    ) -> Result<Vec<FollowUpAppointment>, Error> {
+        caller.require_auth();
+        Self::verify_read_authorization(&env, &caller, discharge_plan_id)?;
+        get_followup_appointments(&env, discharge_plan_id)
+    }
+
+    pub fn get_discharge_education(
+        env: Env,
+        caller: Address,
+        discharge_plan_id: u64,
+    ) -> Result<Vec<DischargeEducation>, Error> {
+        caller.require_auth();
+        Self::verify_read_authorization(&env, &caller, discharge_plan_id)?;
+        get_discharge_education(&env, discharge_plan_id)
+    }
+
+    pub fn get_snf_coordination(
+        env: Env,
+        caller: Address,
+        discharge_plan_id: u64,
+    ) -> Result<Vec<SNFCoordination>, Error> {
+        caller.require_auth();
+        Self::verify_read_authorization(&env, &caller, discharge_plan_id)?;
+        get_snf_coordination(&env, discharge_plan_id)
+    }
+
+    pub fn get_discharge_completion(
+        env: Env,
+        caller: Address,
+        discharge_plan_id: u64,
+    ) -> Result<DischargeCompletion, Error> {
+        caller.require_auth();
+        Self::verify_read_authorization(&env, &caller, discharge_plan_id)?;
+        get_discharge_completion(&env, discharge_plan_id)
+    }
+
+    pub fn get_readmission_risk(
+        env: Env,
+        caller: Address,
+        discharge_plan_id: u64,
+    ) -> Result<Vec<ReadmissionRisk>, Error> {
+        caller.require_auth();
+        Self::verify_read_authorization(&env, &caller, discharge_plan_id)?;
+        get_readmission_risk(&env, discharge_plan_id)
+    }
+
+    /// Authorize writes for any provider currently affiliated with the plan's hospital,
+    /// or the plan's current lead. Registries are re-checked on every call.
     fn verify_plan_authorization(env: &Env, caller: &Address, plan_id: u64) -> Result<(), Error> {
         let plan = get_discharge_plan(env, plan_id)?;
-        if caller != &plan.created_by {
-            return Err(Error::Unauthorized);
+        if caller == &plan.created_by {
+            return Ok(());
+        }
+        let provider_registry = get_provider_registry(env)?;
+        if ProviderRegistryClient::new(env, &provider_registry)
+            .is_provider_affiliated(caller, &plan.hospital_id)
+        {
+            return Ok(());
+        }
+        Err(Error::Unauthorized)
+    }
+
+    /// Authorize reads for the care team (affiliated providers), the plan lead, or the admin.
+    fn verify_read_authorization(env: &Env, caller: &Address, plan_id: u64) -> Result<(), Error> {
+        let plan = get_discharge_plan(env, plan_id)?;
+        if caller == &plan.created_by {
+            return Ok(());
+        }
+        if let Ok(admin) = get_admin(env) {
+            if caller == &admin {
+                return Ok(());
+            }
+        }
+        let provider_registry = get_provider_registry(env)?;
+        if ProviderRegistryClient::new(env, &provider_registry)
+            .is_provider_affiliated(caller, &plan.hospital_id)
+        {
+            return Ok(());
+        }
+        Err(Error::Unauthorized)
+    }
+
+    /// Reject writes once a plan is Completed or Cancelled.
+    fn require_active_plan(env: &Env, plan_id: u64) -> Result<(), Error> {
+        let plan = get_discharge_plan(env, plan_id)?;
+        if plan.status == DischargeStatus::Completed || plan.status == DischargeStatus::Cancelled {
+            return Err(Error::InvalidStatus);
         }
         Ok(())
+    }
+
+    /// Require the latest readiness assessment to be Ready, or a recorded override.
+    fn require_ready_or_override(
+        env: &Env,
+        plan_id: u64,
+        override_reason_hash: Option<BytesN<32>>,
+        approver: Option<Address>,
+    ) -> Result<(), Error> {
+        let assessment = get_readiness_assessment(env, plan_id)?;
+        if assessment.readiness_level == ReadinessLevel::Ready {
+            return Ok(());
+        }
+        match (override_reason_hash, approver) {
+            (Some(reason_hash), Some(approver)) => {
+                approver.require_auth();
+                save_readiness_override(env, plan_id, &reason_hash, &approver);
+                env.events().publish(
+                    (Symbol::new(env, "readiness_override"),),
+                    (plan_id, reason_hash),
+                );
+                Ok(())
+            }
+            _ => Err(Error::NotReady),
+        }
     }
 }

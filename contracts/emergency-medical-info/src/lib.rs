@@ -271,7 +271,6 @@ impl EmergencyMedicalInfo {
         while alerts.len() >= MAX_CRITICAL_ALERTS {
             alerts.remove(0);
         }
-        Self::require_patient_or_proxy_auth(&env, &patient_id)?;
 
         alerts.push_back(CriticalAlert {
             provider_id: provider.clone(),
@@ -353,9 +352,349 @@ impl EmergencyMedicalInfo {
         Ok(exists)
     }
 
+    /// Create or replace the caller's emergency profile.
+    ///
+    /// The patient must authorize the call. `critical_allergy_hashes` is
+    /// bounded by `MAX_CRITICAL_ALLERGIES` to prevent unbounded Vec growth.
+    pub fn set_emergency_profile(
+        env: Env,
+        patient: Address,
+        blood_type: Symbol,
+        critical_allergy_hashes: Vec<BytesN<32>>,
+        active_condition_hashes: Vec<BytesN<32>>,
+        current_medication_hashes: Vec<BytesN<32>>,
+        emergency_contacts: Vec<EmergencyContact>,
+    ) -> Result<(), Error> {
+        patient.require_auth();
+
+        if critical_allergy_hashes.len() > MAX_CRITICAL_ALLERGIES {
+            return Err(Error::TooManyCriticalAllergies);
+        }
+
+        let profile = EmergencyProfile {
+            blood_type,
+            critical_allergy_hashes,
+            active_condition_hashes,
+            current_medication_hashes,
+            dnr_status: false,
+            emergency_contacts,
+        };
+
+        let key = DataKey::EmergencyProfile(patient.clone());
+        env.storage().persistent().set(&key, &profile);
+        ttl_config::extend_critical_ttl(&env, &key);
+        Ok(())
+    }
+
+    /// Record a DNR order for a patient.
+    ///
+    /// A registered responder records the order, but the patient (or their
+    /// configured healthcare proxy) must consent. The order is stored
+    /// separately from any patient-authored advance directive so a clinician
+    /// can never silently overwrite the patient's own directive.
+    pub fn record_dnr_order(
+        env: Env,
+        provider: Address,
+        patient: Address,
+        dnr_document_hash: BytesN<32>,
+        effective_date: u64,
+    ) -> Result<(), Error> {
+        provider.require_auth();
+        Self::assert_responder(&env, &provider)?;
+        Self::require_patient_or_proxy_auth(&env, &patient)?;
+
+        let order = DNROrder {
+            provider_id: provider.clone(),
+            dnr_document_hash,
+            effective_date,
+            recorded_at: env.ledger().timestamp(),
+        };
+
+        let key = DataKey::DNROrder(patient.clone());
+        env.storage().persistent().set(&key, &order);
+        ttl_config::extend_critical_ttl(&env, &key);
+        Ok(())
+    }
+
+    /// Revoke a previously recorded DNR order.
+    ///
+    /// A registered responder revokes the order, but the patient (or their
+    /// configured healthcare proxy) must consent.
+    pub fn revoke_dnr_order(
+        env: Env,
+        provider: Address,
+        patient: Address,
+    ) -> Result<(), Error> {
+        provider.require_auth();
+        Self::assert_responder(&env, &provider)?;
+        Self::require_patient_or_proxy_auth(&env, &patient)?;
+
+        let key = DataKey::DNROrder(patient.clone());
+        env.storage().persistent().remove(&key);
+        ttl_config::extend_critical_ttl(&env, &key);
+        Ok(())
+    }
+
+    /// Configure the healthcare proxy authorized to act on a patient's behalf
+    /// for DNR record/revoke decisions.
+    pub fn set_healthcare_proxy(
+        env: Env,
+        patient: Address,
+        proxy: Address,
+    ) -> Result<(), Error> {
+        patient.require_auth();
+
+        let key = DataKey::HealthcareProxy(patient.clone());
+        env.storage().persistent().set(&key, &proxy);
+        ttl_config::extend_critical_ttl(&env, &key);
+        Ok(())
+    }
+
+    /// Request break-glass emergency access to a specific patient's data.
+    ///
+    /// Only a registered, active responder may request access. The grant is
+    /// scoped to the (responder, patient) pair and expires after
+    /// `EMERGENCY_ACCESS_WINDOW_SECONDS`.
+    pub fn emergency_access_request(
+        env: Env,
+        responder: Address,
+        patient: Address,
+        emergency_type: Symbol,
+        justification_hash: BytesN<32>,
+        location_hash: BytesN<32>,
+    ) -> Result<(), Error> {
+        responder.require_auth();
+        Self::assert_responder(&env, &responder)?;
+
+        let expiry = env
+            .ledger()
+            .timestamp()
+            .saturating_add(EMERGENCY_ACCESS_WINDOW_SECONDS);
+        let grant_key = DataKey::EmergencyAccessGrant(responder.clone(), patient.clone());
+        env.storage().persistent().set(&grant_key, &expiry);
+        ttl_config::extend_critical_ttl(&env, &grant_key);
+
+        Self::append_access_log(
+            &env,
+            &responder,
+            &patient,
+            emergency_type,
+            justification_hash,
+            location_hash,
+        );
+        Ok(())
+    }
+
+    /// Read a patient's emergency profile under an active break-glass grant.
+    ///
+    /// The caller must hold an unexpired grant for this specific patient.
+    /// Every successful read is logged for compliance auditing.
+    pub fn emergency_read(
+        env: Env,
+        responder: Address,
+        patient: Address,
+    ) -> Result<EmergencyProfile, Error> {
+        responder.require_auth();
+        Self::assert_break_glass(&env, &responder, &patient)?;
+
+        let key = DataKey::EmergencyProfile(patient.clone());
+        let profile: EmergencyProfile = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::EmergencyProfileNotFound)?;
+        ttl_config::extend_critical_ttl(&env, &key);
+
+        Self::log_access(&env, &responder, &patient, Symbol::new(&env, "emergency_read"));
+        Ok(profile)
+    }
+
+    /// Configure key-loss recovery for the caller's account.
+    pub fn set_recovery_config(
+        env: Env,
+        owner: Address,
+        emergency_contact: Address,
+        guardians: Vec<Address>,
+        recovery_threshold: u32,
+    ) -> Result<(), Error> {
+        owner.require_auth();
+
+        if recovery_threshold == 0 || recovery_threshold > guardians.len() {
+            return Err(Error::InvalidRecoveryThreshold);
+        }
+
+        // Reject duplicate guardians so a single guardian cannot satisfy the
+        // threshold on their own.
+        let mut i = 0;
+        while i < guardians.len() {
+            let mut j = i + 1;
+            while j < guardians.len() {
+                if guardians.get(i).unwrap() == guardians.get(j).unwrap() {
+                    return Err(Error::DuplicateGuardian);
+                }
+                j += 1;
+            }
+            i += 1;
+        }
+
+        let config = RecoveryConfig {
+            emergency_contact,
+            guardians,
+            recovery_threshold,
+        };
+        let key = DataKey::RecoveryConfig(owner.clone());
+        env.storage().persistent().set(&key, &config);
+        ttl_config::extend_critical_ttl(&env, &key);
+        Ok(())
+    }
+
+    /// Propose a new owner for an account, approved by a guardian.
+    ///
+    /// The proposal records the creation timestamp so the recovery timelock
+    /// can be enforced before `execute_recovery` migrates ownership.
+    pub fn propose_recovery(
+        env: Env,
+        guardian: Address,
+        owner: Address,
+        new_owner: Address,
+    ) -> Result<(), Error> {
+        guardian.require_auth();
+
+        let config_key = DataKey::RecoveryConfig(owner.clone());
+        let config: RecoveryConfig = env
+            .storage()
+            .persistent()
+            .get(&config_key)
+            .ok_or(Error::NotAuthorized)?;
+        ttl_config::extend_critical_ttl(&env, &config_key);
+
+        if !Self::contains(&config.guardians, &guardian) {
+            return Err(Error::NotAuthorized);
+        }
+
+        let proposal_key = DataKey::RecoveryProposal(owner.clone());
+        let mut approvals: Vec<Address> = Vec::new(&env);
+        approvals.push_back(guardian.clone());
+
+        let proposal = RecoveryProposal {
+            new_owner,
+            approvals,
+            created_at: env.ledger().timestamp(),
+        };
+        env.storage().persistent().set(&proposal_key, &proposal);
+        ttl_config::extend_critical_ttl(&env, &proposal_key);
+        Ok(())
+    }
+
+    /// Approve an existing recovery proposal as a guardian.
+    pub fn approve_recovery(
+        env: Env,
+        guardian: Address,
+        owner: Address,
+    ) -> Result<(), Error> {
+        guardian.require_auth();
+
+        let config_key = DataKey::RecoveryConfig(owner.clone());
+        let config: RecoveryConfig = env
+            .storage()
+            .persistent()
+            .get(&config_key)
+            .ok_or(Error::NotAuthorized)?;
+        ttl_config::extend_critical_ttl(&env, &config_key);
+
+        if !Self::contains(&config.guardians, &guardian) {
+            return Err(Error::NotAuthorized);
+        }
+
+        let proposal_key = DataKey::RecoveryProposal(owner.clone());
+        let mut proposal: RecoveryProposal = env
+            .storage()
+            .persistent()
+            .get(&proposal_key)
+            .ok_or(Error::RecoveryProposalNotFound)?;
+
+        if !Self::contains(&proposal.approvals, &guardian) {
+            proposal.approvals.push_back(guardian);
+        }
+
+        env.storage().persistent().set(&proposal_key, &proposal);
+        ttl_config::extend_critical_ttl(&env, &proposal_key);
+        Ok(())
+    }
+
+    /// Execute a recovery proposal once the threshold is met and the timelock
+    /// has elapsed.
+    pub fn execute_recovery(
+        env: Env,
+        owner: Address,
+        new_owner: Address,
+    ) -> Result<(), Error> {
+        let config_key = DataKey::RecoveryConfig(owner.clone());
+        let config: RecoveryConfig = env
+            .storage()
+            .persistent()
+            .get(&config_key)
+            .ok_or(Error::NotAuthorized)?;
+        ttl_config::extend_critical_ttl(&env, &config_key);
+
+        let proposal_key = DataKey::RecoveryProposal(owner.clone());
+        let proposal: RecoveryProposal = env
+            .storage()
+            .persistent()
+            .get(&proposal_key)
+            .ok_or(Error::RecoveryProposalNotFound)?;
+        ttl_config::extend_critical_ttl(&env, &proposal_key);
+
+        if proposal.new_owner != new_owner {
+            return Err(Error::RecoveryTargetMismatch);
+        }
+
+        if proposal.approvals.len() < config.recovery_threshold {
+            return Err(Error::RecoveryThresholdNotMet);
+        }
+
+        let elapsed = env
+            .ledger()
+            .timestamp()
+            .saturating_sub(proposal.created_at);
+        if elapsed < RECOVERY_TIMELOCK_SECONDS {
+            return Err(Error::RecoveryTimelockNotElapsed);
+        }
+
+        env.storage().persistent().remove(&proposal_key);
+        env.storage().persistent().remove(&config_key);
+        Ok(())
+    }
+
     /// --------------------
     /// Internal helpers
     /// --------------------
+
+    fn contains(list: &Vec<Address>, target: &Address) -> bool {
+        let mut i = 0;
+        while i < list.len() {
+            if &list.get(i).unwrap() == target {
+                return true;
+            }
+            i += 1;
+        }
+        false
+    }
+
+    /// Require authorization from the patient or their configured healthcare
+    /// proxy.
+    fn require_patient_or_proxy_auth(env: &Env, patient: &Address) -> Result<(), Error> {
+        if let Some(proxy) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&DataKey::HealthcareProxy(patient.clone()))
+        {
+            proxy.require_auth();
+        } else {
+            patient.require_auth();
+        }
+        Ok(())
+    }
 
     fn assert_admin(env: &Env, admin: &Address) -> Result<(), Error> {
         let stored: Address = env
@@ -382,53 +721,84 @@ impl EmergencyMedicalInfo {
     }
 
     /// Authorize a read of a patient's emergency data. Allowed when the caller
-    /// is the patient, holds an unexpired break-glass grant, or is a registered
-    /// responder.
+    /// is the patient, their configured healthcare proxy, or holds an
+    /// unexpired break-glass grant for this specific patient. A registered
+    /// responder without a break-glass grant is NOT authorized.
     fn assert_read_access(env: &Env, caller: &Address, patient: &Address) -> Result<(), Error> {
         if caller == patient {
             return Ok(());
         }
 
-        // Active break-glass grant for this caller.
-        if let Some(expiry) = env
+        // Configured healthcare proxy.
+        if let Some(proxy) = env
             .storage()
             .persistent()
-            .get::<DataKey, u64>(&DataKey::EmergencyAccessGrant(caller.clone()))
+            .get::<DataKey, Address>(&DataKey::HealthcareProxy(patient.clone()))
         {
-            if env.ledger().timestamp() < expiry {
+            if &proxy == caller {
                 return Ok(());
             }
         }
 
-        // Registered responder.
-        let is_responder: bool = env
+        Self::assert_break_glass(env, caller, patient)
+    }
+
+    /// Require an unexpired break-glass grant for the (responder, patient) pair.
+    fn assert_break_glass(env: &Env, responder: &Address, patient: &Address) -> Result<(), Error> {
+        let expiry: u64 = env
             .storage()
             .persistent()
-            .get(&DataKey::Responder(caller.clone()))
-            .unwrap_or(false);
-        if is_responder {
-            return Ok(());
+            .get(&DataKey::EmergencyAccessGrant(
+                responder.clone(),
+                patient.clone(),
+            ))
+            .ok_or(Error::NotAuthorized)?;
+        if env.ledger().timestamp() >= expiry {
+            return Err(Error::EmergencyAccessExpired);
         }
-
-        Err(Error::NotAuthorized)
+        Ok(())
     }
 
     /// Append an access-log entry recording who read a patient's data and why.
     fn log_access(env: &Env, caller: &Address, patient: &Address, emergency_type: Symbol) {
-        let key = DataKey::EmergencyAccessLog(patient.clone());
-        let mut logs: Vec<EmergencyAccessLog> = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| Vec::new(env));
-        logs.push_back(EmergencyAccessLog {
+        Self::append_access_log(
+            env,
+            caller,
+            patient,
+            emergency_type,
+            BytesN::from_array(env, &[0u8; 32]),
+            BytesN::from_array(env, &[0u8; 32]),
+        );
+    }
+
+    /// Append a bounded, append-only access-log entry keyed by
+    /// (patient, sequence).
+    fn append_access_log(
+        env: &Env,
+        caller: &Address,
+        patient: &Address,
+        emergency_type: Symbol,
+        justification_hash: BytesN<32>,
+        location_hash: BytesN<32>,
+    ) {
+        let seq_key = DataKey::EmergencyAccessLogSeq(patient.clone());
+        let seq: u32 = env.storage().persistent().get(&seq_key).unwrap_or(0);
+
+        let key = DataKey::EmergencyAccessLog(patient.clone(), seq);
+        let entry = EmergencyAccessLog {
             provider_id: caller.clone(),
             emergency_type,
-            justification_hash: BytesN::from_array(env, &[0u8; 32]),
-            location_hash: BytesN::from_array(env, &[0u8; 32]),
+            justification_hash,
+            location_hash,
             access_time: env.ledger().timestamp(),
-        });
-        env.storage().persistent().set(&key, &logs);
+        };
+        env.storage().persistent().set(&key, &entry);
         ttl_config::extend_critical_ttl(env, &key);
+
+        env.storage().persistent().set(&seq_key, &(seq + 1));
+        ttl_config::extend_critical_ttl(env, &seq_key);
     }
 }
+
+#[cfg(test)]
+mod test;
