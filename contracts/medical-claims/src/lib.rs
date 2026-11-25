@@ -30,9 +30,10 @@ mod types;
 use shared::privacy::{validate_policy_metadata, PolicyMetadata};
 use soroban_sdk::{contract, contractclient, contractimpl, symbol_short, Address, BytesN, Env, String, Vec};
 use types::{
-    ClaimRecord, ClaimReconciledEvent, ClaimStatus, DataKey, DenialInfo, DisputeRecord,
-    DisputeStatus, Error, InsurerPaymentRecord,
-    PatientPaymentRecord, ReconciliationStatus, ServiceLine,
+    ClaimAdjudicatedEvent, ClaimDisputedEvent, ClaimRecord, ClaimReconciledEvent, ClaimStatus,
+    DataKey, DenialInfo, DisputeEscalatedEvent, DisputeOpenedEvent, DisputeRecord,
+    DisputeResolvedEvent, DisputeStatus, Error, InsurerPaymentRecord, PatientPaymentRecord,
+    PaymentRecordedEvent, ReconciliationStatus, ServiceLine,
 };
 
 // ── Cross-contract interface for consent verification (#300) ──────────────────
@@ -163,6 +164,13 @@ impl MedicalClaimsSystem {
         validate_policy_metadata(&policy).map_err(|_| Error::InvalidPolicyMetadata)?;
         Self::validate_claim_amounts(&service_codes, total_amount)?;
 
+        // Ageing uses the contract-stamped submitted_at; service_date is provider-supplied
+        // and must not be in the future.
+        let now = env.ledger().timestamp();
+        if service_date > now {
+            return Err(Error::InvalidServiceDate);
+        }
+
         // #300: Verify that the patient has granted consent to this provider
         // before creating a claim record (HIPAA compliance).
         //
@@ -204,6 +212,7 @@ impl MedicalClaimsSystem {
             insurer_id: insurer_id.clone(),
             policy_id,
             service_date,
+            submitted_at: now,
             service_codes,
             diagnosis_hashes,
             details_hash: claim_details_hash,
@@ -321,6 +330,16 @@ impl MedicalClaimsSystem {
             );
         }
 
+        env.events().publish(
+            (symbol_short!("adjudic"), claim_id),
+            ClaimAdjudicatedEvent {
+                claim_id,
+                approved_amount,
+                patient_responsibility,
+                reconciliation_status: claim.reconciliation_status.clone(),
+            },
+        );
+
         Ok(())
     }
 
@@ -374,6 +393,10 @@ impl MedicalClaimsSystem {
             return Err(Error::NotAuthorized);
         }
 
+        if claim.reconciliation_status == ReconciliationStatus::Disputed {
+            return Err(Error::ClaimDisputed);
+        }
+
         if claim.status != ClaimStatus::Adjudicated {
             return Err(Error::InvalidStateTransition);
         }
@@ -415,6 +438,16 @@ impl MedicalClaimsSystem {
             .persistent()
             .set(&DataKey::ClaimPayment(claim_id), &payments);
 
+        env.events().publish(
+            (symbol_short!("payment"), claim_id),
+            PaymentRecordedEvent {
+                claim_id,
+                payment_amount,
+                is_insurer_payment: true,
+                reconciliation_status: claim.reconciliation_status.clone(),
+            },
+        );
+
         Ok(())
     }
 
@@ -434,6 +467,10 @@ impl MedicalClaimsSystem {
         let mut claim = Self::load_claim(&env, claim_id)?;
         if claim.patient_id != patient_id {
             return Err(Error::NotAuthorized);
+        }
+
+        if claim.reconciliation_status == ReconciliationStatus::Disputed {
+            return Err(Error::ClaimDisputed);
         }
 
         if claim.status != ClaimStatus::Paid && claim.status != ClaimStatus::Adjudicated {
@@ -467,6 +504,16 @@ impl MedicalClaimsSystem {
         env.storage()
             .persistent()
             .set(&DataKey::PatientPayment(claim_id), &payments);
+
+        env.events().publish(
+            (symbol_short!("payment"), claim_id),
+            PaymentRecordedEvent {
+                claim_id,
+                payment_amount,
+                is_insurer_payment: false,
+                reconciliation_status: claim.reconciliation_status.clone(),
+            },
+        );
 
         Ok(())
     }
@@ -600,13 +647,16 @@ impl MedicalClaimsSystem {
         let insurer_due = Self::checked_sub(approved_amount, claim.insurer_paid_amount)?;
         let patient_due = Self::checked_sub(patient_responsibility, claim.patient_paid_amount)?;
 
-        claim.reconciliation_status = if insurer_due == 0 && patient_due == 0 {
-            ReconciliationStatus::FullyReconciled
-        } else if claim.insurer_paid_amount > 0 || claim.patient_paid_amount > 0 {
-            ReconciliationStatus::PartiallyPaid
-        } else {
-            ReconciliationStatus::Pending
-        };
+        // Disputed is sticky: only resolve_dispute may clear it.
+        if claim.reconciliation_status != ReconciliationStatus::Disputed {
+            claim.reconciliation_status = if insurer_due == 0 && patient_due == 0 {
+                ReconciliationStatus::FullyReconciled
+            } else if claim.insurer_paid_amount > 0 || claim.patient_paid_amount > 0 {
+                ReconciliationStatus::PartiallyPaid
+            } else {
+                ReconciliationStatus::Pending
+            };
+        }
 
         Ok((insurer_due, patient_due))
     }
@@ -759,6 +809,11 @@ impl MedicalClaimsSystem {
             .persistent()
             .set(&DataKey::Claim(claim_id), &claim);
 
+        env.events().publish(
+            (symbol_short!("disputed"), claim_id),
+            ClaimDisputedEvent { claim_id, caller },
+        );
+
         Ok(())
     }
 
@@ -792,7 +847,7 @@ impl MedicalClaimsSystem {
             if let Ok(claim) = Self::load_claim(&env, claim_id) {
                 // Check if claim is still unreconciled and older than threshold
                 if claim.reconciliation_status != ReconciliationStatus::FullyReconciled
-                    && claim.service_date <= cutoff_time
+                    && claim.submitted_at <= cutoff_time
                 {
                     unreconciled.push_back(claim_id);
                 }
@@ -962,6 +1017,16 @@ impl MedicalClaimsSystem {
             .persistent()
             .set(&DataKey::ClaimDisputes(claim_id), &claim_disputes);
 
+        env.events().publish(
+            (symbol_short!("dsp_open"), claim_id),
+            DisputeOpenedEvent {
+                dispute_id,
+                claim_id,
+                opened_by: dispute.opened_by.clone(),
+                reason_hash: dispute.reason_hash.clone(),
+            },
+        );
+
         Ok(dispute_id)
     }
 
@@ -1014,13 +1079,35 @@ impl MedicalClaimsSystem {
         }
 
         dispute.status = DisputeStatus::Resolved;
-        dispute.resolved_by = Some(reviewer);
-        dispute.resolution_hash = Some(resolution_hash);
+        dispute.resolved_by = Some(reviewer.clone());
+        dispute.resolution_hash = Some(resolution_hash.clone());
         dispute.resolved_at = Some(env.ledger().timestamp());
 
         env.storage()
             .persistent()
             .set(&DataKey::Dispute(dispute_id), &dispute);
+
+        // Clear the Disputed reconciliation state once no open dispute remains on the claim.
+        let mut claim = Self::load_claim(&env, dispute.claim_id)?;
+        if claim.reconciliation_status == ReconciliationStatus::Disputed
+            && !Self::has_open_dispute(&env, dispute.claim_id)
+        {
+            claim.reconciliation_status = ReconciliationStatus::Pending;
+            Self::refresh_reconciliation_status(&mut claim)?;
+            env.storage()
+                .persistent()
+                .set(&DataKey::Claim(dispute.claim_id), &claim);
+        }
+
+        env.events().publish(
+            (symbol_short!("dsp_res"), dispute.claim_id),
+            DisputeResolvedEvent {
+                dispute_id,
+                claim_id: dispute.claim_id,
+                resolved_by: reviewer,
+                resolution_hash,
+            },
+        );
 
         Ok(())
     }
@@ -1059,6 +1146,32 @@ impl MedicalClaimsSystem {
             .persistent()
             .set(&DataKey::Dispute(dispute_id), &dispute);
 
+        env.events().publish(
+            (symbol_short!("dsp_esc"), dispute.claim_id),
+            DisputeEscalatedEvent {
+                dispute_id,
+                claim_id: dispute.claim_id,
+                escalated_by: admin,
+                escalation_level: dispute.escalation_level,
+            },
+        );
+
         Ok(())
+    }
+
+    /// True if any dispute on the claim is still Open or Escalated.
+    fn has_open_dispute(env: &Env, claim_id: u64) -> bool {
+        let dispute_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ClaimDisputes(claim_id))
+            .unwrap_or(Vec::new(env));
+        dispute_ids.iter().any(|id| {
+            env.storage()
+                .persistent()
+                .get::<_, DisputeRecord>(&DataKey::Dispute(id))
+                .map(|d| d.status == DisputeStatus::Open || d.status == DisputeStatus::Escalated)
+                .unwrap_or(false)
+        })
     }
 }
