@@ -1,3 +1,4 @@
+use shared::privacy::EncryptedEnvelopeRef;
 use soroban_sdk::{contracterror, contracttype, Address, BytesN, String, Symbol, Vec};
 
 // -----------------------------------------------------------------------
@@ -19,6 +20,16 @@ pub enum Error {
     BarrierAlreadyResolved = 9,
     ReviewAlreadyConducted = 10,
     CarePlanClosed = 11,
+    /// The care team already holds the maximum number of members.
+    CareTeamFull = 12,
+    /// The address is already on the plan's care team.
+    AlreadyTeamMember = 13,
+    /// The address is not on the plan's care team.
+    TeamMemberNotFound = 14,
+    /// A condition or goal reference is not a valid encrypted envelope reference.
+    InvalidEncryptedRef = 15,
+    /// The plan owner or the patient cannot be added as a care-team member.
+    InvalidTeamMember = 16,
 }
 
 // -----------------------------------------------------------------------
@@ -157,8 +168,10 @@ pub struct CarePlan {
     pub provider_id: Address,
     /// chronic_disease | post_op | preventive | palliative
     pub plan_type: Symbol,
-    pub conditions: Vec<String>,
-    pub goals: Vec<String>,
+    /// Encrypted references to the plan's conditions; diagnoses are never stored in plaintext.
+    pub conditions: Vec<EncryptedEnvelopeRef>,
+    /// Encrypted references to the plan's initial goals.
+    pub goals: Vec<EncryptedEnvelopeRef>,
     pub start_date: u64,
     pub review_frequency_days: u32,
     pub status: CarePlanStatus,

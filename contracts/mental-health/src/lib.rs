@@ -215,6 +215,7 @@ impl MentalHealthContract {
     /// so the address cannot be front-run after deployment. Pass `None` to
     /// deploy without crisis escalation wired up.
     pub fn __constructor(env: Env, emergency_contract: Option<Address>) {
+        ttl_config::extend_instance_ttl(&env);
         if let Some(addr) = emergency_contract {
             env.storage()
                 .instance()
@@ -345,6 +346,7 @@ impl MentalHealthContract {
         provider_id: Address,
         consent_expires_at: Option<u64>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
 
         let consent = ConsentRecord {
@@ -410,6 +412,7 @@ impl MentalHealthContract {
         _assessment_tools_used: Vec<Symbol>,
         _assessment_hash: BytesN<32>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         // Validate explicit consent for assessment
@@ -456,6 +459,7 @@ impl MentalHealthContract {
         _item_scores: Vec<u32>,
         _assessment_date: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         if total_score > 27 {
@@ -492,6 +496,7 @@ impl MentalHealthContract {
         _item_scores: Vec<u32>,
         _assessment_date: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         if total_score > 21 {
@@ -529,6 +534,7 @@ impl MentalHealthContract {
         _protective_factors: Vec<String>,
         _safety_plan_created: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let assessment: MentalHealthAssessment = env
@@ -578,6 +584,7 @@ impl MentalHealthContract {
         crisis_resources: Vec<String>,
         plan_hash: BytesN<32>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         // Validate explicit consent for safety plan
@@ -636,6 +643,7 @@ impl MentalHealthContract {
         frequency: String,
         review_date: u64,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         // Validate explicit consent for treatment plan
@@ -682,6 +690,7 @@ impl MentalHealthContract {
         progress_notes_hash: BytesN<32>,
         homework_assigned: Option<String>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         let plan: TreatmentPlan = env
             .storage()
             .persistent()
@@ -751,6 +760,7 @@ impl MentalHealthContract {
         measurement_date: u64,
         measurement_tool: Symbol,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         Self::validate_explicit_consent(
@@ -813,6 +823,7 @@ impl MentalHealthContract {
         facility_id: Address,
         discharge_date: Option<u64>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         facility_id.require_auth();
 
         // Validate explicit consent for hospitalization records
@@ -857,6 +868,7 @@ impl MentalHealthContract {
         screening_tool: Symbol,
         screening_date: u64,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         // Validate explicit consent for substance screening
@@ -899,6 +911,7 @@ impl MentalHealthContract {
         outcome_measures: Vec<OutcomeMeasure>,
         _functional_improvement: bool,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         let plan: TreatmentPlan = env
             .storage()
             .persistent()
@@ -956,6 +969,7 @@ impl MentalHealthContract {
         record_type: Symbol,
         requires_explicit_consent: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
         env.storage().persistent().set(
             &DataKey::PrivacyFlag(patient_id, record_type),
@@ -967,6 +981,7 @@ impl MentalHealthContract {
     /// Authorize an address (e.g. the emergency-medical-info contract) to resolve
     /// de-identified pseudonyms back to real patient addresses.
     pub fn authorize_resolver(env: Env, admin: Address, resolver: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let emergency_addr: Address = env
             .storage()
@@ -986,6 +1001,7 @@ impl MentalHealthContract {
 
     /// Revoke a resolver's authorization.
     pub fn revoke_resolver(env: Env, admin: Address, resolver: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let emergency_addr: Address = env
             .storage()
@@ -1004,6 +1020,7 @@ impl MentalHealthContract {
     /// Resolve a de-identified pseudonym address back to the real patient address.
     /// Only authorized resolvers may call this.
     pub fn resolve_pseudonym(env: Env, caller: Address, pseudonym: Address) -> Result<Address, Error> {
+        ttl_config::extend_instance_ttl(&env);
         caller.require_auth();
         // Verify caller is authorized
         let is_authorized: bool = env

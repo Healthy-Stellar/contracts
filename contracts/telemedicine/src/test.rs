@@ -78,17 +78,16 @@ fn test_telemedicine_lifecycle() {
 
     // 3. Start Session
     let session_start_time = 1700000010;
-    let token = client.start_virtual_session(
+    client.start_virtual_session(
         &visit_id,
         &provider_id,
         &session_start_time,
         &String::from_str(&env, "NY"),
         &String::from_str(&env, "NY"),
     );
-    assert_ne!(token, BytesN::from_array(&env, &[0; 32]));
-    client.validate_session_token(&visit_id, &provider_id, &token);
+    client.consume_session(&visit_id, &provider_id);
 
-    let replay = client.try_validate_session_token(&visit_id, &provider_id, &token);
+    let replay = client.try_consume_session(&visit_id, &provider_id);
     assert_eq!(replay, Err(Ok(crate::types::Error::SessionAlreadyUsed)));
 
     // 4. Record technical issue
@@ -198,7 +197,7 @@ fn test_auth_and_eligibility_failures() {
 }
 
 #[test]
-fn test_session_tokens_are_unique_bound_expiring_and_non_replayable() {
+fn test_sessions_are_provider_bound_expiring_and_non_replayable() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -246,36 +245,34 @@ fn test_session_tokens_are_unique_bound_expiring_and_non_replayable() {
         &false,
     );
 
-    let token_one = client.start_virtual_session(
+    client.start_virtual_session(
         &visit_one,
         &provider_id,
         &1_700_000_100,
         &String::from_str(&env, "NY"),
         &String::from_str(&env, "NY"),
     );
-    let token_two = client.start_virtual_session(
+    client.start_virtual_session(
         &visit_two,
         &provider_id,
         &1_700_000_200,
         &String::from_str(&env, "NY"),
         &String::from_str(&env, "NY"),
     );
-    assert_ne!(token_one, token_two);
-
-    let wrong_caller = client.try_validate_session_token(&visit_one, &other_provider, &token_one);
+    let wrong_caller = client.try_consume_session(&visit_one, &other_provider);
     assert_eq!(
         wrong_caller,
-        Err(Ok(crate::types::Error::InvalidSessionToken))
+        Err(Ok(crate::types::Error::NotAuthorized))
     );
 
-    client.validate_session_token(&visit_one, &provider_id, &token_one);
-    let replay = client.try_validate_session_token(&visit_one, &provider_id, &token_one);
+    client.consume_session(&visit_one, &provider_id);
+    let replay = client.try_consume_session(&visit_one, &provider_id);
     assert_eq!(replay, Err(Ok(crate::types::Error::SessionAlreadyUsed)));
 
     env.ledger().with_mut(|li| {
         li.timestamp = 1_700_004_000;
     });
-    let expired = client.try_validate_session_token(&visit_two, &provider_id, &token_two);
+    let expired = client.try_consume_session(&visit_two, &provider_id);
     assert_eq!(expired, Err(Ok(crate::types::Error::SessionExpired)));
 }
 
