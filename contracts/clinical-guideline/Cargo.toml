@@ -12,6 +12,8 @@ workspace = true
 
 [dependencies]
 soroban-sdk = { workspace = true }
+shared = { workspace = true }
+ttl-config = { path = "../ttl-config" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }

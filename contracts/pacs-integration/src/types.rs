@@ -13,20 +13,31 @@ pub enum Error {
     GrantRevoked = 7,
     TimestampOutOfBounds = 8,
     NonMonotonicViewTimestamp = 9,
+    NotInitialized = 10,
+    AlreadyInitialized = 11,
+    ProviderNotRegistered = 12,
 }
 
 #[contracttype]
 pub enum DataKey {
+    Admin,
+    /// provider-registry contract used to verify ordering providers
+    ProviderRegistry,
     StudyCounter,
     CdCounter,
     Study(u64),
     SeriesList(u64),
     Report(u64),
     AccessList(u64),
-    PatientStudies(Address),
-    ViewLog(u64),
+    /// (patient, seq) -> study_id; paged per-patient study index
+    PatientStudy(Address, u64),
+    /// patient -> number of studies indexed under PatientStudy
+    PatientStudyCount(Address),
+    /// (study_id, seq) -> ViewRecord; one ledger entry per view
+    ViewLog(u64, u64),
+    /// study_id -> ViewLogHead (next seq + last entry hash)
+    ViewLogHead(u64),
     ViewerLastViewTs(u64, Address),
-    ViewerViewChainHead(u64, Address),
     QcReview(u64),
     /// (study_id, rotation_epoch) -> anonymized UID string
     AnonymizedStudy(u64, u32),
@@ -97,6 +108,16 @@ pub struct ViewRecord {
     pub recorded_at: u64,
     pub previous_entry_hash: Option<BytesN<32>>,
     pub entry_hash: BytesN<32>,
+}
+
+/// Head pointer of a study's hash-chained view log. Lets each append run in
+/// O(1) without loading earlier entries.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ViewLogHead {
+    /// Number of entries written so far; also the seq of the next entry.
+    pub count: u64,
+    pub last_hash: Option<BytesN<32>>,
 }
 
 #[contracttype]
