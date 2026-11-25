@@ -90,17 +90,21 @@ pub struct ImagingReport {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AccessGrant {
-    pub viewer_id: Address,
+    pub grantee: Address,
+    /// When `Some`, the grant only unlocks the given study. When `None`, the
+    /// grant applies to every study owned by the patient.
+    pub study_id: Option<u64>,
     pub access_type: Symbol,
     pub purpose: String,
     pub granted_at: u64,
     pub expires_at: Option<u64>,
-    pub revoked_at: Option<u64>,
+    pub revoked: bool,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ViewRecord {
+    pub study_id: u64,
     pub viewer_id: Address,
     pub purpose: String,
     pub view_timestamp: u64,

@@ -6,6 +6,10 @@ use soroban_sdk::{Address, Env, String, Vec};
 use ttl_config::critical::{LEDGER_BUMP_AMOUNT, LEDGER_THRESHOLD};
 use shared::counters::safe_increment;
 
+/// Maximum number of view-log entries retained per study. Older entries are
+/// evicted (FIFO) once the cap is reached so the persistent entry stays bounded.
+pub const MAX_VIEW_LOGS: u32 = 100;
+
 pub fn next_study_id(env: &Env) -> u64 {
     safe_increment(env, &DataKey::StudyCounter)
 }
@@ -131,20 +135,35 @@ pub fn load_view_log_head(env: &Env, study_id: u64) -> ViewLogHead {
 /// head pointer. Only the new entry and the head are written, so the cost of
 /// an append does not grow with the size of the log.
 pub fn append_view_log(env: &Env, study_id: u64, record: &ViewRecord) {
-    let head = load_view_log_head(env, study_id);
-
-    let key = DataKey::ViewLog(study_id, head.count);
-    env.storage().persistent().set(&key, record);
+    let key = DataKey::ViewLog(study_id);
+    let mut logs: Vec<ViewRecord> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    logs.push_back(record.clone());
+    while logs.len() > MAX_VIEW_LOGS {
+        logs.remove(0);
+    }
+    env.storage().persistent().set(&key, &logs);
     env.storage()
         .persistent()
         .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP_AMOUNT);
 
-    let head_key = DataKey::ViewLogHead(study_id);
-    let new_head = ViewLogHead {
-        count: head.count + 1,
-        last_hash: Some(record.entry_hash.clone()),
-    };
-    env.storage().persistent().set(&head_key, &new_head);
+/// Persist a full view-log list for a study, enforcing the bounded cap.
+pub fn save_view_logs(env: &Env, study_id: u64, logs: &Vec<ViewRecord>) {
+    let key = DataKey::ViewLog(study_id);
+    let mut bounded = logs.clone();
+    while bounded.len() > MAX_VIEW_LOGS {
+        bounded.remove(0);
+    }
+    env.storage().persistent().set(&key, &bounded);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP_AMOUNT);
+}
+
+pub fn load_view_logs(env: &Env, study_id: u64) -> Vec<ViewRecord> {
     env.storage()
         .persistent()
         .extend_ttl(&head_key, LEDGER_THRESHOLD, LEDGER_BUMP_AMOUNT);
