@@ -239,6 +239,14 @@ pub enum SafetyHaltStatus {
     Approved,
 }
 
+/// Status of a DSMB safety-resume proposal
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SafetyResumeStatus {
+    Pending,
+    Approved,
+}
+
 /// A trial site with its own coordinator and enrollment quota.
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -260,6 +268,26 @@ pub struct SafetyHaltProposal {
     pub approvals: Vec<Address>,
     pub status: SafetyHaltStatus,
     pub proposed_at: u64,
+    /// Snapshot of the DSMB membership at proposal time; the majority
+    /// threshold is computed from this list so later membership changes
+    /// cannot alter the vote under way.
+    pub members_snapshot: Vec<Address>,
+}
+
+/// Safety-resume proposal submitted by a DSMB member to lift an approved halt
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct SafetyResumeProposal {
+    pub trial_record_id: u64,
+    pub proposed_by: Address,
+    pub reason_hash: BytesN<32>,
+    pub approvals: Vec<Address>,
+    pub status: SafetyResumeStatus,
+    pub proposed_at: u64,
+    /// Snapshot of the DSMB membership at proposal time; the majority
+    /// threshold is computed from this list so later membership changes
+    /// cannot alter the vote under way.
+    pub members_snapshot: Vec<Address>,
 }
 
 /// On-chain protocol amendment record for ICH E6(R2) audit trail (#485).
@@ -294,6 +322,8 @@ pub enum DataKey {
     PatientRegistry,
     DsmBoard(u64),
     SafetyHalt(u64),
+    /// Pending/approved safety-resume proposal for a trial.
+    SafetyResume(u64),
     /// Counter for site IDs within a trial, keyed by trial_record_id.
     SiteCounter(u64),
     /// A single site record, keyed by (trial_record_id, site_id).

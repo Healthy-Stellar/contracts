@@ -332,6 +332,76 @@ fn test_review_already_approved_fails() {
     assert!(result.is_err());
 }
 
+// #1101: a missed SLA must not block the decision.
+#[test]
+fn test_review_after_deadline_is_allowed() {
+    let (env, provider, patient, insurer) = setup();
+    env.ledger().with_mut(|li| li.timestamp = 1_000_000);
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
+
+    // Advance well past the SLA deadline.
+    env.ledger().with_mut(|li| li.timestamp = 100_000_000);
+
+    let reviewer = Address::generate(&env);
+    approve(&env, &client, id, &reviewer);
+
+    let info = client.get_authorization_status(&id, &provider);
+    assert!(matches!(info.status, AuthStatus::Approved));
+    assert_eq!(info.approved_units, Some(10));
+}
+
+#[test]
+fn test_review_after_deadline_deny_is_allowed() {
+    let (env, provider, patient, insurer) = setup();
+    env.ledger().with_mut(|li| li.timestamp = 1_000_000);
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
+
+    env.ledger().with_mut(|li| li.timestamp = 100_000_000);
+
+    let reviewer = Address::generate(&env);
+    deny(&env, &client, id, &reviewer);
+
+    let info = client.get_authorization_status(&id, &provider);
+    assert!(matches!(info.status, AuthStatus::Denied));
+}
+
+// #1101: an escalated request must remain reviewable by the escalation reviewer.
+#[test]
+fn test_review_after_escalation_is_allowed() {
+    let (env, provider, patient, insurer) = setup();
+    env.ledger().with_mut(|li| li.timestamp = 1_000_000);
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
+
+    // Escalation reviewer is assigned round-robin from registered reviewers.
+    let escalation_reviewer = Address::generate(&env);
+    register_test_reviewer(&env, &client, &insurer, &escalation_reviewer);
+
+    // Advance past the SLA deadline and escalate.
+    env.ledger().with_mut(|li| li.timestamp = 100_000_000);
+    client.escalate_expired_authorizations(&insurer);
+
+    let info = client.get_authorization_status(&id, &provider);
+    assert!(matches!(info.status, AuthStatus::Escalated));
+
+    // The assigned escalation reviewer can still decide the request.
+    client.review_authorization(
+        &id,
+        &escalation_reviewer,
+        &Symbol::new(&env, "approved"),
+        &Some(10u32),
+        &Some(1_000_000u64),
+        &Some(9_000_000u64),
+        &String::from_str(&env, "Approved after escalation"),
+    );
+
+    let info = client.get_authorization_status(&id, &provider);
+    assert!(matches!(info.status, AuthStatus::Approved));
+    assert_eq!(info.approved_units, Some(10));
+}
+
 // -----------------------------------------------------------------------
 // request_peer_to_peer / schedule_peer_to_peer
 // -----------------------------------------------------------------------

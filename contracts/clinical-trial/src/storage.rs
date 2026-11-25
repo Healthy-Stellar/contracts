@@ -212,6 +212,45 @@ pub fn get_safety_halt(env: &Env, trial_record_id: u64) -> Option<SafetyHaltProp
         .get(&DataKey::SafetyHalt(trial_record_id))
 }
 
+/// Save a resume proposal (Suspended -> Active) for a trial
+pub fn save_resume_proposal(env: &Env, proposal: &SafetyHaltProposal) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::ResumeProposal(proposal.trial_record_id), proposal);
+}
+
+/// Get the current resume proposal for a trial
+pub fn get_resume_proposal(env: &Env, trial_record_id: u64) -> Option<SafetyHaltProposal> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::ResumeProposal(trial_record_id))
+}
+
+/// Save the DSMB member snapshot captured when a halt proposal was opened.
+///
+/// The snapshot freezes the voting membership for the lifetime of the
+/// proposal so that later board changes cannot alter the threshold under
+/// an in-flight vote.
+pub fn save_dsmb_snapshot(env: &Env, trial_record_id: u64, members: &Vec<Address>) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::DsmbSnapshot(trial_record_id), members);
+}
+
+/// Get the DSMB member snapshot for a trial, if one was captured.
+pub fn get_dsmb_snapshot(env: &Env, trial_record_id: u64) -> Option<Vec<Address>> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::DsmbSnapshot(trial_record_id))
+}
+
+/// Clear the DSMB member snapshot for a trial.
+pub fn clear_dsmb_snapshot(env: &Env, trial_record_id: u64) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::DsmbSnapshot(trial_record_id));
+}
+
 /// Check if patient is already enrolled in trial
 pub fn check_duplicate_enrollment(
     env: &Env,

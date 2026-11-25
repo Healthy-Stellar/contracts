@@ -56,6 +56,23 @@ pub const ADMIN_ROTATION_WINDOW: u64 = 86_400;
 pub const ROTATION_TTL: u64 = ADMIN_ROTATION_WINDOW;
 /// Index of the expiry timestamp in the public inputs array.
 pub const EXPIRY_INPUT_IDX: u32 = 0;
+/// Index of the subject binding hash `H(subject_address)` in the public inputs array.
+pub const SUBJECT_INPUT_IDX: u32 = 1;
+/// Index of the circuit-level nullifier in the public inputs array.
+pub const NULLIFIER_INPUT_IDX: u32 = 2;
+/// Index of the contract-address binding hash in the public inputs array.
+pub const CONTRACT_INPUT_IDX: u32 = 3;
+/// Index of the network passphrase hash in the public inputs array.
+pub const NETWORK_INPUT_IDX: u32 = 4;
+/// Minimum number of public inputs required for an eligibility proof.
+pub const MIN_ELIGIBILITY_INPUTS: u32 = 5;
+/// Domain tag mixed into the subject binding hash.
+const SUBJECT_DOMAIN: &[u8] = b"zk-elig-subject";
+/// Domain tag mixed into the contract binding hash.
+const CONTRACT_DOMAIN: &[u8] = b"zk-elig-contract";
+/// Domain tag mixed into the network binding hash.
+const NETWORK_DOMAIN: &[u8] = b"zk-elig-network";
+=======
 
 // ── Errors ────────────────────────────────────────────────────────────────────
 
@@ -83,6 +100,13 @@ pub enum Error {
     /// satisfy the stub commitment check.  Never returned by a correct proof
     /// submission; exists so integration tests can assert the stub is active.
     StubVerifierActive   = 16,
+    /// The proof's subject-binding public input does not match `subject`.
+    SubjectMismatch      = 17,
+    /// The proof's contract/network binding public inputs do not match this
+    /// deployment.
+    ContextMismatch      = 18,
+    /// The proof's circuit-level nullifier public input is missing or invalid.
+    InvalidNullifier     = 19,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -271,7 +295,19 @@ impl ZkEligibility {
         public_inputs.push_back(Self::encode_u32_public_input(&env, old_version));
         public_inputs.push_back(Self::encode_u32_public_input(&env, new_version));
 
-        if !Self::run_verification(&env, &new_entry.vk, &migration_proof, &public_inputs) {
+        // Migration proofs are not subject-bound; pass a zero subject hash and
+        // a nullifier derived from the migration tuple so the verifier
+        // interface stays uniform.
+        let zero_subject = BytesN::from_array(&env, &[0u8; 32]);
+        let migration_nullifier = Self::migration_nullifier(&env, old_version, new_version);
+        if !Self::run_verification(
+            &env,
+            &new_entry.vk,
+            &migration_proof,
+            &public_inputs,
+            &zero_subject,
+            &migration_nullifier,
+        ) {
             return Err(Error::VerificationFailed);
         }
 
@@ -287,13 +323,29 @@ impl ZkEligibility {
 
     /// Verify a ZK proof of eligibility.
     ///
-    /// On success the proof nullifier is stored so the proof cannot be
-    /// replayed within the TTL window. Returns `Ok(())` which callers use
-    /// to gate their own logic.
+    /// On success the proof's circuit-level nullifier is stored so the same
+    /// witness cannot be replayed within the TTL window. Returns `Ok(())`
+    /// which callers use to gate their own logic.
     ///
     /// `subject` is the address whose eligibility is being proven; it must
     /// sign the call so the proof cannot be submitted on behalf of another
     /// party without their consent.
+    ///
+    /// ## Public input layout (eligibility proofs)
+    ///
+    /// ```text
+    /// [0] expiry timestamp (big-endian u64, right-aligned)
+    /// [1] H(subject_address)  — subject binding
+    /// [2] circuit-level nullifier (derived from holder secret + context/epoch)
+    /// [3] H(contract_address) — cross-deployment replay protection
+    /// [4] H(network_passphrase) — cross-network replay protection
+    /// ```
+    ///
+    /// The subject-binding input is checked against `subject` *before* the
+    /// verifier runs, so a proof generated for one address cannot be
+    /// front-run or sold to another. The nullifier is a circuit output, not
+    /// a hash of the proof bytes, so Groth16 proof re-randomization does not
+    /// yield a fresh nullifier.
     pub fn verify_eligibility(
         env: Env,
         subject: Address,
@@ -309,6 +361,9 @@ impl ZkEligibility {
         if bundle.public_inputs.len() > MAX_PUBLIC_INPUTS {
             return Err(Error::TooManyPublicInputs);
         }
+        if bundle.public_inputs.len() < MIN_ELIGIBILITY_INPUTS {
+            return Err(Error::TooManyPublicInputs);
+        }
 
         // ── Expiry check (public_inputs[0] = big-endian u64 expiry timestamp) ─
         let expiry_input = bundle
@@ -318,6 +373,37 @@ impl ZkEligibility {
         let expiry = Self::decode_expiry_u64(&expiry_input);
         if expiry <= env.ledger().timestamp() {
             return Err(Error::ProofExpired);
+        }
+
+        // ── Subject binding check ─────────────────────────────────────────────
+        // The proof must commit to H(subject); otherwise anyone could submit a
+        // valid proof for their own address (front-running / proof selling).
+        let expected_subject_hash = Self::subject_binding_hash(&env, &subject);
+        let subject_input = bundle
+            .public_inputs
+            .get(SUBJECT_INPUT_IDX)
+            .ok_or(Error::SubjectMismatch)?;
+        if subject_input != expected_subject_hash {
+            return Err(Error::SubjectMismatch);
+        }
+
+        // ── Context binding check (contract + network) ────────────────────────
+        let expected_contract_hash = Self::contract_binding_hash(&env);
+        let contract_input = bundle
+            .public_inputs
+            .get(CONTRACT_INPUT_IDX)
+            .ok_or(Error::ContextMismatch)?;
+        if contract_input != expected_contract_hash {
+            return Err(Error::ContextMismatch);
+        }
+
+        let expected_network_hash = Self::network_binding_hash(&env);
+        let network_input = bundle
+            .public_inputs
+            .get(NETWORK_INPUT_IDX)
+            .ok_or(Error::ContextMismatch)?;
+        if network_input != expected_network_hash {
+            return Err(Error::ContextMismatch);
         }
 
         // ── Verifier key lookup ───────────────────────────────────────────────
@@ -331,20 +417,27 @@ impl ZkEligibility {
             return Err(Error::SchemaNotFound);
         }
 
-        // ── Nullifier check ───────────────────────────────────────────────────
-        let proof_hash: BytesN<32> = env.crypto().sha256(&bundle.proof).into();
-        if Self::nullifier_active(&env, &proof_hash) {
+        // ── Nullifier check (circuit-level nullifier, not proof hash) ─────────
+        let nullifier = Self::extract_nullifier(&bundle.public_inputs)?;
+        if Self::nullifier_active(&env, &nullifier) {
             return Err(Error::ProofAlreadyUsed);
         }
 
         // ── Verification ──────────────────────────────────────────────────────
-        if !Self::run_verification(&env, &vk_entry.vk, &bundle.proof, &bundle.public_inputs) {
+        if !Self::run_verification(
+            &env,
+            &vk_entry.vk,
+            &bundle.proof,
+            &bundle.public_inputs,
+            &expected_subject_hash,
+            &nullifier,
+        ) {
             return Err(Error::VerificationFailed);
         }
 
         // ── Record nullifier ──────────────────────────────────────────────────
-        Self::store_nullifier(&env, &proof_hash, bundle.schema_version);
-        
+        Self::store_nullifier(&env, &nullifier, bundle.schema_version);
+
         // ── Cache eligibility with expiry ────────────────────────────────────────
         let eligibility_expires_at = env.ledger().sequence().saturating_add(
             env.storage()
@@ -358,7 +451,7 @@ impl ZkEligibility {
 
         env.events().publish(
             (symbol_short!("zk_ok"), subject, bundle.schema_version),
-            proof_hash,
+            nullifier,
         );
         Ok(())
     }
@@ -400,9 +493,9 @@ impl ZkEligibility {
             .ok_or(Error::SchemaNotFound)
     }
 
-    /// Check whether a proof (identified by its hash) has an active, unexpired nullifier.
-    pub fn is_nullified(env: Env, proof_hash: BytesN<32>) -> bool {
-        Self::nullifier_active(&env, &proof_hash)
+    /// Check whether a circuit-level nullifier has an active, unexpired record.
+    pub fn is_nullified(env: Env, nullifier: BytesN<32>) -> bool {
+        Self::nullifier_active(&env, &nullifier)
     }
 
     /// Check whether a subject has a cached successful eligibility proof.
@@ -474,7 +567,10 @@ impl ZkEligibility {
     /// returns `bool` instead of `Result` so batch calls can collect partial
     /// successes without aborting the entire transaction.
     fn try_verify_single(env: &Env, subject: &Address, bundle: &ProofBundle) -> bool {
-        if bundle.proof.len() > MAX_PROOF_BYTES || bundle.public_inputs.len() > MAX_PUBLIC_INPUTS {
+        if bundle.proof.len() > MAX_PROOF_BYTES
+            || bundle.public_inputs.len() > MAX_PUBLIC_INPUTS
+            || bundle.public_inputs.len() < MIN_ELIGIBILITY_INPUTS
+        {
             return false;
         }
 
@@ -486,6 +582,25 @@ impl ZkEligibility {
         let expiry = Self::decode_expiry_u64(&expiry_input);
         if expiry <= env.ledger().timestamp() {
             return false;
+        }
+
+        // ── Subject binding check ─────────────────────────────────────────────
+        let expected_subject_hash = Self::subject_binding_hash(env, subject);
+        match bundle.public_inputs.get(SUBJECT_INPUT_IDX) {
+            Some(input) if input == expected_subject_hash => {}
+            _ => return false,
+        }
+
+        // ── Context binding check (contract + network) ────────────────────────
+        let expected_contract_hash = Self::contract_binding_hash(env);
+        match bundle.public_inputs.get(CONTRACT_INPUT_IDX) {
+            Some(input) if input == expected_contract_hash => {}
+            _ => return false,
+        }
+        let expected_network_hash = Self::network_binding_hash(env);
+        match bundle.public_inputs.get(NETWORK_INPUT_IDX) {
+            Some(input) if input == expected_network_hash => {}
+            _ => return false,
         }
 
         let vk_entry: VerifierKeyEntry = match env
@@ -500,17 +615,27 @@ impl ZkEligibility {
             return false;
         }
 
-        let proof_hash: BytesN<32> = env.crypto().sha256(&bundle.proof).into();
-        if Self::nullifier_active(env, &proof_hash) {
+        let nullifier = match Self::extract_nullifier(&bundle.public_inputs) {
+            Ok(n) => n,
+            Err(_) => return false,
+        };
+        if Self::nullifier_active(env, &nullifier) {
             return false;
         }
 
-        if !Self::run_verification(env, &vk_entry.vk, &bundle.proof, &bundle.public_inputs) {
+        if !Self::run_verification(
+            env,
+            &vk_entry.vk,
+            &bundle.proof,
+            &bundle.public_inputs,
+            &expected_subject_hash,
+            &nullifier,
+        ) {
             return false;
         }
 
-        Self::store_nullifier(env, &proof_hash, bundle.schema_version);
-        
+        Self::store_nullifier(env, &nullifier, bundle.schema_version);
+
         // ── Cache eligibility with expiry ────────────────────────────────────────
         let eligibility_expires_at = env.ledger().sequence().saturating_add(
             env.storage()
@@ -524,7 +649,7 @@ impl ZkEligibility {
 
         env.events().publish(
             (symbol_short!("zk_ok"), subject.clone(), bundle.schema_version),
-            proof_hash,
+            nullifier,
         );
         true
     }
@@ -635,6 +760,57 @@ impl ZkEligibility {
         BytesN::from_array(env, &input)
     }
 
+    /// Compute the subject-binding public input: `SHA-256(domain || strkey)`.
+    fn subject_binding_hash(env: &Env, subject: &Address) -> BytesN<32> {
+        let mut buf = Bytes::new(env);
+        buf.append(&Bytes::from_slice(env, SUBJECT_DOMAIN));
+        buf.append(&Self::address_to_bytes(env, subject));
+        env.crypto().sha256(&buf).into()
+    }
+
+    /// Compute the contract-binding public input: `SHA-256(domain || contract)`.
+    fn contract_binding_hash(env: &Env) -> BytesN<32> {
+        let mut buf = Bytes::new(env);
+        buf.append(&Bytes::from_slice(env, CONTRACT_DOMAIN));
+        buf.append(&Self::address_to_bytes(env, &env.current_contract_address()));
+        env.crypto().sha256(&buf).into()
+    }
+
+    /// Compute the network-binding public input: `SHA-256(domain || passphrase)`.
+    fn network_binding_hash(env: &Env) -> BytesN<32> {
+        let mut buf = Bytes::new(env);
+        buf.append(&Bytes::from_slice(env, NETWORK_DOMAIN));
+        buf.append(&Bytes::from_slice(env, env.ledger().network_id().to_array().as_slice()));
+        env.crypto().sha256(&buf).into()
+    }
+
+    /// Serialize an `Address` to bytes for hashing.
+    fn address_to_bytes(env: &Env, address: &Address) -> Bytes {
+        address.to_xdr(env)
+    }
+
+    /// Extract the circuit-level nullifier from the public inputs.
+    fn extract_nullifier(public_inputs: &Vec<BytesN<32>>) -> Result<BytesN<32>, Error> {
+        let nullifier = public_inputs
+            .get(NULLIFIER_INPUT_IDX)
+            .ok_or(Error::InvalidNullifier)?;
+        // A zero nullifier is never valid: it would let a witness be reused
+        // indefinitely (all zero-nullifier proofs would collide).
+        if nullifier.to_array() == [0u8; 32] {
+            return Err(Error::InvalidNullifier);
+        }
+        Ok(nullifier)
+    }
+
+    /// Nullifier used for schema-migration proofs.
+    fn migration_nullifier(env: &Env, old_version: u32, new_version: u32) -> BytesN<32> {
+        let mut buf = Bytes::new(env);
+        buf.append(&Bytes::from_slice(env, b"zk-elig-migrate"));
+        buf.append(&Bytes::from_slice(env, &old_version.to_be_bytes()));
+        buf.append(&Bytes::from_slice(env, &new_version.to_be_bytes()));
+        env.crypto().sha256(&buf).into()
+    }
+
     /// Cryptographic verification stub.
     ///
     /// ⚠️  SECURITY — TESTING STUB ONLY.  This is NOT a real ZK verifier.
@@ -678,6 +854,8 @@ impl ZkEligibility {
         vk: &Bytes,
         proof: &Bytes,
         public_inputs: &Vec<BytesN<32>>,
+        subject_hash: &BytesN<32>,
+        nullifier: &BytesN<32>,
     ) -> bool {
         // ── Basic structural checks ───────────────────────────────────────────
         if vk.is_empty() || proof.is_empty() {
@@ -693,12 +871,17 @@ impl ZkEligibility {
             return false;
         }
 
-        // ── Build commitment: SHA-256( vk || input_0 || … || input_n ) ───────
+        // ── Build commitment: SHA-256( vk || subject || nullifier || inputs ) ─
         //
         // We concatenate into a single `Bytes` buffer so we make exactly one
         // host call to `env.crypto().sha256()`, keeping metering predictable.
+        // The subject hash and nullifier are mixed in explicitly so a proof
+        // cannot be replayed for a different subject or with a different
+        // nullifier even if the public input array were otherwise identical.
         let mut buf = Bytes::new(env);
         buf.append(vk);
+        buf.append(&Bytes::from_slice(env, &subject_hash.to_array()));
+        buf.append(&Bytes::from_slice(env, &nullifier.to_array()));
         for i in 0..public_inputs.len() {
             // BytesN<32> → Bytes via from_slice on its raw array copy.
             let scalar: BytesN<32> = public_inputs.get(i).unwrap();

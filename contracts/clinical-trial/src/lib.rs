@@ -109,6 +109,25 @@ pub struct ParticipantReEnrolled {
     pub trial_record_id: u64,
 }
 
+#[contractevent]
+pub struct DsmbAppointed {
+    pub trial_record_id: u64,
+    pub appointed_by: Address,
+    pub member_count: u32,
+}
+
+#[contractevent]
+pub struct SafetyHaltResumeProposed {
+    pub trial_record_id: u64,
+    pub proposed_by: Address,
+}
+
+#[contractevent]
+pub struct SafetyHaltResumed {
+    pub trial_record_id: u64,
+    pub approval_count: u32,
+}
+
 /// Error codes for clinical trial operations
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -149,6 +168,16 @@ pub enum Error {
     TrialClosed = 29,
     /// Prior enrolment is still active; cannot re-enrol.
     PriorEnrollmentActive = 30,
+    /// The DSMB member list cannot be changed while a halt proposal is pending.
+    DsmbMembershipLocked = 31,
+    /// A DSMB member address is not permitted (e.g. the PI or a site investigator).
+    InvalidDsmbMember = 32,
+    /// Duplicate addresses were supplied in the DSMB member list.
+    DuplicateDsmbMember = 33,
+    /// The trial is not currently suspended; no resume is possible.
+    TrialNotSuspended = 34,
+    /// No resume proposal is pending for this trial.
+    NoResumePending = 35,
 }
 
 /// Maximum number of inclusion or exclusion criteria rules per trial.
@@ -780,24 +809,63 @@ impl ClinicalTrialContract {
         Ok(event)
     }
 
-    /// Appoint DSMB members for a trial (PI only)
+    /// Appoint DSMB members for a trial.
+    ///
+    /// The DSMB must be independent of the investigators it oversees, so only
+    /// the sponsor or the IRB (admin-managed roles) may appoint it — never the
+    /// principal investigator. The PI and any site investigators are rejected
+    /// as members, and duplicate addresses are rejected.
+    ///
+    /// Membership is locked while a safety-halt proposal is pending so the
+    /// voting threshold cannot be manipulated mid-vote.
     pub fn appoint_dsmb(
         env: Env,
         trial_record_id: u64,
-        principal_investigator: Address,
+        appointer: Address,
         members: Vec<Address>,
     ) -> Result<(), Error> {
-        principal_investigator.require_auth();
+        appointer.require_auth();
         if members.len() > MAX_DSMB_MEMBERS {
             return Err(Error::InputTooLarge);
         }
 
         let trial = storage::get_trial(&env, trial_record_id)?;
-        if trial.principal_investigator != principal_investigator {
+
+        // Only the sponsor or IRB may appoint the DSMB.
+        if !storage::is_sponsor_or_irb(&env, &appointer) {
             return Err(Error::Unauthorized);
         }
 
-        storage::save_dsmb_members(&env, trial_record_id, &members);
+        // Membership cannot change while a halt proposal is pending.
+        if let Some(existing) = storage::get_safety_halt(&env, trial_record_id) {
+            if existing.status == types::SafetyHaltStatus::Pending {
+                return Err(Error::DsmbMembershipLocked);
+            }
+        }
+
+        // Reject the PI and site investigators, and de-duplicate.
+        let mut seen: Vec<Address> = Vec::new(&env);
+        for member in members.iter() {
+            if member == trial.principal_investigator {
+                return Err(Error::InvalidDsmbMember);
+            }
+            if storage::is_site_investigator(&env, trial_record_id, &member) {
+                return Err(Error::InvalidDsmbMember);
+            }
+            if seen.contains(&member) {
+                return Err(Error::DuplicateDsmbMember);
+            }
+            seen.push_back(member);
+        }
+
+        storage::save_dsmb_members(&env, trial_record_id, &seen);
+
+        DsmbAppointed {
+            trial_record_id,
+            appointed_by: appointer,
+            member_count: seen.len(),
+        }
+        .publish(&env);
 
         Ok(())
     }
@@ -895,9 +963,114 @@ impl ClinicalTrialContract {
         Ok(())
     }
 
+    /// Propose resuming a suspended trial (DSMB member only).
+    /// The proposer's vote is automatically counted as the first approval.
+    pub fn propose_resume(
+        env: Env,
+        trial_record_id: u64,
+        dsmb_member: Address,
+        reason_hash: BytesN<32>,
+    ) -> Result<(), Error> {
+        dsmb_member.require_auth();
+
+        let members = storage::get_dsmb_members(&env, trial_record_id)
+            .ok_or(Error::NoDsmBoardConfigured)?;
+        if !members.contains(&dsmb_member) {
+            return Err(Error::NotDsmBoardMember);
+        }
+
+        let trial = storage::get_trial(&env, trial_record_id)?;
+        if trial.status != TrialStatus::Suspended {
+            return Err(Error::TrialNotSuspended);
+        }
+
+        if let Some(existing) = storage::get_resume_proposal(&env, trial_record_id) {
+            if existing.status == types::SafetyHaltStatus::Pending {
+                return Err(Error::SafetyHaltAlreadyActive);
+            }
+        }
+
+        let mut approvals = Vec::new(&env);
+        approvals.push_back(dsmb_member.clone());
+
+        let proposal = types::SafetyHaltProposal {
+            trial_record_id,
+            proposed_by: dsmb_member.clone(),
+            reason_hash,
+            approvals,
+            status: types::SafetyHaltStatus::Pending,
+            proposed_at: env.ledger().timestamp(),
+        };
+
+        storage::save_resume_proposal(&env, &proposal);
+
+        SafetyHaltResumeProposed {
+            trial_record_id,
+            proposed_by: dsmb_member,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Cast an approval vote on the pending resume proposal (DSMB member only).
+    /// When votes reach majority of the board the trial returns to Active.
+    pub fn approve_resume(
+        env: Env,
+        trial_record_id: u64,
+        dsmb_member: Address,
+    ) -> Result<(), Error> {
+        dsmb_member.require_auth();
+
+        let members = storage::get_dsmb_members(&env, trial_record_id)
+            .ok_or(Error::NoDsmBoardConfigured)?;
+        if !members.contains(&dsmb_member) {
+            return Err(Error::NotDsmBoardMember);
+        }
+
+        let mut proposal = storage::get_resume_proposal(&env, trial_record_id)
+            .ok_or(Error::NoResumePending)?;
+        if proposal.status != types::SafetyHaltStatus::Pending {
+            return Err(Error::NoResumePending);
+        }
+
+        if proposal.approvals.contains(&dsmb_member) {
+            return Err(Error::AlreadyVoted);
+        }
+
+        proposal.approvals.push_back(dsmb_member);
+
+        let threshold = members.len() / 2 + 1;
+        if proposal.approvals.len() >= threshold {
+            proposal.status = types::SafetyHaltStatus::Approved;
+
+            let mut trial = storage::get_trial(&env, trial_record_id)?;
+            trial.status = TrialStatus::Active;
+            storage::save_trial(&env, &trial);
+
+            SafetyHaltResumed {
+                trial_record_id,
+                approval_count: proposal.approvals.len(),
+            }
+            .publish(&env);
+        }
+
+        storage::save_resume_proposal(&env, &proposal);
+
+        Ok(())
+    }
+
     /// Get the DSMB member list for a trial
     pub fn get_dsmb_members(env: Env, trial_record_id: u64) -> Result<Vec<Address>, Error> {
         storage::get_dsmb_members(&env, trial_record_id).ok_or(Error::NoDsmBoardConfigured)
+    }
+
+    /// Get the current resume proposal for a trial, if any
+    pub fn get_resume_proposal(
+        env: Env,
+        trial_record_id: u64,
+    ) -> Option<types::SafetyHaltProposal> {
+        storage::get_resume_proposal(&env, trial_record_id)
     }
 
     /// Get the current safety-halt proposal for a trial, if any
