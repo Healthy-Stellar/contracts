@@ -1,10 +1,14 @@
 use crate::types::{
     AlertThresholds, DataKey, DeviceReading, DeviceRegistration, Error, MonitoringParameters,
-    PagedAggResult, PagedRawResult, Range, VitalAlert, VitalReading, VitalSigns, VitalStatistics,
-    VitalsAggregate, WindowIndex, AGG_WINDOW_SECONDS, ALERT_COOLDOWN_SECONDS, PAGE_SIZE,
-    RAW_WINDOW_SECONDS,
+    PagedAggResult, PagedRawResult, Range, Severity, VitalAlert, VitalReading, VitalSigns,
+    VitalStatistics, VitalsAggregate, WindowIndex, AGG_WINDOW_SECONDS, ALERT_COOLDOWN_SECONDS,
+    MAX_ALERTS_PER_VITAL, PAGE_SIZE, RAW_WINDOW_SECONDS,
 };
 use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, String, Symbol, Vec};
+
+/// Maximum number of day-window indices a single `get_aggregate_page` query may
+/// span. Bounds the work done per call and prevents sweeping the whole history.
+const MAX_AGG_RANGE: u64 = 366;
 
 // Error codes
 // 1 = Unauthorized
@@ -23,6 +27,7 @@ impl PatientVitalsContract {
         measurement_time: u64,
         vitals: VitalSigns,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         recorder.require_auth();
 
         // Authorization check: recorder must be the patient, a provider holding
@@ -142,6 +147,7 @@ impl PatientVitalsContract {
         alert_thresholds: AlertThresholds,
         monitoring_frequency: u32,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         // #728: a MonitoringParameters record grants `provider_id` PHI read access
         // to the patient (see is_authorized_provider). Without the patient's own
@@ -171,6 +177,7 @@ impl PatientVitalsContract {
         serial_number: String,
         calibration_date: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
 
         let key = DataKey::DeviceReg(patient_id.clone(), device_id);
@@ -197,6 +204,7 @@ impl PatientVitalsContract {
         _reading_time: u64,
         readings: Vec<DeviceReading>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         // Verify device is registered
         let device_key = DataKey::DeviceReg(patient_id.clone(), device_id);
         if !env.storage().persistent().has(&device_key) {
@@ -230,15 +238,22 @@ impl PatientVitalsContract {
         Ok(())
     }
 
+    /// Manually raise an alert for a patient's vital.
+    ///
+    /// #1121: the alert is stamped with the ledger time (callers can no longer
+    /// back- or future-date it), `severity` is a [`Severity`] and `value` is
+    /// numeric. The same per-(patient, vital_type) cooldown as the automatic
+    /// threshold path applies (`AlertCooldown`), alerts are stored in a capped
+    /// ring buffer, and a `man_alert` event (ids and severity only) is emitted.
     pub fn trigger_vital_alert(
         env: Env,
         caller: Address,
         patient_id: Address,
         vital_type: Symbol,
-        value: String,
-        severity: Symbol,
-        alert_time: u64,
+        value: u32,
+        severity: Severity,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         // Require auth from whichever actor is asserting the alert.
         caller.require_auth();
 
@@ -280,21 +295,70 @@ impl PatientVitalsContract {
             return Err(Error::Unauthorized);
         }
 
-        let key = DataKey::VitalsAlerts(patient_id.clone(), vital_type);
-        let mut alerts: Vec<VitalAlert> = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or(Vec::new(&env));
+        // Only standard vital types are accepted, so every alert can be
+        // enumerated (and purged) by deregister_patient.
+        if !Self::standard_vital_types(&env).iter().any(|vt| vt == &vital_type) {
+            return Err(Error::InvalidParameter);
+        }
 
-        alerts.push_back(VitalAlert {
-            value,
-            severity,
-            alert_time,
-        });
+        let alert_time = env.ledger().timestamp();
 
-        env.storage().persistent().set(&key, &alerts);
+        // Same cooldown as the automatic threshold path.
+        let cooldown_key = DataKey::LastAlertTime(patient_id.clone(), vital_type.clone());
+        if let Some(last_alert) = env.storage().persistent().get::<_, u64>(&cooldown_key) {
+            if alert_time < last_alert.saturating_add(ALERT_COOLDOWN_SECONDS) {
+                return Err(Error::AlertCooldown);
+            }
+        }
+
+        let seq = Self::store_alert(&env, &patient_id, &vital_type, value, severity, alert_time);
+        env.storage().persistent().set(&cooldown_key, &alert_time);
+
+        env.events().publish(
+            (symbol_short!("man_alert"), patient_id, vital_type),
+            (seq, severity),
+        );
         Ok(())
+    }
+
+    /// #1121: the vital types tracked by this contract.
+    fn standard_vital_types(env: &Env) -> [Symbol; 8] {
+        [
+            Symbol::new(env, "heart_rate"),
+            Symbol::new(env, "bp_systolic"),
+            Symbol::new(env, "bp_diastolic"),
+            Symbol::new(env, "temperature"),
+            Symbol::new(env, "respiratory"),
+            Symbol::new(env, "oxygen_sat"),
+            Symbol::new(env, "blood_glucose"),
+            Symbol::new(env, "weight"),
+        ]
+    }
+
+    /// #1121: write one alert into the (patient, vital_type) ring buffer and
+    /// return its sequence number. Constant cost regardless of history size.
+    fn store_alert(
+        env: &Env,
+        patient_id: &Address,
+        vital_type: &Symbol,
+        value: u32,
+        severity: Severity,
+        alert_time: u64,
+    ) -> u64 {
+        let seq_key = DataKey::AlertSeq(patient_id.clone(), vital_type.clone());
+        let seq: u64 = env.storage().persistent().get(&seq_key).unwrap_or(0);
+        let slot = (seq % MAX_ALERTS_PER_VITAL as u64) as u32;
+        env.storage().persistent().set(
+            &DataKey::Alert(patient_id.clone(), vital_type.clone(), slot),
+            &VitalAlert {
+                seq,
+                value,
+                severity,
+                alert_time,
+            },
+        );
+        env.storage().persistent().set(&seq_key, &(seq + 1));
+        seq
     }
 
     pub fn get_vital_trends(
@@ -363,6 +427,7 @@ impl PatientVitalsContract {
         vital_type: Symbol,
         period: u64,
     ) -> Result<VitalStatistics, Error> {
+        ttl_config::extend_instance_ttl(&env);
         requester.require_auth();
 
         // Authorization: requester must be the patient or an authorized provider.
@@ -483,16 +548,7 @@ impl PatientVitalsContract {
     /// check the AlertThresholds and emit a deterministic VitalAlert if a threshold
     /// is breached, subject to a per-(patient, vital_type) cooldown window.
     fn evaluate_thresholds(env: &Env, patient_id: &Address, measurement_time: u64, vitals: &VitalSigns) {
-        let vital_types = [
-            Symbol::new(env, "heart_rate"),
-            Symbol::new(env, "bp_systolic"),
-            Symbol::new(env, "bp_diastolic"),
-            Symbol::new(env, "temperature"),
-            Symbol::new(env, "respiratory"),
-            Symbol::new(env, "oxygen_sat"),
-            Symbol::new(env, "blood_glucose"),
-            Symbol::new(env, "weight"),
-        ];
+        let vital_types = Self::standard_vital_types(env);
 
         for vt in vital_types.iter() {
             let params_key = DataKey::MonitoringParams(patient_id.clone(), vt.clone());
@@ -508,7 +564,7 @@ impl PatientVitalsContract {
                 None => continue,
             };
 
-            let severity = Self::classify_severity(env, value, &params.alert_thresholds);
+            let severity = Self::classify_severity(value, &params.alert_thresholds);
             let severity = match severity {
                 Some(s) => s,
                 None => continue, // within normal range
@@ -526,20 +582,8 @@ impl PatientVitalsContract {
                 continue; // still within cooldown window
             }
 
-            // Record the alert.
-            let alert_key = DataKey::VitalsAlerts(patient_id.clone(), vt.clone());
-            let mut alerts: Vec<VitalAlert> = env
-                .storage()
-                .persistent()
-                .get(&alert_key)
-                .unwrap_or(Vec::new(env));
-
-            alerts.push_back(VitalAlert {
-                value: u32_to_string(env, value),
-                severity: severity.clone(),
-                alert_time: measurement_time,
-            });
-            env.storage().persistent().set(&alert_key, &alerts);
+            // Record the alert in the capped ring buffer (#1121).
+            Self::store_alert(env, patient_id, vt, value, severity, measurement_time);
             env.storage().persistent().set(&cooldown_key, &measurement_time);
 
             env.events().publish(
@@ -549,26 +593,26 @@ impl PatientVitalsContract {
         }
     }
 
-    /// Return the severity Symbol for a value against thresholds, or None if in range.
-    fn classify_severity(env: &Env, value: u32, t: &AlertThresholds) -> Option<Symbol> {
+    /// Return the severity for a value against thresholds, or None if in range.
+    fn classify_severity(value: u32, t: &AlertThresholds) -> Option<Severity> {
         if let Some(cl) = t.critical_low {
             if value <= cl {
-                return Some(Symbol::new(env, "critical_lo"));
+                return Some(Severity::CriticalLow);
             }
         }
         if let Some(ch) = t.critical_high {
             if value >= ch {
-                return Some(Symbol::new(env, "critical_hi"));
+                return Some(Severity::CriticalHigh);
             }
         }
         if let Some(l) = t.low {
             if value <= l {
-                return Some(Symbol::new(env, "low"));
+                return Some(Severity::Low);
             }
         }
         if let Some(h) = t.high {
             if value >= h {
-                return Some(Symbol::new(env, "high"));
+                return Some(Severity::High);
             }
         }
         None
@@ -644,10 +688,20 @@ impl PatientVitalsContract {
     /// `page` is 0-based; returns up to PAGE_SIZE readings.
     pub fn get_raw_window_page(
         env: Env,
+        requester: Address,
         patient_id: Address,
         window_idx: u64,
         page: u32,
     ) -> Result<PagedRawResult, Error> {
+        requester.require_auth();
+
+        // Authorization: requester must be the patient or an authorized provider.
+        if requester != patient_id
+            && !Self::is_authorized_provider(&env, &patient_id, &requester)
+        {
+            return Err(Error::Unauthorized);
+        }
+
         let key = DataKey::RawWindow(patient_id, window_idx);
         let all: Vec<VitalReading> = env
             .storage()
@@ -673,13 +727,27 @@ impl PatientVitalsContract {
     /// `from_agg_idx` and `to_agg_idx` are inclusive day-window indices.
     pub fn get_aggregate_page(
         env: Env,
+        requester: Address,
         patient_id: Address,
         from_agg_idx: u64,
         to_agg_idx: u64,
         page: u32,
     ) -> Result<PagedAggResult, Error> {
+        requester.require_auth();
+
+        // Authorization: requester must be the patient or an authorized provider.
+        if requester != patient_id
+            && !Self::is_authorized_provider(&env, &patient_id, &requester)
+        {
+            return Err(Error::Unauthorized);
+        }
+
         let total_windows = if to_agg_idx >= from_agg_idx {
-            (to_agg_idx - from_agg_idx + 1) as u32
+            let span = to_agg_idx - from_agg_idx;
+            if span > MAX_AGG_RANGE {
+                return Err(Error::InvalidParameter);
+            }
+            (span + 1) as u32
         } else {
             return Err(Error::InvalidParameter);
         };
@@ -700,7 +768,8 @@ impl PatientVitalsContract {
         Ok(PagedAggResult { aggregates, next_page })
     }
 
-    /// Retrieve all alerts for a patient's specific vital type.
+    /// Retrieve the stored alerts (at most `MAX_ALERTS_PER_VITAL`, oldest
+    /// first) for a patient's specific vital type.
     pub fn get_alerts(
         env: Env,
         requester: Address,
@@ -716,8 +785,25 @@ impl PatientVitalsContract {
             return Err(Error::Unauthorized);
         }
 
-        let key = DataKey::VitalsAlerts(patient_id, vital_type);
-        Ok(env.storage().persistent().get(&key).unwrap_or(Vec::new(&env)))
+        let seq: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AlertSeq(patient_id.clone(), vital_type.clone()))
+            .unwrap_or(0);
+        let cap = MAX_ALERTS_PER_VITAL as u64;
+        let start = seq.saturating_sub(cap);
+        let mut alerts: Vec<VitalAlert> = Vec::new(&env);
+        for s in start..seq {
+            let slot = (s % cap) as u32;
+            if let Some(a) = env.storage().persistent().get::<_, VitalAlert>(&DataKey::Alert(
+                patient_id.clone(),
+                vital_type.clone(),
+                slot,
+            )) {
+                alerts.push_back(a);
+            }
+        }
+        Ok(alerts)
     }
 
     /// Remove all vitals state for a deregistered patient.
@@ -725,13 +811,15 @@ impl PatientVitalsContract {
     /// Clears:
     /// - `VitalsHistory`
     /// - `LatestRawWindow`
-    /// - All `VitalsAlerts` and `LastAlertTime` entries for standard vital types
+    /// - All `Alert` ring-buffer slots, `AlertSeq` and `LastAlertTime` entries
+    ///   for standard vital types
     /// - All `RawWindow` and `AggWindow` bucket entries (enumerated via the
     ///   `PatientWindows` index maintained by `record_vital_signs`)
     /// - The `PatientWindows` index itself
     ///
     /// Callable by the patient themselves.
     pub fn deregister_patient(env: Env, patient_id: Address) {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
 
         env.storage()
@@ -770,20 +858,17 @@ impl PatientVitalsContract {
         env.storage().persistent().remove(&win_key);
 
         // Clear alerts for all standard vital types
-        let vital_types = [
-            Symbol::new(&env, "heart_rate"),
-            Symbol::new(&env, "bp_systolic"),
-            Symbol::new(&env, "bp_diastolic"),
-            Symbol::new(&env, "temperature"),
-            Symbol::new(&env, "respiratory"),
-            Symbol::new(&env, "oxygen_sat"),
-            Symbol::new(&env, "blood_glucose"),
-            Symbol::new(&env, "weight"),
-        ];
+        let vital_types = Self::standard_vital_types(&env);
         for vt in vital_types.iter() {
-            env.storage()
-                .persistent()
-                .remove(&DataKey::VitalsAlerts(patient_id.clone(), vt.clone()));
+            let seq_key = DataKey::AlertSeq(patient_id.clone(), vt.clone());
+            let seq: u64 = env.storage().persistent().get(&seq_key).unwrap_or(0);
+            let used_slots = seq.min(MAX_ALERTS_PER_VITAL as u64) as u32;
+            for slot in 0..used_slots {
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey::Alert(patient_id.clone(), vt.clone(), slot));
+            }
+            env.storage().persistent().remove(&seq_key);
             env.storage()
                 .persistent()
                 .remove(&DataKey::LastAlertTime(patient_id.clone(), vt.clone()));
@@ -794,21 +879,4 @@ impl PatientVitalsContract {
             Symbol::new(&env, "pv_clean"),
         );
     }
-}
-
-/// Convert a u32 to a decimal Soroban String (no_std, no alloc).
-fn u32_to_string(env: &Env, mut n: u32) -> String {
-    let mut buf = [0u8; 10]; // max 10 decimal digits for u32
-    let mut pos = 10usize;
-    if n == 0 {
-        pos -= 1;
-        buf[pos] = b'0';
-    } else {
-        while n > 0 {
-            pos -= 1;
-            buf[pos] = b'0' + (n % 10) as u8;
-            n /= 10;
-        }
-    }
-    String::from_bytes(env, &buf[pos..])
 }

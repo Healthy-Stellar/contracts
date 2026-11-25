@@ -27,7 +27,8 @@
 //! prevents use of expired credentials. Provider address validation via registry.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, Map, String, Symbol,
+    Vec,
 };
 
 const REQUIRED_CREDENTIALS: u32 = 5;
@@ -225,6 +226,10 @@ pub enum DataKey {
     Admin,
     AuthorizedVerifier(Address),
     CommitteeMember(Address),
+    /// Per-case map of credential type -> (verifier, result, timestamp) for the
+    /// most recent verification of that type. Used to derive
+    /// `verifications_complete` from distinct, currently-positive types.
+    VerifiedTypes(u64),
 }
 
 #[contract]
@@ -232,19 +237,15 @@ pub struct HealthcareCredentialingSystem;
 
 #[contractimpl]
 impl HealthcareCredentialingSystem {
-    /// Initialize the contract with an admin, who alone may register authorized
+    /// Set the admin at deployment; the admin alone may register authorized
     /// verifiers and credentialing-committee members.
-    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
-        admin.require_auth();
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::AlreadyInitialized);
-        }
+    pub fn __constructor(env: Env, admin: Address) {
         env.storage().instance().set(&DataKey::Admin, &admin);
-        Ok(())
     }
 
     /// Register an address as an authorized credential verifier. Admin only.
     pub fn add_authorized_verifier(env: Env, admin: Address, verifier: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         require_admin(&env, &admin)?;
         env.storage()
@@ -255,6 +256,7 @@ impl HealthcareCredentialingSystem {
 
     /// Revoke an address's authorized-verifier status. Admin only.
     pub fn remove_authorized_verifier(env: Env, admin: Address, verifier: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         require_admin(&env, &admin)?;
         env.storage()
@@ -265,6 +267,7 @@ impl HealthcareCredentialingSystem {
 
     /// Register an address as a credentialing-committee member. Admin only.
     pub fn add_committee_member(env: Env, admin: Address, member: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         require_admin(&env, &admin)?;
         env.storage()
@@ -275,6 +278,7 @@ impl HealthcareCredentialingSystem {
 
     /// Revoke an address's credentialing-committee membership. Admin only.
     pub fn remove_committee_member(env: Env, admin: Address, member: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         require_admin(&env, &admin)?;
         env.storage()
@@ -290,6 +294,7 @@ impl HealthcareCredentialingSystem {
         application_date: u64,
         requested_privileges: Vec<Symbol>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         if requested_privileges.is_empty() {
             return Err(Error::InvalidInput);
@@ -338,6 +343,7 @@ impl HealthcareCredentialingSystem {
         issue_date: u64,
         expiration_date: Option<u64>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         caller.require_auth();
         let mut case = get_case(&env, case_id)?;
         if caller != case.provider_id {
@@ -381,6 +387,7 @@ impl HealthcareCredentialingSystem {
         verification_date: u64,
         verification_notes: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         verifier.require_auth();
         if !is_authorized_verifier(&env, &verifier) {
             return Err(Error::NotAuthorized);
@@ -413,10 +420,28 @@ impl HealthcareCredentialingSystem {
             .persistent()
             .set(&DataKey::CaseVerifications(case_id), &records);
 
+        // Track the latest verification per credential type. Repeated verifications of
+        // the same type overwrite the entry rather than adding to the completed count,
+        // so a single verifier cannot reach committee review by re-verifying one type.
+        let mut verified_types: Map<Symbol, (Address, bool, u64)> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VerifiedTypes(case_id))
+            .unwrap_or(Map::new(&env));
+        verified_types.set(
+            credential_type.clone(),
+            (verifier, verification_result, verification_date),
+        );
+        env.storage()
+            .persistent()
+            .set(&DataKey::VerifiedTypes(case_id), &verified_types);
+
+        // Derive the completed count from distinct required types that currently have a
+        // positive result. A negative result on a required type removes it from the
+        // count and blocks committee review until it is re-verified positively.
+        case.verifications_complete = count_verified_types(&env, &verified_types);
+
         if verification_result {
-            if case.verifications_complete < case.verifications_required {
-                case.verifications_complete += 1;
-            }
             if case.verifications_complete >= case.verifications_required {
                 case.status = CredentialingStatus::CommitteeReview;
             } else {
@@ -440,6 +465,7 @@ impl HealthcareCredentialingSystem {
         sanctions_found: bool,
         check_date: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         checker.require_auth();
         if !is_authorized_verifier(&env, &checker) {
             return Err(Error::NotAuthorized);
@@ -478,6 +504,7 @@ impl HealthcareCredentialingSystem {
         reference_notes_hash: BytesN<32>,
         recommended: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         reference_provider.require_auth();
         if !is_authorized_verifier(&env, &reference_provider) {
             return Err(Error::NotAuthorized);
@@ -518,6 +545,7 @@ impl HealthcareCredentialingSystem {
         effective_date: u64,
         expiration_date: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         credentialing_committee.require_auth();
         if !is_committee_member(&env, &credentialing_committee) {
             return Err(Error::NotAuthorized);
@@ -590,6 +618,7 @@ impl HealthcareCredentialingSystem {
         supervising_provider: Address,
         justification: String,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         let current: u64 = env
             .storage()
@@ -639,6 +668,7 @@ impl HealthcareCredentialingSystem {
         complications: bool,
         activity_date: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         let mut records: Vec<ClinicalActivityRecord> = env
             .storage()
@@ -670,6 +700,7 @@ impl HealthcareCredentialingSystem {
         review_type: Symbol,
         initiated_by: Address,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         initiated_by.require_auth();
         if !is_committee_member(&env, &initiated_by) {
             return Err(Error::NotAuthorized);
@@ -705,6 +736,7 @@ impl HealthcareCredentialingSystem {
         due_date: u64,
         notification_sent: bool,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
         let current: u64 = env
             .storage()
@@ -754,6 +786,7 @@ impl HealthcareCredentialingSystem {
         is_immediate: bool,
         peer_review_required: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         suspension_authority.require_auth();
         if !is_committee_member(&env, &suspension_authority) {
             return Err(Error::NotAuthorized);
@@ -824,6 +857,7 @@ impl HealthcareCredentialingSystem {
         corrective_actions_completed: Vec<String>,
         monitoring_requirements: Vec<String>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         reinstatement_authority.require_auth();
         if !is_committee_member(&env, &reinstatement_authority) {
             return Err(Error::NotAuthorized);
@@ -919,6 +953,7 @@ impl HealthcareCredentialingSystem {
         facility_id: Address,
         current_time: u64,
     ) -> Result<bool, Error> {
+        ttl_config::extend_instance_ttl(&env);
         let privileges: Vec<Privilege> = env
             .storage()
             .persistent()
@@ -953,6 +988,7 @@ impl HealthcareCredentialingSystem {
         current_time: u64,
         recredentialing_deadline: u64,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         initiating_authority.require_auth();
         if !is_committee_member(&env, &initiating_authority) {
             return Err(Error::NotAuthorized);
@@ -1018,6 +1054,7 @@ impl HealthcareCredentialingSystem {
         enforcement_authority: Address,
         current_time: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         enforcement_authority.require_auth();
         if !is_committee_member(&env, &enforcement_authority) {
             return Err(Error::NotAuthorized);
@@ -1082,6 +1119,7 @@ impl HealthcareCredentialingSystem {
         credentialing_committee: Address,
         new_expiration_date: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         credentialing_committee.require_auth();
         if !is_committee_member(&env, &credentialing_committee) {
             return Err(Error::NotAuthorized);
@@ -1172,6 +1210,22 @@ fn is_supported_credential_type(env: &Env, credential_type: &Symbol) -> bool {
         || *credential_type == Symbol::new(env, "board_cert")
         || *credential_type == Symbol::new(env, "cv")
         || *credential_type == Symbol::new(env, "references")
+}
+
+/// Count the distinct supported credential types that currently have a positive
+/// verification result recorded for the case.
+fn count_verified_types(env: &Env, verified_types: &Map<Symbol, (Address, bool, u64)>) -> u32 {
+    let mut count: u32 = 0;
+    let mut idx: u32 = 0;
+    while idx < verified_types.len() {
+        if let Some((key, value)) = verified_types.get(idx) {
+            if is_supported_credential_type(env, &key) && value.1 {
+                count += 1;
+            }
+        }
+        idx += 1;
+    }
+    count
 }
 
 fn document_exists_for_type(docs: &Vec<CredentialDocument>, credential_type: &Symbol) -> bool {
@@ -1418,6 +1472,144 @@ mod test {
             &String::from_str(&env, "Verified"),
         );
         assert_eq!(res, Err(Ok(Error::DocumentNotFound)));
+    }
+
+    #[test]
+    fn repeated_same_type_verification_does_not_reach_committee_review() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(HealthcareCredentialingSystem, ());
+        let client = HealthcareCredentialingSystemClient::new(&env, &contract_id);
+
+        let admin = setup_admin(&env, &client);
+        let provider = Address::generate(&env);
+        let facility = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        client.add_authorized_verifier(&admin, &verifier);
+
+        let case_id = create_case(&env, &client, &provider, &facility);
+        submit_required_docs(&env, &client, case_id, &provider);
+
+        // One verifier re-verifies the same type five times.
+        let mut idx: usize = 0;
+        while idx < 5 {
+            client.verify_credential(
+                &case_id,
+                &Symbol::new(&env, "cv"),
+                &verifier,
+                &Symbol::new(&env, "primary_source"),
+                &true,
+                &1_700_010_000,
+                &String::from_str(&env, "Verified"),
+            );
+            idx += 1;
+        }
+
+        let case = client.get_credentialing_case(&case_id);
+        assert_eq!(case.verifications_complete, 1);
+        assert_ne!(case.status, CredentialingStatus::CommitteeReview);
+    }
+
+    #[test]
+    fn distinct_required_types_reach_committee_review() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(HealthcareCredentialingSystem, ());
+        let client = HealthcareCredentialingSystemClient::new(&env, &contract_id);
+
+        let admin = setup_admin(&env, &client);
+        let provider = Address::generate(&env);
+        let facility = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        client.add_authorized_verifier(&admin, &verifier);
+
+        let case_id = create_case(&env, &client, &provider, &facility);
+        submit_required_docs(&env, &client, case_id, &provider);
+
+        let verify_types = ["medical_license", "dea", "board_cert", "cv", "references"];
+        let mut idx: usize = 0;
+        while idx < verify_types.len() {
+            client.verify_credential(
+                &case_id,
+                &Symbol::new(&env, verify_types[idx]),
+                &verifier,
+                &Symbol::new(&env, "primary_source"),
+                &true,
+                &1_700_010_000,
+                &String::from_str(&env, "Verified"),
+            );
+            idx += 1;
+        }
+
+        let case = client.get_credentialing_case(&case_id);
+        assert_eq!(case.verifications_complete, 5);
+        assert_eq!(case.status, CredentialingStatus::CommitteeReview);
+    }
+
+    #[test]
+    fn negative_result_blocks_committee_review_until_reverified() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(HealthcareCredentialingSystem, ());
+        let client = HealthcareCredentialingSystemClient::new(&env, &contract_id);
+
+        let admin = setup_admin(&env, &client);
+        let provider = Address::generate(&env);
+        let facility = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        client.add_authorized_verifier(&admin, &verifier);
+
+        let case_id = create_case(&env, &client, &provider, &facility);
+        submit_required_docs(&env, &client, case_id, &provider);
+
+        let verify_types = ["medical_license", "dea", "board_cert", "cv", "references"];
+        let mut idx: usize = 0;
+        while idx < verify_types.len() {
+            client.verify_credential(
+                &case_id,
+                &Symbol::new(&env, verify_types[idx]),
+                &verifier,
+                &Symbol::new(&env, "primary_source"),
+                &true,
+                &1_700_010_000,
+                &String::from_str(&env, "Verified"),
+            );
+            idx += 1;
+        }
+
+        // A later negative result on a required type must lower the count and block
+        // committee review.
+        client.verify_credential(
+            &case_id,
+            &Symbol::new(&env, "medical_license"),
+            &verifier,
+            &Symbol::new(&env, "primary_source"),
+            &false,
+            &1_700_020_000,
+            &String::from_str(&env, "Discrepancy found"),
+        );
+
+        let case = client.get_credentialing_case(&case_id);
+        assert_eq!(case.verifications_complete, 4);
+        assert_ne!(case.status, CredentialingStatus::CommitteeReview);
+
+        // Re-verifying positively restores the count and allows committee review.
+        client.verify_credential(
+            &case_id,
+            &Symbol::new(&env, "medical_license"),
+            &verifier,
+            &Symbol::new(&env, "primary_source"),
+            &true,
+            &1_700_030_000,
+            &String::from_str(&env, "Resolved"),
+        );
+
+        let case = client.get_credentialing_case(&case_id);
+        assert_eq!(case.verifications_complete, 5);
+        assert_eq!(case.status, CredentialingStatus::CommitteeReview);
     }
 
     #[test]

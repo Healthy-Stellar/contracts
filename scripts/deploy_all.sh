@@ -30,7 +30,7 @@ Options:
   --dry-run                  Print the deployment plan without building or submitting txs
   --skip-build               Use existing WASM artifacts
   --skip-optimize            Skip WASM optimization step
-  --skip-init                Skip initialize calls on deployed contracts
+  --skip-init                Deprecated no-op: contracts configure themselves in __constructor
   --cli-bin <binary>         Stellar CLI binary (default: stellar)
   -h, --help                 Show this help text
 EOF

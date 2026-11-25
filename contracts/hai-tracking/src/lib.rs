@@ -27,7 +27,7 @@
 //! only authorized hospitals report HAIs. Temporal sequence validation prevents tampering.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env, IntoVal,
     String, Symbol, Vec,
 };
 
@@ -207,6 +207,8 @@ pub enum DataKey {
     CensusFacilityDayUnits(Address, u64),
     OutbreakIds,
     PrecautionIds,
+    HospitalRegistry,
+    DiscontinuedBy(u64),
     /// (facility_id, ward_id, infection_type) -> WardRateConfig
     WardRateConfig(Address, String, Symbol),
 }
@@ -216,6 +218,21 @@ pub struct HAITrackingContract;
 
 #[contractimpl]
 impl HAITrackingContract {
+    pub fn __constructor(env: Env, hospital_registry: Address) {
+        env.storage().instance().set(&DataKey::HospitalRegistry, &hospital_registry);
+    }
+
+    fn require_active_facility(env: &Env, facility: &Address) -> Result<(), Error> {
+        facility.require_auth();
+        let registry: Address = env.storage().instance().get(&DataKey::HospitalRegistry)
+            .ok_or(Error::NotAuthorized)?;
+        let active = env.try_invoke_contract::<bool, Error>(
+            &registry, &Symbol::new(env, "is_hospital_active"),
+            soroban_sdk::vec![env, facility.clone().into_val(env)],
+        );
+        if matches!(active, Ok(Ok(true))) { Ok(()) } else { Err(Error::NotAuthorized) }
+    }
+
     pub fn report_infection(
         env: Env,
         patient_id: Address,
@@ -227,7 +244,13 @@ impl HAITrackingContract {
         device_days: Option<u32>,
         reported_by: Address,
     ) -> Result<u64, Error> {
-        reported_by.require_auth();
+        if reported_by != facility_id {
+            return Err(Error::NotAuthorized);
+        }
+        Self::require_active_facility(&env, &facility_id)?;
+        if onset_date > env.ledger().timestamp() {
+            return Err(Error::InvalidData);
+        }
 
         if !Self::is_valid_infection_type(&env, &infection_type) {
             return Err(Error::InvalidInfectionType);
@@ -278,6 +301,7 @@ impl HAITrackingContract {
         collection_date: u64,
         culture_result_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let mut case = Self::get_infection_case_internal(&env, infection_id)?;
         case.reported_by.require_auth();
 
@@ -306,6 +330,7 @@ impl HAITrackingContract {
         susceptibility: Symbol,
         mic_value_x100: Option<i64>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let mut case = Self::get_infection_case_internal(&env, infection_id)?;
         case.reported_by.require_auth();
         if !Self::is_valid_susceptibility(&env, &susceptibility) {
@@ -360,6 +385,7 @@ impl HAITrackingContract {
         time_window_days: u32,
         case_threshold: u32,
     ) -> Result<Option<u64>, Error> {
+        ttl_config::extend_instance_ttl(&env);
         facility_id.require_auth();
         if !Self::is_valid_infection_type(&env, &infection_type) || case_threshold == 0 {
             return Err(Error::InvalidData);
@@ -428,6 +454,7 @@ impl HAITrackingContract {
         lead_investigator: Address,
         investigation_protocol: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         lead_investigator.require_auth();
         let outbreak: OutbreakCluster = env
             .storage()
@@ -456,7 +483,7 @@ impl HAITrackingContract {
         discontinuation_criteria: String,
         indicated_by: Address,
     ) -> Result<u64, Error> {
-        indicated_by.require_auth();
+        Self::require_active_facility(&env, &indicated_by)?;
 
         if !Self::is_valid_precaution(&env, &precaution_type) {
             return Err(Error::InvalidPrecautionType);
@@ -488,13 +515,16 @@ impl HAITrackingContract {
         discontinued_by: Address,
         reason: String,
     ) -> Result<(), Error> {
-        discontinued_by.require_auth();
-
         let mut precaution: IsolationPrecaution = env
             .storage()
             .persistent()
             .get(&DataKey::IsolationPrecaution(precaution_id))
             .ok_or(Error::NotFound)?;
+
+        if discontinued_by != precaution.indicated_by {
+            return Err(Error::NotAuthorized);
+        }
+        Self::require_active_facility(&env, &discontinued_by)?;
 
         if !precaution.active {
             return Err(Error::InvalidData);
@@ -505,9 +535,11 @@ impl HAITrackingContract {
             .persistent()
             .set(&DataKey::IsolationPrecaution(precaution_id), &precaution);
 
+        env.storage().persistent().set(&DataKey::DiscontinuedBy(precaution_id), &discontinued_by);
+
         env.events().publish(
             (Symbol::new(&env, "precaution_discontinued"), precaution_id),
-            (discontinued_by, reason, precaution.patient_id),
+            (discontinued_by, reason),
         );
 
         Ok(())
@@ -519,6 +551,7 @@ impl HAITrackingContract {
         patient_days: u32,
         recorded_by: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         recorded_by.require_auth();
 
         let mut case = Self::get_infection_case_internal(&env, infection_id)?;
@@ -551,6 +584,7 @@ impl HAITrackingContract {
         ventilator_days: u32,
         recorded_by: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         recorded_by.require_auth();
         if recorded_by != facility_id {
             return Err(Error::NotAuthorized);
@@ -625,6 +659,7 @@ impl HAITrackingContract {
         compliant_actions: u32,
         observer: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         observer.require_auth();
 
         if opportunities == 0 || compliant_actions > opportunities {
@@ -661,6 +696,7 @@ impl HAITrackingContract {
         time_period_end: u64,
         unit: Option<String>,
     ) -> Result<InfectionRate, Error> {
+        ttl_config::extend_instance_ttl(&env);
         if time_period_start > time_period_end {
             return Err(Error::InvalidData);
         }
@@ -815,6 +851,7 @@ impl HAITrackingContract {
         infection_data_hash: BytesN<32>,
         device_utilization_hash: BytesN<32>,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         facility_id.require_auth();
         let report_id = Self::next_id(&env, symbol_short!("nhsn_ctr"));
         let report = NhsnReport {
@@ -840,6 +877,7 @@ impl HAITrackingContract {
         patient_days: u32,
         reporting_period: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         facility_id.require_auth();
         if patient_days == 0 {
             return Err(Error::DivisionByZero);
@@ -873,6 +911,7 @@ impl HAITrackingContract {
         alert_details: String,
         priority: Symbol,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         if !Self::is_valid_priority(&env, &priority) {
             return Err(Error::InvalidPriority);
         }
@@ -922,6 +961,7 @@ impl HAITrackingContract {
         threshold_multiplier_x100: u32,
         baseline_rate_x100: i64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         facility_id.require_auth();
         if window_days == 0 || threshold_multiplier_x100 == 0 || baseline_rate_x100 <= 0 {
             return Err(Error::InvalidData);
@@ -1086,7 +1126,7 @@ impl HAITrackingContract {
     }
 
     fn next_id(env: &Env, counter_key: Symbol) -> u64 {
-        shared_contracts::safe_increment(env, &counter_key)
+        shared::counters::safe_increment(env, &counter_key)
     }
 
     fn push_id(env: &Env, list_key: DataKey, id: u64) {

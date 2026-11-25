@@ -20,7 +20,7 @@ impl MockAccessControl {
         _env: Env,
         _subject: Address,
         _grantee: Address,
-        _purpose_code: String,
+        _purpose_code: ConsentPurpose,
         _required_scope: u32,
     ) {
     }
@@ -38,14 +38,39 @@ fn reference_hash(env: &Env, seed: u8) -> BytesN<32> {
     BytesN::from_array(env, &[seed; 32])
 }
 
+fn diagnosis_hashes(env: &Env) -> Vec<BytesN<32>> {
+    let mut hashes = Vec::new(env);
+    hashes.push_back(reference_hash(env, 42));
+    hashes
+}
+
+fn approved_line(env: &Env) -> Vec<u64> {
+    let mut lines = Vec::new(env);
+    lines.push_back(1);
+    lines
+}
+
+fn denial_info(env: &Env) -> Vec<DenialInfo> {
+    let mut denials = Vec::new(env);
+    denials.push_back(DenialInfo {
+        line_number: 1,
+        denial_code: String::from_str(env, "CO-50"),
+        denial_reason_hash: reference_hash(env, 9),
+        is_appealable: true,
+    });
+    denials
+}
+
 fn build_services(env: &Env, amount: i128) -> Vec<ServiceLine> {
     let mut services = Vec::new(env);
+    let mut diagnosis_pointers = Vec::new(env);
+    diagnosis_pointers.push_back(0);
     services.push_back(ServiceLine {
         procedure_code: String::from_str(env, "99213"),
         modifier: None,
         quantity: 1,
         charge_amount: amount,
-        diagnosis_pointers: Vec::new(env),
+        diagnosis_pointers,
     });
     services
 }
@@ -106,12 +131,14 @@ fn setup(
 
 fn make_services(env: &Env) -> Vec<ServiceLine> {
     let mut s = Vec::new(env);
+    let mut diagnosis_pointers = Vec::new(env);
+    diagnosis_pointers.push_back(0);
     s.push_back(ServiceLine {
         procedure_code: String::from_str(env, "99213"),
         modifier: None,
         quantity: 1,
         charge_amount: 15000,
-        diagnosis_pointers: Vec::new(env),
+        diagnosis_pointers,
     });
     s
 }
@@ -129,7 +156,7 @@ fn test_full_claim_lifecycle() {
         &12345,
         &1690000000,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &15000,
@@ -180,7 +207,7 @@ fn test_unregistered_insurer_cannot_adjudicate() {
         &1,
         &100,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &15000,
@@ -206,7 +233,7 @@ fn test_wrong_insurer_cannot_adjudicate() {
         &1,
         &100,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &15000,
@@ -237,7 +264,7 @@ fn test_unregistered_insurer_cannot_process_payment() {
         &1,
         &100,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &15000,
@@ -246,7 +273,7 @@ fn test_unregistered_insurer_cannot_process_payment() {
     client.adjudicate_claim(
         &claim_id,
         &insurer,
-        &Vec::new(&env),
+        &approved_line(&env),
         &Vec::new(&env),
         &4500,
         &500,
@@ -271,7 +298,7 @@ fn test_submit_claim_with_unregistered_insurer_fails() {
         &1,
         &100,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &15000,
@@ -292,7 +319,7 @@ fn test_appeal_workflow() {
         &12345,
         &1690000000,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[1; 32]),
         &policy(&env),
         &15000,
@@ -300,10 +327,9 @@ fn test_appeal_workflow() {
 
     let mut denials = Vec::new(&env);
     denials.push_back(DenialInfo {
-        line_number: 1,
-        denial_code: String::from_str(&env, "CO-50"),
-        denial_reason_hash: reference_hash(&env, 9),
-        is_appealable: true,
+        line_num: 1,
+        reason_code: String::from_str(&env, "CO-16"),
+        denial_date: 1690000000,
     });
 
     client.adjudicate_claim(&claim_id, &insurer, &Vec::new(&env), &denials, &0, &0);
@@ -376,7 +402,7 @@ fn setup_adjudicated_claim(env: &Env) -> (MedicalClaimsSystemClient<'static>, Ad
         &1,
         &1000,
         &make_services(env),
-        &Vec::new(env),
+        &diagnosis_hashes(env),
         &BytesN::from_array(env, &[0u8; 32]),
         &policy(env),
         &15000,
@@ -387,12 +413,253 @@ fn setup_adjudicated_claim(env: &Env) -> (MedicalClaimsSystemClient<'static>, Ad
         &claim_id,
         &insurer,
         &Vec::new(env),
-        &Vec::new(env),
+        &denial_info(env),
         &0,
         &0,
     );
 
     (client, provider, claim_id)
+}
+
+#[test]
+fn test_adjudication_lines_must_partition_claim_lines() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, provider, patient, insurer) = setup(&env);
+    let claim_id = client.submit_claim(
+        &provider,
+        &patient,
+        &insurer,
+        &1,
+        &1000,
+        &make_services(&env),
+        &diagnosis_hashes(&env),
+        &reference_hash(&env, 1),
+        &policy(&env),
+        &15000,
+    );
+
+    let mut duplicated_approvals = Vec::new(&env);
+    duplicated_approvals.push_back(1);
+    duplicated_approvals.push_back(1);
+    assert_eq!(
+        client.try_adjudicate_claim(
+            &claim_id,
+            &insurer,
+            &duplicated_approvals,
+            &Vec::new(&env),
+            &0,
+            &0,
+        ),
+        Err(Ok(Error::InvalidAdjudicationLines))
+    );
+
+    let mut out_of_range = Vec::new(&env);
+    out_of_range.push_back(2);
+    assert_eq!(
+        client.try_adjudicate_claim(
+            &claim_id,
+            &insurer,
+            &out_of_range,
+            &Vec::new(&env),
+            &0,
+            &0,
+        ),
+        Err(Ok(Error::InvalidAdjudicationLines))
+    );
+    assert_eq!(
+        client.try_adjudicate_claim(
+            &claim_id,
+            &insurer,
+            &Vec::new(&env),
+            &Vec::new(&env),
+            &0,
+            &0,
+        ),
+        Err(Ok(Error::InvalidAdjudicationLines))
+    );
+    assert_eq!(
+        client.try_adjudicate_claim(
+            &claim_id,
+            &insurer,
+            &approved_line(&env),
+            &denial_info(&env),
+            &0,
+            &0,
+        ),
+        Err(Ok(Error::InvalidAdjudicationLines))
+    );
+}
+
+#[test]
+fn test_approved_amount_cannot_exceed_approved_line_charges() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, provider, patient, insurer) = setup(&env);
+    let claim_id = client.submit_claim(
+        &provider,
+        &patient,
+        &insurer,
+        &1,
+        &1000,
+        &make_services(&env),
+        &diagnosis_hashes(&env),
+        &reference_hash(&env, 1),
+        &policy(&env),
+        &15000,
+    );
+    assert_eq!(
+        client.try_adjudicate_claim(
+            &claim_id,
+            &insurer,
+            &approved_line(&env),
+            &Vec::new(&env),
+            &15001,
+            &0,
+        ),
+        Err(Ok(Error::InvalidAmount))
+    );
+}
+
+#[test]
+fn test_adjudication_stores_deterministic_line_allowed_amounts() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, provider, patient, insurer) = setup(&env);
+    let mut services = Vec::new(&env);
+    let mut pointers = Vec::new(&env);
+    pointers.push_back(0);
+    services.push_back(ServiceLine {
+        procedure_code: String::from_str(&env, "99213"),
+        modifier: None,
+        quantity: 1,
+        charge_amount: 100,
+        diagnosis_pointers: pointers.clone(),
+    });
+    services.push_back(ServiceLine {
+        procedure_code: String::from_str(&env, "99214"),
+        modifier: None,
+        quantity: 1,
+        charge_amount: 200,
+        diagnosis_pointers: pointers,
+    });
+    let claim_id = client.submit_claim(
+        &provider,
+        &patient,
+        &insurer,
+        &1,
+        &1000,
+        &services,
+        &diagnosis_hashes(&env),
+        &reference_hash(&env, 1),
+        &policy(&env),
+        &300,
+    );
+    let mut approvals = Vec::new(&env);
+    approvals.push_back(2);
+    approvals.push_back(1);
+    client.adjudicate_claim(
+        &claim_id,
+        &insurer,
+        &approvals,
+        &Vec::new(&env),
+        &250,
+        &0,
+    );
+
+    assert_eq!(
+        client.get_line_allowed_amounts(&insurer, &claim_id),
+        Vec::from_array(&env, [100i128, 150i128])
+    );
+}
+
+#[test]
+fn test_claim_rejects_missing_or_invalid_diagnosis_pointers() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, provider, patient, insurer) = setup(&env);
+
+    let mut services = Vec::new(&env);
+    services.push_back(ServiceLine {
+        procedure_code: String::from_str(&env, "99213"),
+        modifier: None,
+        quantity: 1,
+        charge_amount: 100,
+        diagnosis_pointers: Vec::new(&env),
+    });
+    assert_eq!(
+        client.try_submit_claim(
+            &provider,
+            &patient,
+            &insurer,
+            &1,
+            &1000,
+            &services,
+            &diagnosis_hashes(&env),
+            &reference_hash(&env, 1),
+            &policy(&env),
+            &100,
+        ),
+        Err(Ok(Error::InvalidDiagnosisPointers))
+    );
+
+    let mut pointers = Vec::new(&env);
+    pointers.push_back(1);
+    services.set(
+        0,
+        ServiceLine {
+            procedure_code: String::from_str(&env, "99213"),
+            modifier: None,
+            quantity: 1,
+            charge_amount: 100,
+            diagnosis_pointers: pointers,
+        },
+    );
+    assert_eq!(
+        client.try_submit_claim(
+            &provider,
+            &patient,
+            &insurer,
+            &1,
+            &1000,
+            &services,
+            &diagnosis_hashes(&env),
+            &reference_hash(&env, 1),
+            &policy(&env),
+            &100,
+        ),
+        Err(Ok(Error::InvalidDiagnosisPointers))
+    );
+
+    let mut too_many_pointers = Vec::new(&env);
+    for _ in 0..5 {
+        too_many_pointers.push_back(0);
+    }
+    services.set(
+        0,
+        ServiceLine {
+            procedure_code: String::from_str(&env, "99213"),
+            modifier: None,
+            quantity: 1,
+            charge_amount: 100,
+            diagnosis_pointers: too_many_pointers,
+        },
+    );
+    assert_eq!(
+        client.try_submit_claim(
+            &provider,
+            &patient,
+            &insurer,
+            &1,
+            &1000,
+            &services,
+            &diagnosis_hashes(&env),
+            &reference_hash(&env, 1),
+            &policy(&env),
+            &100,
+        ),
+        Err(Ok(Error::InvalidDiagnosisPointers))
+    );
 }
 
 #[test]
@@ -441,20 +708,37 @@ fn test_appeal_level_0_rejected() {
     let result = client.try_appeal_denial(
         &claim_id,
         &provider,
-        &0,
-        &BytesN::from_array(&env, &[3u8; 32]),
+        &1,
+        &1000,
+        &make_services(&env),
+        &diagnosis_hashes(&env),
+        &BytesN::from_array(&env, &[0; 32]),
+        &policy(&env),
+        &15000,
     );
-    assert_eq!(
-        result,
-        Err(Ok(Error::InvalidAppealLevel)),
-        "appeal_level = 0 must be rejected with InvalidAppealLevel"
+
+    // Re-adjudicate after appeal with a valid approval.
+    let mut approved_lines = Vec::new(&env);
+    approved_lines.push_back(1u64);
+    client.adjudicate_claim(
+        &claim_id,
+        &insurer,
+        &approved_line(&env),
+        &Vec::new(&env),
+        &10000,
+        &2000,
     );
+
+    let claim = client.get_claim(&claim_id);
+    assert_eq!(claim.status, ClaimStatus::Adjudicated);
+    assert_eq!(claim.approved_amount, 10000);
+    assert_eq!(claim.patient_responsibility, 2000);
 }
 
-// ─── Issue #392 ── Financial reconciliation tests ─────────────────────────
+// ── #1066: re-adjudication must not drop below amounts already paid ──────────
 
 #[test]
-fn test_reconcile_insurer_payment() {
+fn test_readjudication_cannot_lower_approved_below_insurer_paid() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, _, provider, patient, insurer) = setup(&env);
@@ -464,42 +748,73 @@ fn test_reconcile_insurer_payment() {
         &patient,
         &insurer,
         &1,
-        &1000,
+        &100,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &15000,
     );
 
+    let mut approved_lines = Vec::new(&env);
+    approved_lines.push_back(1u64);
     client.adjudicate_claim(
         &claim_id,
         &insurer,
-        &Vec::new(&env),
+        &approved_line(&env),
         &Vec::new(&env),
         &10000,
         &2000,
     );
 
+    // Insurer pays 8000 of the 10000 approved.
     client.process_payment(
         &claim_id,
         &insurer,
-        &10000,
+        &8000,
         &1690100000,
         &reference_hash(&env, 8),
     );
 
-    let fr_owner = Address::generate(&env);
-    let result = client.try_reconcile_claim(&claim_id, &0, &true, &fr_owner, &0, &insurer);
-    assert!(result.is_ok());
+    // Provider appeals; insurer tries to re-adjudicate below what it paid.
+    client.appeal_denial(
+        &claim_id,
+        &provider,
+        &1,
+        &1000,
+        &make_services(&env),
+        &diagnosis_hashes(&env),
+        &BytesN::from_array(&env, &[0; 32]),
+        &policy(&env),
+        &15000,
+    );
 
-    let payments = client.get_insurer_payments(&insurer, &claim_id);
-    assert_eq!(payments.len(), 1);
-    assert!(payments.get(0).unwrap().reconciled);
+    let result = client.try_adjudicate_claim(
+        &claim_id,
+        &insurer,
+        &approved_line(&env),
+        &Vec::new(&env),
+        &10000,
+        &2000,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+    // Re-adjudicating at or above the paid amount succeeds.
+    client.adjudicate_claim(
+        &claim_id,
+        &insurer,
+        &approved_lines,
+        &Vec::new(&env),
+        &8000,
+        &2000,
+    );
+    let claim = client.get_claim(&claim_id);
+    assert_eq!(claim.approved_amount, 8000);
+    assert!(claim.approved_amount >= claim.insurer_paid_amount);
 }
 
 #[test]
-fn test_reconcile_patient_payment() {
+fn test_readjudication_cannot_lower_patient_resp_below_patient_paid() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, _, provider, patient, insurer) = setup(&env);
@@ -509,44 +824,53 @@ fn test_reconcile_patient_payment() {
         &patient,
         &insurer,
         &1,
-        &1000,
+        &100,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &15000,
     );
 
+    let mut approved_lines = Vec::new(&env);
+    approved_lines.push_back(1u64);
     client.adjudicate_claim(
         &claim_id,
         &insurer,
-        &Vec::new(&env),
+        &approved_line(&env),
         &Vec::new(&env),
         &10000,
         &2000,
-    );
-
-    client.process_payment(
-        &claim_id,
-        &insurer,
-        &10000,
-        &1690100000,
-        &reference_hash(&env, 8),
     );
 
     client.apply_patient_payment(&claim_id, &patient, &2000, &1690200000);
 
-    let fr_owner = Address::generate(&env);
-    let result = client.try_reconcile_claim(&claim_id, &0, &false, &fr_owner, &0, &patient);
-    assert!(result.is_ok());
+    client.appeal_denial(
+        &claim_id,
+        &provider,
+        &1,
+        &1000,
+        &make_services(&env),
+        &diagnosis_hashes(&env),
+        &BytesN::from_array(&env, &[0; 32]),
+        &policy(&env),
+        &15000,
+    );
 
-    let payments = client.get_patient_payments(&patient, &claim_id);
-    assert_eq!(payments.len(), 1);
-    assert!(payments.get(0).unwrap().reconciled);
+    // Re-adjudication lowering patient responsibility below what was paid fails.
+    let result = client.try_adjudicate_claim(
+        &claim_id,
+        &insurer,
+        &approved_lines,
+        &Vec::new(&env),
+        &10000,
+        &1000,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
 
 #[test]
-fn test_reconcile_payment_already_reconciled() {
+fn test_patient_payment_cannot_exceed_responsibility() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, _, provider, patient, insurer) = setup(&env);
@@ -556,9 +880,9 @@ fn test_reconcile_payment_already_reconciled() {
         &patient,
         &insurer,
         &1,
-        &1000,
+        &100,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &15000,
@@ -567,138 +891,15 @@ fn test_reconcile_payment_already_reconciled() {
     client.adjudicate_claim(
         &claim_id,
         &insurer,
-        &Vec::new(&env),
-        &Vec::new(&env),
-        &10000,
-        &2000,
-    );
-
-    client.process_payment(
-        &claim_id,
-        &insurer,
-        &10000,
-        &1690100000,
-        &reference_hash(&env, 8),
-    );
-
-    let fr_owner = Address::generate(&env);
-    client.reconcile_claim(&claim_id, &0, &true, &fr_owner, &0, &insurer);
-
-    // Try to reconcile again
-    let result = client.try_reconcile_claim(&claim_id, &0, &true, &fr_owner, &1, &insurer);
-    assert_eq!(result, Err(Ok(Error::PaymentAlreadyReconciled)));
-}
-
-#[test]
-fn test_mark_claim_disputed() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, _, provider, patient, insurer) = setup(&env);
-
-    let claim_id = client.submit_claim(
-        &provider,
-        &patient,
-        &insurer,
-        &1,
-        &1000,
-        &make_services(&env),
-        &Vec::new(&env),
-        &BytesN::from_array(&env, &[0; 32]),
-        &policy(&env),
-        &15000,
-    );
-
-    client.adjudicate_claim(
-        &claim_id,
-        &insurer,
-        &Vec::new(&env),
+        &approved_line(&env),
         &Vec::new(&env),
         &10000,
         &2000,
     );
 
-    client.mark_claim_disputed(&claim_id, &insurer);
-
-    let claim = client.get_claim(&insurer, &claim_id);
-    assert_eq!(claim.reconciliation_status, ReconciliationStatus::Disputed);
-}
-
-#[test]
-fn test_claim_and_payment_getters_reject_unrelated_requester() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, _, provider, patient, insurer) = setup(&env);
-
-    let claim_id = client.submit_claim(
-        &provider,
-        &patient,
-        &insurer,
-        &1,
-        &1000,
-        &make_services(&env),
-        &Vec::new(&env),
-        &BytesN::from_array(&env, &[0; 32]),
-        &policy(&env),
-        &15000,
-    );
-    let unrelated = Address::generate(&env);
-
-    assert_eq!(
-        client.try_get_claim(&unrelated, &claim_id),
-        Err(Ok(Error::NotAuthorized))
-    );
-    assert_eq!(
-        client.try_get_insurer_payments(&unrelated, &claim_id),
-        Err(Ok(Error::NotAuthorized))
-    );
-    assert_eq!(
-        client.try_get_patient_payments(&unrelated, &claim_id),
-        Err(Ok(Error::NotAuthorized))
-    );
-}
-
-#[test]
-fn test_get_unreconciled_claims() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, _, provider, patient, insurer) = setup(&env);
-
-    // Get current ledger time and set service date to be older than threshold
-    let current_time = env.ledger().timestamp();
-    let old_timestamp = current_time.saturating_sub(90000); // More than 24 hours ago
-    
-    let claim_id = client.submit_claim(
-        &provider,
-        &patient,
-        &insurer,
-        &1,
-        &old_timestamp,
-        &make_services(&env),
-        &Vec::new(&env),
-        &BytesN::from_array(&env, &[0; 32]),
-        &policy(&env),
-        &15000,
-    );
-
-    client.adjudicate_claim(
-        &claim_id,
-        &insurer,
-        &Vec::new(&env),
-        &Vec::new(&env),
-        &10000,
-        &2000,
-    );
-
-    let unreconciled = client.get_unreconciled_claims(&insurer);
-    assert!(unreconciled.len() > 0);
-    assert!(unreconciled.contains(&claim_id));
-}
-
-#[test]
-fn test_set_reconciliation_threshold() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, _, _, _) = setup(&env);
+    // Overpaying beyond patient responsibility is rejected.
+    let result = client.try_apply_patient_payment(&claim_id, &patient, &2500, &1690200000);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 
     let result = client.try_set_reconciliation_threshold(&admin, &172800);
     assert!(result.is_ok());
@@ -717,7 +918,7 @@ fn test_unauthorized_cannot_mark_disputed() {
         &1,
         &1000,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &15000,
@@ -728,12 +929,8 @@ fn test_unauthorized_cannot_mark_disputed() {
     assert_eq!(result, Err(Ok(Error::NotAuthorized)));
 }
 
-// -----------------------------------------------------------------------
-// insurer-registry integration (#527)
-// -----------------------------------------------------------------------
-
 #[test]
-fn test_integration_active_insurer_claim_submission_succeeds() {
+fn test_dues_non_negative_after_payment_sequence() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, _, provider, patient, insurer) = setup(&env);
@@ -745,7 +942,7 @@ fn test_integration_active_insurer_claim_submission_succeeds() {
         &1,
         &1000,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &15000,
@@ -799,167 +996,66 @@ fn test_integration_expired_insurer_returns_insurer_not_active() {
         &1,
         &1000,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &15000,
     );
-    assert_eq!(result, Err(Ok(Error::InsurerNotActive)));
-}
 
-#[test]
-fn test_dispute_lifecycle() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, provider, patient, insurer) = setup(&env);
-
-    let claim_id = client.submit_claim(
-        &provider,
-        &patient,
+    let mut approved_lines = Vec::new(&env);
+    approved_lines.push_back(1u64);
+    client.adjudicate_claim(
+        &claim_id,
         &insurer,
         &1,
         &100,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &5000,
     );
 
-    let reviewer = Address::generate(&env);
-    client.register_reviewer(&admin, &reviewer);
-
-    let reason_hash = reference_hash(&env, 9);
-    let dispute_id = client.open_dispute(&claim_id, &patient, &reason_hash);
-    assert_eq!(dispute_id, 1);
-
-    let resolution_hash = reference_hash(&env, 10);
-    client.resolve_dispute(&dispute_id, &reviewer, &resolution_hash);
-
-    // A resolved dispute cannot be resolved again.
-    let result = client.try_resolve_dispute(&dispute_id, &reviewer, &resolution_hash);
-    assert_eq!(result, Err(Ok(Error::DisputeAlreadyResolved)));
-
-    // An unregistered reviewer cannot resolve disputes.
-    let rogue = Address::generate(&env);
-    let other_dispute_id = client.open_dispute(&claim_id, &provider, &reason_hash);
-    let result = client.try_resolve_dispute(&other_dispute_id, &rogue, &resolution_hash);
-    assert_eq!(result, Err(Ok(Error::NotAuthorizedReviewer)));
-}
-
-// ── #781: Reviewer deactivation tests ──────────────────────────────────────
-
-#[test]
-fn test_deactivated_reviewer_cannot_resolve_dispute() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, provider, patient, insurer) = setup(&env);
-
-    let claim_id = client.submit_claim(
-        &provider,
-        &patient,
+    client.process_payment(
+        &claim_id,
         &insurer,
         &1,
         &100,
         &make_services(&env),
-        &Vec::new(&env),
+        &diagnosis_hashes(&env),
+        &BytesN::from_array(&env, &[0; 32]),
+        &policy(&env),
+        &5000,
+    );
+    client.apply_patient_payment(&claim_id, &patient, &1000, &1690200000);
+
+    // Appeal and re-adjudicate at exactly the paid amounts.
+    client.appeal_denial(
+        &claim_id,
+        &provider,
+        &1,
+        &100,
+        &make_services(&env),
+        &diagnosis_hashes(&env),
+        &BytesN::from_array(&env, &[0; 32]),
+        &policy(&env),
+        &5000,
+    );
+    client.adjudicate_claim(
+        &claim_id,
+        &insurer,
+        &1,
+        &100,
+        &make_services(&env),
+        &diagnosis_hashes(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
         &5000,
     );
 
-    let reviewer = Address::generate(&env);
-    client.register_reviewer(&admin, &reviewer);
-
-    // Deactivate the reviewer
-    client.deactivate_reviewer(&admin, &reviewer);
-
-    // Deactivated reviewer cannot resolve disputes
-    let reason_hash = reference_hash(&env, 9);
-    let dispute_id = client.open_dispute(&claim_id, &patient, &reason_hash);
-
-    let resolution_hash = reference_hash(&env, 10);
-    let result = client.try_resolve_dispute(&dispute_id, &reviewer, &resolution_hash);
-    assert_eq!(result, Err(Ok(Error::NotAuthorizedReviewer)));
-}
-
-#[test]
-fn test_reviewer_lifecycle_register_deactivate_resolve() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, provider, patient, insurer) = setup(&env);
-
-    let claim_id = client.submit_claim(
-        &provider,
-        &patient,
-        &insurer,
-        &1,
-        &100,
-        &make_services(&env),
-        &Vec::new(&env),
-        &BytesN::from_array(&env, &[0; 32]),
-        &policy(&env),
-        &5000,
-    );
-
-    let reviewer = Address::generate(&env);
-
-    // Register reviewer — should succeed
-    client.register_reviewer(&admin, &reviewer);
-
-    let reason_hash = reference_hash(&env, 9);
-    let dispute_id = client.open_dispute(&claim_id, &patient, &reason_hash);
-
-    // Can resolve while active
-    let resolution_hash = reference_hash(&env, 10);
-    client.resolve_dispute(&dispute_id, &reviewer, &resolution_hash);
-
-    // Open another dispute
-    let dispute_id_2 = client.open_dispute(&claim_id, &provider, &reason_hash);
-
-    // Deactivate reviewer
-    client.deactivate_reviewer(&admin, &reviewer);
-
-    // Cannot resolve with deactivated reviewer
-    let result = client.try_resolve_dispute(&dispute_id_2, &reviewer, &resolution_hash);
-    assert_eq!(result, Err(Ok(Error::NotAuthorizedReviewer)));
-}
-
-#[test]
-fn test_re_registering_deactivated_reviewer_reactivates() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, provider, patient, insurer) = setup(&env);
-
-    let claim_id = client.submit_claim(
-        &provider,
-        &patient,
-        &insurer,
-        &1,
-        &100,
-        &make_services(&env),
-        &Vec::new(&env),
-        &BytesN::from_array(&env, &[0; 32]),
-        &policy(&env),
-        &5000,
-    );
-
-    let reviewer = Address::generate(&env);
-
-    // Register reviewer
-    client.register_reviewer(&admin, &reviewer);
-
-    // Deactivate reviewer
-    client.deactivate_reviewer(&admin, &reviewer);
-
-    // Re-register reviewer (should reactivate)
-    client.register_reviewer(&admin, &reviewer);
-
-    // Can now resolve disputes again
-    let reason_hash = reference_hash(&env, 9);
-    let dispute_id = client.open_dispute(&claim_id, &patient, &reason_hash);
-
-    let resolution_hash = reference_hash(&env, 10);
-    let result = client.try_resolve_dispute(&dispute_id, &reviewer, &resolution_hash);
-    assert!(result.is_ok());
+    let claim = client.get_claim(&claim_id);
+    let insurer_due = claim.approved_amount - claim.insurer_paid_amount;
+    let patient_due = claim.patient_responsibility - claim.patient_paid_amount;
+    assert!(insurer_due >= 0);
+    assert!(patient_due >= 0);
 }

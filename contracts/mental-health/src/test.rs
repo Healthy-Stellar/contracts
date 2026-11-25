@@ -745,3 +745,182 @@ fn test_two_outcomes_same_day_both_retained() {
     assert_eq!(id2, 2);
 }
 
+// ── Consent revocation (#877 / #1173) ─────────────────────────────────────────
+
+#[test]
+fn test_revoke_consent_blocks_subsequent_access() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MentalHealthContract, (None::<Address>,));
+    let client = MentalHealthContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+
+    // Grant consent for assessment
+    grant_consent(&env, &client, &patient_id, "assessment", &provider_id);
+
+    // Access should succeed while consent is active
+    let assessment_id = client.conduct_mental_health_assessment(
+        &patient_id,
+        &provider_id,
+        &1690000000,
+        &Symbol::new(&env, "initial"),
+        &vec![&env, String::from_str(&env, "anxiety")],
+        &vec![&env, Symbol::new(&env, "PHQ9")],
+        &BytesN::from_array(&env, &[0; 32]),
+    );
+    assert_eq!(assessment_id, 1);
+
+    // Patient revokes consent
+    client.revoke_data_consent(
+        &patient_id,
+        &Symbol::new(&env, "assessment"),
+        &provider_id,
+    );
+
+    // Access must now be denied immediately
+    let result = client.try_conduct_mental_health_assessment(
+        &patient_id,
+        &provider_id,
+        &1690000001,
+        &Symbol::new(&env, "followup"),
+        &vec![&env, String::from_str(&env, "anxiety")],
+        &vec![&env, Symbol::new(&env, "PHQ9")],
+        &BytesN::from_array(&env, &[1; 32]),
+    );
+    assert_eq!(result, Err(Ok(Error::RequiresExplicitConsent)));
+}
+
+#[test]
+fn test_revoke_consent_blocks_crisis_escalation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MentalHealthContract, (None::<Address>,));
+    let client = MentalHealthContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+
+    grant_consent(&env, &client, &patient_id, "safety_plan", &provider_id);
+
+    // Revoke before creating the safety plan
+    client.revoke_data_consent(
+        &patient_id,
+        &Symbol::new(&env, "safety_plan"),
+        &provider_id,
+    );
+
+    let result = client.try_create_safety_plan(
+        &patient_id,
+        &provider_id,
+        &vec![&env, String::from_str(&env, "isolation")],
+        &vec![&env, String::from_str(&env, "call a friend")],
+        &vec![&env, String::from_str(&env, "John Doe")],
+        &vec![&env, String::from_str(&env, "Suicide Hotline")],
+        &BytesN::from_array(&env, &[2; 32]),
+    );
+    assert_eq!(result, Err(Ok(Error::RequiresExplicitConsent)));
+}
+
+#[test]
+fn test_revoke_consent_blocks_score_recording() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MentalHealthContract, (None::<Address>,));
+    let client = MentalHealthContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+
+    grant_consent(&env, &client, &patient_id, "assessment", &provider_id);
+    grant_consent(&env, &client, &patient_id, "phq9", &provider_id);
+
+    let assessment_id = client.conduct_mental_health_assessment(
+        &patient_id,
+        &provider_id,
+        &1690000000,
+        &Symbol::new(&env, "initial"),
+        &vec![&env, String::from_str(&env, "anxiety")],
+        &vec![&env, Symbol::new(&env, "PHQ9")],
+        &BytesN::from_array(&env, &[0; 32]),
+    );
+
+    // Revoke the phq9 consent
+    client.revoke_data_consent(
+        &patient_id,
+        &Symbol::new(&env, "phq9"),
+        &provider_id,
+    );
+
+    let result = client.try_record_phq9_score(
+        &assessment_id,
+        &provider_id,
+        &15,
+        &vec![&env, 3, 3, 3, 3, 3],
+        &1690000000,
+    );
+    assert_eq!(result, Err(Ok(Error::RequiresExplicitConsent)));
+}
+
+#[test]
+fn test_revoke_nonexistent_consent_returns_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MentalHealthContract, (None::<Address>,));
+    let client = MentalHealthContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+
+    // No consent was ever granted; revoking must fail
+    let result = client.try_revoke_data_consent(
+        &patient_id,
+        &Symbol::new(&env, "assessment"),
+        &provider_id,
+    );
+    assert_eq!(result, Err(Ok(Error::ConsentNotFound)));
+}
+
+#[test]
+fn test_revoke_consent_twice_returns_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MentalHealthContract, (None::<Address>,));
+    let client = MentalHealthContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+
+    grant_consent(&env, &client, &patient_id, "assessment", &provider_id);
+
+    client.revoke_data_consent(
+        &patient_id,
+        &Symbol::new(&env, "assessment"),
+        &provider_id,
+    );
+
+    // Second revoke must fail since consent is already gone
+    let result = client.try_revoke_data_consent(
+        &patient_id,
+        &Symbol::new(&env, "assessment"),
+        &provider_id,
+    );
+    assert_eq!(result, Err(Ok(Error::ConsentNotFound)));
+}
+
+#[test]
+#[should_panic(expected = "HostError: Error(Auth, InvalidAction)")]
+fn test_revoke_consent_requires_patient_auth() {
+    let env = Env::default();
+    // env.mock_all_auths() is NOT called, so auth will fail
+    let contract_id = env.register(MentalHealthContract, (None::<Address>,));
+    let client = MentalHealthContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env

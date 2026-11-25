@@ -78,17 +78,16 @@ fn test_telemedicine_lifecycle() {
 
     // 3. Start Session
     let session_start_time = 1700000010;
-    let token = client.start_virtual_session(
+    client.start_virtual_session(
         &visit_id,
         &provider_id,
         &session_start_time,
         &String::from_str(&env, "NY"),
         &String::from_str(&env, "NY"),
     );
-    assert_ne!(token, BytesN::from_array(&env, &[0; 32]));
-    client.validate_session_token(&visit_id, &provider_id, &token);
+    client.consume_session(&visit_id, &provider_id);
 
-    let replay = client.try_validate_session_token(&visit_id, &provider_id, &token);
+    let replay = client.try_consume_session(&visit_id, &provider_id);
     assert_eq!(replay, Err(Ok(crate::types::Error::SessionAlreadyUsed)));
 
     // 4. Record technical issue
@@ -198,7 +197,7 @@ fn test_auth_and_eligibility_failures() {
 }
 
 #[test]
-fn test_session_tokens_are_unique_bound_expiring_and_non_replayable() {
+fn test_sessions_are_provider_bound_expiring_and_non_replayable() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -246,36 +245,34 @@ fn test_session_tokens_are_unique_bound_expiring_and_non_replayable() {
         &false,
     );
 
-    let token_one = client.start_virtual_session(
+    client.start_virtual_session(
         &visit_one,
         &provider_id,
         &1_700_000_100,
         &String::from_str(&env, "NY"),
         &String::from_str(&env, "NY"),
     );
-    let token_two = client.start_virtual_session(
+    client.start_virtual_session(
         &visit_two,
         &provider_id,
         &1_700_000_200,
         &String::from_str(&env, "NY"),
         &String::from_str(&env, "NY"),
     );
-    assert_ne!(token_one, token_two);
-
-    let wrong_caller = client.try_validate_session_token(&visit_one, &other_provider, &token_one);
+    let wrong_caller = client.try_consume_session(&visit_one, &other_provider);
     assert_eq!(
         wrong_caller,
-        Err(Ok(crate::types::Error::InvalidSessionToken))
+        Err(Ok(crate::types::Error::NotAuthorized))
     );
 
-    client.validate_session_token(&visit_one, &provider_id, &token_one);
-    let replay = client.try_validate_session_token(&visit_one, &provider_id, &token_one);
+    client.consume_session(&visit_one, &provider_id);
+    let replay = client.try_consume_session(&visit_one, &provider_id);
     assert_eq!(replay, Err(Ok(crate::types::Error::SessionAlreadyUsed)));
 
     env.ledger().with_mut(|li| {
         li.timestamp = 1_700_004_000;
     });
-    let expired = client.try_validate_session_token(&visit_two, &provider_id, &token_two);
+    let expired = client.try_consume_session(&visit_two, &provider_id);
     assert_eq!(expired, Err(Ok(crate::types::Error::SessionExpired)));
 }
 
@@ -671,6 +668,157 @@ fn test_register_license_admin_co_signature_succeeds() {
         &String::from_str(&env, "NY"),
     );
     assert!(eligibility.is_eligible);
+}
+
+// ── #974 / #1172 interstate-compact licence matching ─────────────────────────
+
+#[test]
+fn test_compact_state_in_middle_of_list_is_eligible() {
+    // Regression for #974/#1172: string_contains_state used to read the ScVal
+    // type tag as the content length, so a state in the middle of a
+    // comma-separated compact_members list never matched.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(TelemedicineContract, ());
+    let client = TelemedicineContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    // Provider is licensed in NY; patient is in CO, which is a member of the
+    // IMLC compact list but sits in the middle of it.
+    client.register_provider_license(
+        &admin,
+        &provider,
+        &String::from_str(&env, "NY"),
+        &String::from_str(&env, "LIC-NY-001"),
+        &0_u64,
+    );
+
+    client.set_jurisdiction_policy(
+        &admin,
+        &String::from_str(&env, "NY"),
+        &true,
+        &String::from_str(&env, "AL,AK,AZ,CO,CT,DE,FL,GA,ID,IA,KS,LA,ME,MD,MI,MN,MS,MO,NE,NV,NH,NJ,NM,NC,ND,OH,OK,PA,RI,SC,SD,TN,TX,UT,VT,VA,WA,WV,WI,WY"),
+    );
+
+    let eligibility = client.verify_telemedicine_eligibility(
+        &patient,
+        &provider,
+        &String::from_str(&env, "CO"),
+        &String::from_str(&env, "NY"),
+    );
+    assert!(
+        eligibility.is_eligible,
+        "provider licensed in a compact member state must be eligible"
+    );
+}
+
+#[test]
+fn test_compact_state_not_in_list_is_ineligible() {
+    // A state that is not a member of the compact list must not match.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(TelemedicineContract, ());
+    let client = TelemedicineContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    client.register_provider_license(
+        &admin,
+        &provider,
+        &String::from_str(&env, "NY"),
+        &String::from_str(&env, "LIC-NY-001"),
+        &0_u64,
+    );
+
+    client.set_jurisdiction_policy(
+        &admin,
+        &String::from_str(&env, "NY"),
+        &true,
+        &String::from_str(&env, "AL,AK,AZ,CO,CT,DE,FL,GA"),
+    );
+
+    // "NY" is not in the compact list.
+    let eligibility = client.verify_telemedicine_eligibility(
+        &patient,
+        &provider,
+        &String::from_str(&env, "NY"),
+        &String::from_str(&env, "NY"),
+    );
+    assert!(
+        !eligibility.is_eligible,
+        "state absent from the compact list must not be eligible"
+    );
+}
+
+#[test]
+fn test_compact_state_prefix_collision_does_not_match() {
+    // "CA" must not match a list entry "CAN" (prefix collision), and "CAN"
+    // must not match a list entry "CA".
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(TelemedicineContract, ());
+    let client = TelemedicineContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    client.register_provider_license(
+        &admin,
+        &provider,
+        &String::from_str(&env, "NY"),
+        &String::from_str(&env, "LIC-NY-001"),
+        &0_u64,
+    );
+
+    // List contains "CAN" but not "CA".
+    client.set_jurisdiction_policy(
+        &admin,
+        &String::from_str(&env, "NY"),
+        &true,
+        &String::from_str(&env, "CAN,NY"),
+    );
+
+    let eligibility = client.verify_telemedicine_eligibility(
+        &patient,
+        &provider,
+        &String::from_str(&env, "CA"),
+        &String::from_str(&env, "NY"),
+    );
+    assert!(
+        !eligibility.is_eligible,
+        "\"CA\" must not match the list entry \"CAN\""
+    );
+
+    // Reverse direction: list contains "CA" but not "CAN".
+    client.set_jurisdiction_policy(
+        &admin,
+        &String::from_str(&env, "NY"),
+        &true,
+        &String::from_str(&env, "CA,NY"),
+    );
+
+    let eligibility = client.verify_telemedicine_eligibility(
+        &patient,
+        &provider,
+        &String::from_str(&env, "CAN"),
+        &String::from_str(&env, "NY"),
+    );
+    assert!(
+        !eligibility.is_eligible,
+        "\"CAN\" must not match the list entry \"CA\""
+    );
 }
 
 #[test]

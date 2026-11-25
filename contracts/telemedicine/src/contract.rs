@@ -3,7 +3,7 @@ use crate::types::{
     ProviderSessionWindow, RateLimitConfig, SessionRecord, VirtualVisit, VisitStatus,
 };
 use soroban_sdk::{
-    contract, contractclient, contractimpl, panic_with_error, xdr::ToXdr, Address, Bytes, BytesN,
+    contract, contractclient, contractimpl, panic_with_error, xdr::ToXdr, Address, BytesN,
     Env, String, Symbol, Vec,
 };
 use ttl_config::{extend_critical_ttl, extend_critical_ttl_if_exists};
@@ -73,14 +73,9 @@ impl TelemedicineContract {
         Ok(())
     }
 
-    /// Initialize the telemedicine contract with an admin.
-    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
-        admin.require_auth();
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::NotAuthorized);
-        }
+    /// Set the telemedicine admin at deployment.
+    pub fn __constructor(env: Env, admin: Address) {
         env.storage().instance().set(&DataKey::Admin, &admin);
-        Ok(())
     }
 
     /// Set the rate limit configuration. Callable by the stored admin.
@@ -90,6 +85,7 @@ impl TelemedicineContract {
         max_sessions_per_window: u32,
         window_duration_secs: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -122,6 +118,7 @@ impl TelemedicineContract {
         consent_obtained: bool,
         recording_consent: bool,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         patient_id.require_auth();
 
         // Verify provider is actively registered in the provider-registry.
@@ -193,6 +190,7 @@ impl TelemedicineContract {
         provider_id: Address,
         recording_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let visit_key = DataKey::VirtualVisit(visit_id);
@@ -229,7 +227,7 @@ impl TelemedicineContract {
         session_start_time: u64,
         patient_location_state: String,
         provider_state: String,
-    ) -> Result<BytesN<32>, Error> {
+    ) -> Result<(), Error> {
         provider_id.require_auth();
 
         // Check rate limit: max sessions per provider per window
@@ -270,25 +268,7 @@ impl TelemedicineContract {
         env.storage().persistent().set(&visit_key, &visit);
         extend_critical_ttl(&env, &visit_key);
 
-        let nonce = env
-            .storage()
-            .instance()
-            .get::<_, u64>(&DataKey::SessionNonce)
-            .unwrap_or(0)
-            + 1;
-        env.storage().instance().set(&DataKey::SessionNonce, &nonce);
-
-        let token = compute_session_token(
-            &env,
-            visit_id,
-            &provider_id,
-            &visit.patient_id,
-            session_start_time,
-            nonce,
-        );
-        let token_hash = hash_token(&env, &token);
         let session = SessionRecord {
-            token_hash,
             visit_id,
             caller: provider_id.clone(),
             expires_at: session_start_time + SESSION_TTL_SECONDS,
@@ -301,15 +281,16 @@ impl TelemedicineContract {
         env.events()
             .publish((Symbol::new(&env, "session_started"), visit_id), ());
 
-        Ok(token)
+        Ok(())
     }
 
-    pub fn validate_session_token(
+    /// Consume an active session once, using provider authentication rather than a public token.
+    pub fn consume_session(
         env: Env,
         visit_id: u64,
         caller: Address,
-        token: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         caller.require_auth();
 
         let session_key = DataKey::Session(visit_id);
@@ -318,10 +299,10 @@ impl TelemedicineContract {
             .storage()
             .persistent()
             .get(&session_key)
-            .unwrap_or_else(|| panic_with_error!(&env, Error::InvalidSessionToken));
+            .unwrap_or_else(|| panic_with_error!(&env, Error::SessionRecordNotFound));
 
         if session.visit_id != visit_id || session.caller != caller {
-            panic_with_error!(&env, Error::InvalidSessionToken);
+            panic_with_error!(&env, Error::NotAuthorized);
         }
         if session.used {
             panic_with_error!(&env, Error::SessionAlreadyUsed);
@@ -329,10 +310,6 @@ impl TelemedicineContract {
         if env.ledger().timestamp() > session.expires_at {
             panic_with_error!(&env, Error::SessionExpired);
         }
-        if session.token_hash != hash_token(&env, &token) {
-            panic_with_error!(&env, Error::InvalidSessionToken);
-        }
-
         session.used = true;
         env.storage().persistent().set(&session_key, &session);
         extend_critical_ttl(&env, &session_key);
@@ -349,6 +326,7 @@ impl TelemedicineContract {
         assessment: String,
         plan: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let visit_key = DataKey::VirtualVisit(visit_id);
@@ -378,6 +356,7 @@ impl TelemedicineContract {
         session_end_time: u64,
         session_duration: u32,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let visit_key = DataKey::VirtualVisit(visit_id);
@@ -416,6 +395,7 @@ impl TelemedicineContract {
         patient_state: String,
         provider_state: String,
     ) -> Result<EligibilityResult, Error> {
+        ttl_config::extend_instance_ttl(&env);
         let now = env.ledger().timestamp();
 
         // 1. Look up the provider's license for the patient's jurisdiction (where care is delivered).
@@ -508,6 +488,7 @@ impl TelemedicineContract {
         license_number: String,
         valid_until: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         // Verify `admin` is the stored credentialing authority before requiring
         // signatures, so a self-attestation attempt (admin == provider_id) is
         // rejected with a typed error rather than a duplicate-auth host abort.
@@ -546,6 +527,7 @@ impl TelemedicineContract {
         allows_compact: bool,
         compact_members: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -576,6 +558,7 @@ impl TelemedicineContract {
         issue_description: String,
         resolution: Option<String>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         reporter.require_auth();
 
         let visit_key = DataKey::VirtualVisit(visit_id);
@@ -605,6 +588,7 @@ impl TelemedicineContract {
         patient_id: Address,
         prescription_details: PrescriptionRequest,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         let visit_key = DataKey::VirtualVisit(visit_id);
@@ -691,6 +675,7 @@ impl TelemedicineContract {
         jurisdiction: String,
         requires_inperson: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -720,69 +705,60 @@ impl TelemedicineContract {
     }
 }
 
-fn compute_session_token(
-    env: &Env,
-    visit_id: u64,
-    provider_id: &Address,
-    patient_id: &Address,
-    session_start_time: u64,
-    nonce: u64,
-) -> BytesN<32> {
-    let mut data = Bytes::new(env);
-    data.extend_from_array(&visit_id.to_be_bytes());
-    data.append(&provider_id.clone().to_xdr(env));
-    data.append(&patient_id.clone().to_xdr(env));
-    data.extend_from_array(&session_start_time.to_be_bytes());
-    data.extend_from_array(&nonce.to_be_bytes());
-    env.crypto().sha256(&data).into()
-}
-
-fn hash_token(env: &Env, token: &BytesN<32>) -> BytesN<32> {
-    env.crypto().sha256(&token.clone().to_xdr(env)).into()
-}
-
 /// Check whether `state` appears as a comma-separated token inside `list`.
-/// Both are Soroban `String`s; we compare byte-by-byte via XDR encoding.
+///
+/// `String::to_xdr` encodes an `ScVal`, not a bare XDR string: the first 4
+/// bytes are the `ScValType` discriminant (`SCV_STRING`), followed by the
+/// 4-byte big-endian content length, then the content bytes and 0-3 padding.
+/// We must skip the type tag before reading the length (#974).
 fn string_contains_state(env: &Env, list: &String, state: &String) -> bool {
     let list_bytes = list.clone().to_xdr(env);
     let state_bytes = state.clone().to_xdr(env);
 
-    // XDR String: 4-byte big-endian content length, then content bytes, then 0-3 padding.
-    if list_bytes.len() < 4 || state_bytes.len() < 4 {
+    // Layout: [0..4) ScValType tag, [4..8) content length, [8..) content.
+    const TAG_LEN: u32 = 4;
+    const LEN_LEN: u32 = 4;
+    const CONTENT_OFFSET: u32 = TAG_LEN + LEN_LEN;
+
+    if list_bytes.len() < CONTENT_OFFSET || state_bytes.len() < CONTENT_OFFSET {
         return false;
     }
 
-    // Read content lengths from XDR prefix.
-    let lc = ((list_bytes.get(0).unwrap_or(0) as u32) << 24
-        | (list_bytes.get(1).unwrap_or(0) as u32) << 16
-        | (list_bytes.get(2).unwrap_or(0) as u32) << 8
-        | (list_bytes.get(3).unwrap_or(0) as u32)) as usize;
+    // Read content lengths from the XDR length field (bytes 4..8).
+    let lc = ((list_bytes.get(TAG_LEN).unwrap_or(0) as u32) << 24
+        | (list_bytes.get(TAG_LEN + 1).unwrap_or(0) as u32) << 16
+        | (list_bytes.get(TAG_LEN + 2).unwrap_or(0) as u32) << 8
+        | (list_bytes.get(TAG_LEN + 3).unwrap_or(0) as u32)) as usize;
 
-    let sc = ((state_bytes.get(0).unwrap_or(0) as u32) << 24
-        | (state_bytes.get(1).unwrap_or(0) as u32) << 16
-        | (state_bytes.get(2).unwrap_or(0) as u32) << 8
-        | (state_bytes.get(3).unwrap_or(0) as u32)) as usize;
+    let sc = ((state_bytes.get(TAG_LEN).unwrap_or(0) as u32) << 24
+        | (state_bytes.get(TAG_LEN + 1).unwrap_or(0) as u32) << 16
+        | (state_bytes.get(TAG_LEN + 2).unwrap_or(0) as u32) << 8
+        | (state_bytes.get(TAG_LEN + 3).unwrap_or(0) as u32)) as usize;
 
     if sc == 0 || sc > lc {
         return false;
     }
 
-    // Slide a window of size `sc` over the list content (offset 4 in XDR bytes).
+    // Slide a window of size `sc` over the list content (offset CONTENT_OFFSET).
     let mut i: usize = 0;
     while i + sc <= lc {
         let mut matched = true;
         for j in 0..sc {
-            let lb = list_bytes.get((4 + i + j) as u32).unwrap_or(0);
-            let sb = state_bytes.get((4 + j) as u32).unwrap_or(1);
+            let lb = list_bytes
+                .get(CONTENT_OFFSET + (i + j) as u32)
+                .unwrap_or(0);
+            let sb = state_bytes.get(CONTENT_OFFSET + j as u32).unwrap_or(1);
             if lb != sb {
                 matched = false;
                 break;
             }
         }
         if matched {
-            let before_ok = i == 0 || list_bytes.get((4 + i - 1) as u32).unwrap_or(0) == b',';
+            // Whole-token match: must be bounded by start/end or a comma.
+            let before_ok = i == 0
+                || list_bytes.get(CONTENT_OFFSET + i as u32 - 1).unwrap_or(0) == b',';
             let after_ok = (i + sc) == lc
-                || list_bytes.get((4 + i + sc) as u32).unwrap_or(0) == b',';
+                || list_bytes.get(CONTENT_OFFSET + (i + sc) as u32).unwrap_or(0) == b',';
             if before_ok && after_ok {
                 return true;
             }

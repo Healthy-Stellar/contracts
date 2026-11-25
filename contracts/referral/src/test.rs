@@ -154,6 +154,25 @@ fn test_decline_and_update_status() {
         &Vec::new(&env),
     );
 
+    assert_eq!(
+        client.try_update_referral_status(
+            &referral_id2,
+            &referred_to,
+            &Symbol::new(&env, "Scheduled"),
+            &None,
+        ),
+        Err(Ok(Error::InvalidStatusTransition))
+    );
+    assert_eq!(
+        client.try_update_referral_status(
+            &referral_id2,
+            &referring_provider,
+            &Symbol::new(&env, "Accepted"),
+            &None,
+        ),
+        Err(Ok(Error::NotAuthorized))
+    );
+
     // Must accept before it can be scheduled (Pending -> Accepted -> Scheduled)
     client.update_referral_status(
         &referral_id2,

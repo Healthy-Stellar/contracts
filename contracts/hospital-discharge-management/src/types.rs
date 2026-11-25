@@ -9,6 +9,14 @@ pub enum Error {
     InvalidStatus = 3,
     Unauthorized = 4,
     AlreadyInitialized = 5,
+    InvalidScore = 6,
+    NotReady = 7,
+    OverrideRequired = 8,
+    InvalidDate = 9,
+    PlanClosed = 10,
+    TooManyAppointments = 11,
+    NotCareTeam = 12,
+    InvalidOverride = 13,
 }
 
 #[contracttype]
@@ -17,6 +25,20 @@ pub enum DataKey {
     Admin,
     HospitalRegistry,
     ProviderRegistry,
+    Plan(u64),
+    PlanCount,
+    Readiness(u64),
+    ReadinessHistory(u64),
+    Orders(u64),
+    OrdersHistory(u64),
+    HomeHealth(u64),
+    DME(u64),
+    Education(u64),
+    SNF(u64),
+    Completion(u64),
+    Risk(u64),
+    CareTeam(u64),
+    Override(u64),
 }
 
 #[contracttype]
@@ -61,6 +83,24 @@ pub struct DischargePlan {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CareTeamEntry {
+    pub provider: Address,
+    pub role: String,
+    pub added_by: Address,
+    pub added_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DischargeOverride {
+    pub discharge_plan_id: u64,
+    pub override_reason_hash: BytesN<32>,
+    pub approver: Address,
+    pub approved_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DischargeMedication {
     pub medication_name: String,
     pub dosage: String,
@@ -91,6 +131,7 @@ pub struct ReadinessScore {
     pub assessed_by: Address,
     pub assessed_at: u64,
     pub notes: String,
+    pub notes_hash: BytesN<32>,
 }
 
 #[contracttype]
@@ -102,6 +143,7 @@ pub struct DischargeOrders {
     pub restrictions: String,
     pub created_by: Address,
     pub created_at: u64,
+    pub version: u32,
 }
 
 #[contracttype]
@@ -114,6 +156,7 @@ pub struct HomeHealthArrangement {
     pub start_date: u64,
     pub arranged_by: Address,
     pub arranged_at: u64,
+    pub version: u32,
 }
 
 #[contracttype]
@@ -125,6 +168,7 @@ pub struct DMEOrder {
     pub delivery_date: u64,
     pub ordered_by: Address,
     pub ordered_at: u64,
+    pub version: u32,
 }
 
 #[contracttype]
@@ -136,6 +180,7 @@ pub struct DischargeEducation {
     pub patient_understanding_level: u32,
     pub provided_by: Address,
     pub provided_at: u64,
+    pub version: u32,
 }
 
 #[contracttype]
@@ -147,6 +192,7 @@ pub struct SNFCoordination {
     pub care_requirements: String,
     pub coordinated_by: Address,
     pub coordinated_at: u64,
+    pub version: u32,
 }
 
 #[contracttype]
@@ -169,4 +215,5 @@ pub struct ReadmissionRisk {
     pub mitigation_plan: String,
     pub tracked_by: Address,
     pub tracked_at: u64,
+    pub version: u32,
 }

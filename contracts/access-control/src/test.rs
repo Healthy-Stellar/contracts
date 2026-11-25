@@ -144,7 +144,7 @@ fn test_revoke_returns_op_id() {
 
     let resource = String::from_str(&env, "patient-records");
     let grant_op = client.grant_access(&hospital, &doctor, &resource, &0, &None);
-    let revoke_op = client.revoke_access(&hospital, &doctor, &resource);
+    let revoke_op = client.revoke_access(&hospital, &doctor, &resource, &None);
     assert!(revoke_op > grant_op);
 }
 
@@ -163,7 +163,7 @@ fn test_revoke_access_clears_both_indexes() {
     assert!(client.check_access(&doctor, &resource_id));
     assert_eq!(client.get_authorized_parties(&resource_id).len(), 1);
 
-    client.revoke_access(&hospital, &doctor, &resource_id);
+    client.revoke_access(&hospital, &doctor, &resource_id, &None);
 
     // Both indexes must be empty after revocation
     assert!(!client.check_access(&doctor, &resource_id));
@@ -179,7 +179,7 @@ fn test_revoke_access_re_grant_allowed_after_revoke() {
 
     let resource = String::from_str(&env, "patient-records");
     client.grant_access(&hospital, &doctor, &resource, &0, &None);
-    client.revoke_access(&hospital, &doctor, &resource);
+    client.revoke_access(&hospital, &doctor, &resource, &None);
 
     // Re-grant must succeed (composite index was cleaned up)
     let op = client.grant_access(&hospital, &doctor, &resource, &0, &None);
@@ -262,7 +262,7 @@ fn test_commit_reveal_replay_rejected() {
 
     // Attempting to re-use the same commit (replay) must fail
     // First revoke so the grant itself doesn't block
-    client.revoke_access(&hospital, &doctor, &resource);
+    client.revoke_access(&hospital, &doctor, &resource, &None);
 
     let result = client.try_grant_access(&hospital, &doctor, &resource, &0, &Some(nonce));
     assert_eq!(result, Err(Ok(ContractError::CommitAlreadyUsed)));
@@ -318,6 +318,75 @@ fn test_deactivate_entity() {
     client.deactivate_entity(&admin, &hospital);
     let entity = client.get_entity(&hospital);
     assert!(!entity.active);
+}
+
+#[test]
+fn test_deactivate_grantor_revokes_issued_access_and_reactivation_does_not_restore_it() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let (hospital, doctor) = register_two(&env, &client, &admin);
+    let resource = String::from_str(&env, "patient-records");
+    client.grant_access(&hospital, &doctor, &resource, &0, &None);
+
+    client.deactivate_entity(&admin, &hospital);
+    assert!(!client.check_access(&doctor, &resource));
+    assert_eq!(client.get_entity_permissions(&doctor).len(), 0);
+
+    client.reactivate_entity(&admin, &hospital);
+    assert!(client.get_entity(&hospital).active);
+    assert!(!client.check_access(&doctor, &resource));
+
+    // The old composite grant is removed, allowing a deliberate new grant.
+    client.grant_access(&hospital, &doctor, &resource, &0, &None);
+    assert!(client.check_access(&doctor, &resource));
+}
+
+#[test]
+fn test_deactivating_one_grantor_preserves_another_grantors_access() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let (hospital, doctor) = register_two(&env, &client, &admin);
+    let second_hospital = Address::generate(&env);
+    client.register_entity(
+        &second_hospital,
+        &EntityType::Hospital,
+        &String::from_str(&env, "Second Hospital"),
+        &String::from_str(&env, "metadata"),
+    );
+    let resource = String::from_str(&env, "patient-records");
+    client.grant_access(&hospital, &doctor, &resource, &0, &None);
+    client.grant_access(&second_hospital, &doctor, &resource, &0, &None);
+
+    client.deactivate_entity(&admin, &hospital);
+
+    assert!(client.check_access(&doctor, &resource));
+    assert_eq!(client.get_authorized_parties(&resource).len(), 1);
+    let permissions = client.get_entity_permissions(&doctor);
+    assert_eq!(permissions.len(), 1);
+    assert_eq!(permissions.get(0).unwrap().granted_by, second_hospital);
+}
+
+#[test]
+fn test_reactivation_does_not_restore_revoked_consents() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let (hospital, doctor) = register_two(&env, &client, &admin);
+    let purpose = String::from_str(&env, "treatment");
+    client.grant_consent(
+        &hospital,
+        &doctor,
+        &1,
+        &purpose,
+        &String::from_str(&env, "explicit_consent"),
+        &0,
+    );
+
+    client.deactivate_entity(&admin, &hospital);
+    client.reactivate_entity(&admin, &hospital);
+    assert_eq!(
+        client.try_check_consent(&hospital, &doctor, &purpose, &1),
+        Err(Ok(ContractError::ConsentRevoked))
+    );
 }
 
 #[test]
@@ -577,6 +646,7 @@ fn test_revoke_access_permission_not_found() {
         &hospital,
         &doctor,
         &String::from_str(&env, "nonexistent-resource"),
+        &None,
     );
     assert_eq!(result, Err(Ok(ContractError::AccessPermissionNotFound)));
 }
@@ -598,7 +668,7 @@ fn test_revoke_access_not_authorized() {
     let resource = String::from_str(&env, "patient-records");
     client.grant_access(&hospital, &doctor, &resource, &0, &None);
 
-    let result = client.try_revoke_access(&other, &doctor, &resource);
+    let result = client.try_revoke_access(&other, &doctor, &resource, &None);
     assert_eq!(result, Err(Ok(ContractError::NotAuthorizedToRevoke)));
 }
 
@@ -862,7 +932,7 @@ fn test_revoke_access_by_payer_reviewer_role() {
     client.grant_role(&admin, &payer, &Role::PayerReviewer, &0);
 
     // Payer (not the original grantor) can revoke.
-    client.revoke_access(&payer, &doctor, &resource);
+    client.revoke_access(&payer, &doctor, &resource, &None);
     assert!(!client.check_access(&doctor, &resource));
 }
 
@@ -899,7 +969,7 @@ fn test_revoke_access_by_unprivileged_non_grantor_rejected() {
     client.grant_access(&hospital, &doctor, &resource, &0, &None);
 
     // `other` has no role and is not the grantor.
-    let result = client.try_revoke_access(&other, &doctor, &resource);
+    let result = client.try_revoke_access(&other, &doctor, &resource, &None);
     assert_eq!(result, Err(Ok(ContractError::NotAuthorizedToRevoke)));
 
     // Silence unused-variable warning for admin.
@@ -940,7 +1010,7 @@ proptest! {
 
         let resource = String::from_str(&env, &resource_id);
         client.grant_access(&grantor, &grantee, &resource, &0, &None);
-        client.revoke_access(&grantor, &grantee, &resource);
+        client.revoke_access(&grantor, &grantee, &resource, &None);
 
         assert!(!client.check_access(&grantee, &resource));
     }
@@ -1112,13 +1182,13 @@ fn test_revoke_access_multiple_grantors_same_resource() {
     assert!(client.check_access(&grantee, &resource_id));
 
     // Grantor2 revokes their own grant
-    client.revoke_access(&grantor2, &grantee, &resource_id);
+    client.revoke_access(&grantor2, &grantee, &resource_id, &None);
 
     // Grantee should still have access because grantor1's grant remains
     assert!(client.check_access(&grantee, &resource_id));
 
     // Grantor1 revokes their grant
-    client.revoke_access(&grantor1, &grantee, &resource_id);
+    client.revoke_access(&grantor1, &grantee, &resource_id, &None);
 
     // Now grantee has no access
     assert!(!client.check_access(&grantee, &resource_id));

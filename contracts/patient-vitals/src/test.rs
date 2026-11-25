@@ -2,7 +2,9 @@
 #![allow(deprecated)]
 
 use crate::contract::{PatientVitalsContract, PatientVitalsContractClient};
-use crate::types::{AlertThresholds, DeviceReading, Range, VitalSigns, ALERT_COOLDOWN_SECONDS};
+use crate::types::{
+    AlertThresholds, DeviceReading, Range, Severity, VitalSigns, ALERT_COOLDOWN_SECONDS,
+};
 use soroban_sdk::{
     testutils::{Address as _, MockAuth, MockAuthInvoke},
     Address, Env, IntoVal, String, Symbol, Vec,
@@ -282,9 +284,8 @@ fn test_trigger_vital_alert() {
         &patient_id,
         &patient_id,
         &Symbol::new(&env, "heart_rate"),
-        &String::from_str(&env, "135"),
-        &Symbol::new(&env, "critical_hi"),
-        &1672531200,
+        &135u32,
+        &Severity::CriticalHigh,
     );
 }
 
@@ -372,12 +373,12 @@ fn test_threshold_breach_creates_alert() {
 
     let alerts = client.get_alerts(&patient_id, &patient_id, &Symbol::new(&env, "heart_rate"));
     assert_eq!(alerts.len(), 1);
-    assert_eq!(alerts.get(0).unwrap().severity, Symbol::new(&env, "high"));
+    assert_eq!(alerts.get(0).unwrap().severity, Severity::High);
     assert_eq!(alerts.get(0).unwrap().alert_time, 1_000_000);
 }
 
 /// A reading that breaches the critical_high threshold must produce a
-/// "critical_hi" severity alert.
+/// `Severity::CriticalHigh` alert.
 #[test]
 fn test_critical_threshold_severity() {
     let env = Env::default();
@@ -402,7 +403,7 @@ fn test_critical_threshold_severity() {
 
     let alerts = client.get_alerts(&patient_id, &patient_id, &Symbol::new(&env, "heart_rate"));
     assert_eq!(alerts.len(), 1);
-    assert_eq!(alerts.get(0).unwrap().severity, Symbol::new(&env, "critical_hi"));
+    assert_eq!(alerts.get(0).unwrap().severity, Severity::CriticalHigh);
 }
 
 /// A normal reading (within range) must not create any alert.
@@ -536,37 +537,37 @@ fn test_deregister_purges_raw_and_agg_windows() {
     client.record_vital_signs(&patient_id, &recorder, &t2, &vitals);
 
     // Verify data is present before deregistration.
-    let raw0 = client.get_raw_window_page(&patient_id, &0u64, &0u32);
+    let raw0 = client.get_raw_window_page(&patient_id, &patient_id, &0u64, &0u32);
     assert!(!raw0.readings.is_empty(), "raw window 0 should have readings before deregister");
-    let raw2 = client.get_raw_window_page(&patient_id, &2u64, &0u32);
+    let raw2 = client.get_raw_window_page(&patient_id, &patient_id, &2u64, &0u32);
     assert!(!raw2.readings.is_empty(), "raw window 2 should have readings before deregister");
-    let agg0 = client.get_aggregate_page(&patient_id, &0u64, &0u64, &0u32);
+    let agg0 = client.get_aggregate_page(&patient_id, &patient_id, &0u64, &0u64, &0u32);
     assert!(!agg0.aggregates.is_empty(), "agg window 0 should have an entry before deregister");
-    let agg1 = client.get_aggregate_page(&patient_id, &1u64, &1u64, &0u32);
+    let agg1 = client.get_aggregate_page(&patient_id, &patient_id, &1u64, &1u64, &0u32);
     assert!(!agg1.aggregates.is_empty(), "agg window 1 should have an entry before deregister");
 
     // Deregister.
     client.deregister_patient(&patient_id);
 
     // All raw windows must now be empty.
-    let raw0_after = client.get_raw_window_page(&patient_id, &0u64, &0u32);
+    let raw0_after = client.get_raw_window_page(&patient_id, &patient_id, &0u64, &0u32);
     assert!(
         raw0_after.readings.is_empty(),
         "raw window 0 must be empty after deregister"
     );
-    let raw2_after = client.get_raw_window_page(&patient_id, &2u64, &0u32);
+    let raw2_after = client.get_raw_window_page(&patient_id, &patient_id, &2u64, &0u32);
     assert!(
         raw2_after.readings.is_empty(),
         "raw window 2 must be empty after deregister"
     );
 
     // All agg windows must now be empty.
-    let agg0_after = client.get_aggregate_page(&patient_id, &0u64, &0u64, &0u32);
+    let agg0_after = client.get_aggregate_page(&patient_id, &patient_id, &0u64, &0u64, &0u32);
     assert!(
         agg0_after.aggregates.is_empty(),
         "agg window 0 must be empty after deregister"
     );
-    let agg1_after = client.get_aggregate_page(&patient_id, &1u64, &1u64, &0u32);
+    let agg1_after = client.get_aggregate_page(&patient_id, &patient_id, &1u64, &1u64, &0u32);
     assert!(
         agg1_after.aggregates.is_empty(),
         "agg window 1 must be empty after deregister"
@@ -651,9 +652,8 @@ fn test_deregister_patient_clears_alerts() {
         &patient_id,
         &patient_id,
         &vital_type,
-        &String::from_str(&env, "150"),
-        &Symbol::new(&env, "high"),
-        &1_000_000u64,
+        &150u32,
+        &Severity::High,
     );
 
     assert_eq!(client.get_alerts(&patient_id, &patient_id, &vital_type).len(), 1);
@@ -846,14 +846,13 @@ fn test_provider_can_trigger_vital_alert() {
         &provider_id,
         &patient_id,
         &vital_type,
-        &String::from_str(&env, "200"),
-        &Symbol::new(&env, "critical_hi"),
-        &2_000_000,
+        &200u32,
+        &Severity::CriticalHigh,
     );
 
     let alerts = client.get_alerts(&provider_id, &patient_id, &vital_type);
     assert_eq!(alerts.len(), 1, "provider-triggered alert must be recorded");
-    assert_eq!(alerts.get(0).unwrap().severity, Symbol::new(&env, "critical_hi"));
+    assert_eq!(alerts.get(0).unwrap().severity, Severity::CriticalHigh);
 }
 
 /// An unrelated third party must not be able to trigger an alert for a patient.
@@ -874,9 +873,8 @@ fn test_third_party_cannot_trigger_vital_alert() {
         &stranger,
         &patient_id,
         &vital_type,
-        &String::from_str(&env, "200"),
-        &Symbol::new(&env, "critical_hi"),
-        &2_000_000,
+        &200u32,
+        &Severity::CriticalHigh,
     );
     assert!(result.is_err(), "third party must not trigger a vital alert");
 }
@@ -909,14 +907,13 @@ fn test_device_can_trigger_vital_alert() {
         &device_address,
         &patient_id,
         &vital_type,
-        &String::from_str(&env, "185"),
-        &Symbol::new(&env, "critical_hi"),
-        &4_000_000,
+        &185u32,
+        &Severity::CriticalHigh,
     );
 
     let alerts = client.get_alerts(&patient_id, &patient_id, &vital_type);
     assert_eq!(alerts.len(), 1, "device-triggered alert must be recorded");
-    assert_eq!(alerts.get(0).unwrap().severity, Symbol::new(&env, "critical_hi"));
+    assert_eq!(alerts.get(0).unwrap().severity, Severity::CriticalHigh);
 }
 
 // ── #728: provider self-appointment requires patient consent ─────────────────
@@ -1047,9 +1044,8 @@ fn test_patient_can_trigger_own_vital_alert() {
         &patient_id,
         &patient_id,
         &vital_type,
-        &String::from_str(&env, "150"),
-        &Symbol::new(&env, "high"),
-        &3_000_000,
+        &150u32,
+        &Severity::High,
     );
 
     let alerts = client.get_alerts(&patient_id, &patient_id, &vital_type);
@@ -1127,6 +1123,130 @@ fn test_issue_1005_record_vital_signs_authorization() {
     );
 
     // Reading appears in raw window page (1_003_000 / 3600 = window index 278)
-    let raw_window = client.get_raw_window_page(&patient_id, &(1_003_000 / 3600), &0u32);
+    let raw_window =
+        client.get_raw_window_page(&patient_id, &patient_id, &(1_003_000 / 3600), &0u32);
     assert!(!raw_window.readings.is_empty(), "device reading must appear in raw window page");
+}
+
+// ── #1053: access control for raw window and aggregate pages ─────────────────
+
+/// An unrelated address must not be able to read another patient's raw window page.
+#[test]
+fn test_unauthorized_address_cannot_read_raw_window_page() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PatientVitalsContract, ());
+    let client = PatientVitalsContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let stranger = Address::generate(&env);
+
+    let vitals = VitalSigns {
+        heart_rate: Some(80),
+        blood_pressure_systolic: None,
+        blood_pressure_diastolic: None,
+        temperature: None,
+        respiratory_rate: None,
+        oxygen_saturation: None,
+        blood_glucose: None,
+        weight: None,
+    };
+    client.record_vital_signs(&patient_id, &patient_id, &1_000_000, &vitals);
+
+    let result =
+        client.try_get_raw_window_page(&stranger, &patient_id, &(1_000_000 / 3600), &0u32);
+    assert_eq!(
+        result,
+        Err(Ok(crate::types::Error::Unauthorized)),
+        "stranger must not read another patient's raw window page"
+    );
+}
+
+/// An unrelated address must not be able to read another patient's aggregate page.
+#[test]
+fn test_unauthorized_address_cannot_read_aggregate_page() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PatientVitalsContract, ());
+    let client = PatientVitalsContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let stranger = Address::generate(&env);
+
+    let vitals = VitalSigns {
+        heart_rate: Some(80),
+        blood_pressure_systolic: None,
+        blood_pressure_diastolic: None,
+        temperature: None,
+        respiratory_rate: None,
+        oxygen_saturation: None,
+        blood_glucose: None,
+        weight: None,
+    };
+    client.record_vital_signs(&patient_id, &patient_id, &1_000_000, &vitals);
+
+    let result = client.try_get_aggregate_page(&stranger, &patient_id, &0u64, &0u64, &0u32);
+    assert_eq!(
+        result,
+        Err(Ok(crate::types::Error::Unauthorized)),
+        "stranger must not read another patient's aggregate page"
+    );
+}
+
+/// An authorized provider (has MonitoringParameters for the patient) CAN read
+/// the raw window page and the aggregate page.
+#[test]
+fn test_authorized_provider_can_read_window_pages() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PatientVitalsContract, ());
+    let client = PatientVitalsContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+
+    client.set_monitoring_parameters(
+        &patient_id,
+        &provider_id,
+        &Symbol::new(&env, "heart_rate"),
+        &Range { min: 60, max: 100 },
+        &AlertThresholds { critical_low: None, low: None, high: None, critical_high: None },
+        &3600,
+    );
+
+    let vitals = VitalSigns {
+        heart_rate: Some(80),
+        blood_pressure_systolic: None,
+        blood_pressure_diastolic: None,
+        temperature: None,
+        respiratory_rate: None,
+        oxygen_saturation: None,
+        blood_glucose: None,
+        weight: None,
+    };
+    client.record_vital_signs(&patient_id, &provider_id, &1_000_000, &vitals);
+
+    let raw = client.get_raw_window_page(&provider_id, &patient_id, &(1_000_000 / 3600), &0u32);
+    assert!(!raw.readings.is_empty(), "authorized provider must read raw window page");
+
+    let agg = client.get_aggregate_page(&provider_id, &patient_id, &0u64, &0u64, &0u32);
+    assert!(!agg.aggregates.is_empty(), "authorized provider must read aggregate page");
+}
+
+/// An over-large aggregate index range must be rejected.
+#[test]
+fn test_aggregate_page_rejects_oversized_range() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PatientVitalsContract, ());
+    let client = PatientVitalsContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+
+    let result = client.try_get_aggregate_page(&patient_id, &patient_id, &0u64, &u64::MAX, &0u32);
+    assert!(result.is_err(), "over-large aggregate index range must be rejected");
 }

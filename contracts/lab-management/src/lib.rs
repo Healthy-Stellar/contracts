@@ -23,6 +23,11 @@
 //! **Encryption/Integrity:** Lab values stored encrypted in persistent storage. Test result
 //! reference ranges validated. Pathologist digital signature via address authentication. Critical
 //! value thresholds immutable. Specimen type enumeration prevents invalid tests.
+//!
+//! **Event Redaction:** Contract events never carry PHI. `submit_results` emits only
+//! `(order_id, results_hash)` with no patient topic; results are delivered off-chain via the
+//! encrypted-envelope pattern. `flag_critical_value` emits only
+//! `(order_id, test_code_hash, severity_class)` and notifies the ordering provider off-chain.
 
 use soroban_sdk::{
     Address, BytesN, Env, String, Symbol, Vec, contract, contracterror, contractimpl, contracttype, vec, IntoVal,
@@ -38,6 +43,22 @@ pub enum Error {
     /// The lab order counter has reached u64::MAX and cannot be incremented.
     OrderIdOverflow = 4,
     ProviderNotRegistered = 5,
+    /// The order is not in a state that permits the requested transition.
+    InvalidStatus = 6,
+}
+
+/// Explicit lifecycle for a lab order.
+///
+/// `Ordered -> Assigned -> Completed -> Amended`, with `QcFailed` recording a
+/// failed quality-control run instead of reverting the submission.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LabOrderStatus {
+    Ordered = 0,
+    Assigned = 1,
+    Completed = 2,
+    Amended = 3,
+    QcFailed = 4,
 }
 
 #[contracttype]
@@ -52,13 +73,23 @@ pub struct TestResult {
     pub abnormal_flag: Option<Symbol>,
 }
 
+/// A single amendment to a completed lab result, retained for audit.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct AmendmentRecord {
+    pub previous_hash: BytesN<32>,
+    pub new_hash: BytesN<32>,
+    pub reason: String,
+    pub amended_by: Address,
+}
+
 #[contracttype]
 pub struct LabOrder {
     pub provider_id: Address,
     pub patient_id: Address,
     pub lab_id: Option<Address>,
     pub test_panel: Vec<String>,
-    pub status: Symbol,
+    pub status: LabOrderStatus,
     pub results_hash: Option<BytesN<32>>,
     pub quality_control_passed: bool,
 }
@@ -86,6 +117,10 @@ pub enum DataKey {
     LabCounter,
     /// Provider registry contract address
     ProviderRegistry,
+    /// Contract admin address
+    Admin,
+    /// Amendment history: DataKey::Amendments(order_id) -> Vec<AmendmentRecord>
+    Amendments(u64),
 }
 
 #[contract]
@@ -95,15 +130,28 @@ pub struct LabManagementContract;
 impl LabManagementContract {
     /// Runs atomically as part of contract creation, so the deployer binds the
     /// provider registry address and no front-running `initialize` call is possible.
-    /// `admin` is accepted so the deployer address is recorded in the deploy
-    /// arguments and visible to operators, but the binding is enforced by the
-    /// atomic constructor rather than by an authorization check.
+    /// The `admin` is stored so it can later rotate the provider registry.
     pub fn __constructor(env: Env, admin: Address, provider_registry: Address) {
-        let _ = admin;
+        env.storage().instance().set(&DataKey::Admin, &admin);
 
         env.storage()
             .instance()
             .set(&DataKey::ProviderRegistry, &provider_registry);
+    }
+
+    /// Rotates the provider registry. Only the stored admin may call this.
+    pub fn set_provider_registry(env: Env, new_registry: Address) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::Unauthorized)?;
+        admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::ProviderRegistry, &new_registry);
+        Ok(())
     }
 
     fn is_provider_registered(env: &Env, provider: &Address) -> bool {
@@ -136,6 +184,7 @@ impl LabManagementContract {
         patient_id: Address,
         req: OrderRequest,
     ) -> Result<u64, Error> {
+        ttl_config::extend_instance_ttl(&env);
         provider_id.require_auth();
 
         if !Self::is_provider_registered(&env, &provider_id) {
@@ -161,7 +210,7 @@ impl LabManagementContract {
             patient_id,
             lab_id: None,
             test_panel: req.test_panel,
-            status: Symbol::new(&env, "Ordered"),
+            status: LabOrderStatus::Ordered,
             results_hash: None,
             quality_control_passed: false,
         };
@@ -174,14 +223,22 @@ impl LabManagementContract {
     }
 
     pub fn assign_lab(env: Env, order_id: u64, lab_id: Address, _eta: u64) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         let mut order: LabOrder = env
             .storage()
             .persistent()
             .get(&DataKey::LabOrder(order_id))
             .ok_or(Error::NotFound)?;
         order.provider_id.require_auth();
+
+        // Only orders that have not yet produced results may be (re)assigned.
+        match order.status {
+            LabOrderStatus::Ordered | LabOrderStatus::Assigned => {}
+            _ => return Err(Error::InvalidStatus),
+        }
+
         order.lab_id = Some(lab_id);
-        order.status = Symbol::new(&env, "Assigned");
+        order.status = LabOrderStatus::Assigned;
         env.storage()
             .persistent()
             .set(&DataKey::LabOrder(order_id), &order);
@@ -196,6 +253,7 @@ impl LabManagementContract {
         results_summary: Vec<TestResult>,
         qc_passed: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         lab_id.require_auth();
 
         // VALIDATION PHASE: All validations must pass before any storage writes.
@@ -212,54 +270,23 @@ impl LabManagementContract {
             return Err(Error::Unauthorized);
         }
 
-        // 3. Perform QC validation (BEFORE any mutations).
+        // 3. Only an assigned order may receive results; completed/amended
+        //    results must go through `amend_results` instead of being overwritten.
+        if order.status != LabOrderStatus::Assigned {
+            return Err(Error::InvalidStatus);
+        }
+
+        // 4. Perform QC validation (BEFORE any mutations).
         Self::validate_qc_results(qc_passed, &results_summary)?;
 
         // MUTATION PHASE: All state changes after validations have passed.
 
-        order.results_hash = Some(results_hash);
+        order.results_hash = Some(results_hash.clone());
         order.quality_control_passed = qc_passed;
-        order.status = Symbol::new(&env, "Completed");
+        order.status = LabOrderStatus::Completed;
 
-        env.events().publish(
-            (
-                Symbol::new(&env, "LAB"),
-                Symbol::new(&env, "RESULT"),
-                order.patient_id.clone(),
-            ),
-            results_summary,
-        );
+        // PHI-safe event: only the order id and the results hash are emitted.
+        // No patient address topic and no result values. Actual results are
+        // deliv
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::LabOrder(order_id), &order);
-        Ok(())
-    }
-
-    pub fn flag_critical_value(
-        env: Env,
-        order_id: u64,
-        lab_id: Address,
-        test_code: String,
-        val: String,
-    ) -> Result<(), Error> {
-        lab_id.require_auth();
-
-        // 1. Verify order exists.
-        let order: LabOrder = env
-            .storage()
-            .persistent()
-            .get(&DataKey::LabOrder(order_id))
-            .ok_or(Error::NotFound)?;
-
-        // 2. Verify the caller is the assigned lab.
-        if order.lab_id != Some(lab_id.clone()) {
-            return Err(Error::Unauthorized);
-        }
-
-        env.events()
-            .publish((Symbol::new(&env, "CRITICAL"), order_id), (test_code, val));
-        Ok(())
-    }
-}
-mod test;
+/* … truncated 566 chars — edit only what you need near the top … */

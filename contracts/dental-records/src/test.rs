@@ -1,11 +1,15 @@
 //! Tests for the dental records contract.
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String, Symbol, Vec};
+use soroban_sdk::{
+    testutils::{Address as _, Events, Ledger},
+    Address, BytesN, Env, String, Symbol, Vec,
+};
 
 fn setup() -> (Env, DentalRecordsContractClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
+    env.ledger().with_mut(|l| l.timestamp = 1_700_000_000);
     let contract_id = env.register(DentalRecordsContract, ());
     let client = DentalRecordsContractClient::new(&env, &contract_id);
     (env, client)
@@ -13,6 +17,10 @@ fn setup() -> (Env, DentalRecordsContractClient<'static>) {
 
 fn empty_procedures(env: &Env) -> Vec<PlannedProcedure> {
     Vec::new(env)
+}
+
+fn sample_cid(env: &Env) -> String {
+    String::from_str(env, "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi")
 }
 
 #[test]
@@ -47,10 +55,179 @@ fn test_record_tooth_condition() {
     client.record_tooth_condition(
         &chart_id,
         &String::from_str(&env, "11"),
-        &Some(Symbol::new(&env, "occlusal")),
-        &Symbol::new(&env, "caries"),
+        &ToothSurface::Occlusal,
+        &ToothConditionKind::Caries,
         &None,
     );
+}
+
+fn create_chart(env: &Env, client: &DentalRecordsContractClient, notation: &str) -> u64 {
+    let patient = Address::generate(env);
+    let dentist = Address::generate(env);
+    client.create_dental_chart(
+        &patient,
+        &dentist,
+        &1_700_000_000,
+        &Symbol::new(env, notation),
+    )
+}
+
+#[test]
+fn test_multi_surface_conditions_do_not_overwrite() {
+    let (env, client) = setup();
+    let chart_id = create_chart(&env, &client, "universal");
+    let tooth = String::from_str(&env, "19");
+
+    client.record_tooth_condition(
+        &chart_id,
+        &tooth,
+        &ToothSurface::Mesial,
+        &ToothConditionKind::Caries,
+        &None,
+    );
+    client.record_tooth_condition(
+        &chart_id,
+        &tooth,
+        &ToothSurface::Occlusal,
+        &ToothConditionKind::Filling,
+        &Some(String::from_str(&env, "amalgam")),
+    );
+
+    let mesial = client
+        .get_tooth_condition(&chart_id, &tooth, &ToothSurface::Mesial)
+        .unwrap();
+    let occlusal = client
+        .get_tooth_condition(&chart_id, &tooth, &ToothSurface::Occlusal)
+        .unwrap();
+
+    assert_eq!(mesial.condition, ToothConditionKind::Caries);
+    assert_eq!(mesial.surface, ToothSurface::Mesial);
+    assert_eq!(occlusal.condition, ToothConditionKind::Filling);
+    assert_eq!(occlusal.surface, ToothSurface::Occlusal);
+    assert_eq!(occlusal.recorded_at, 1_700_000_000);
+    assert!(client
+        .get_tooth_condition(&chart_id, &tooth, &ToothSurface::Distal)
+        .is_none());
+}
+
+#[test]
+fn test_record_tooth_condition_emits_event() {
+    let (env, client) = setup();
+    let chart_id = create_chart(&env, &client, "fdi");
+    let before = env.events().all().len();
+
+    client.record_tooth_condition(
+        &chart_id,
+        &String::from_str(&env, "36"),
+        &ToothSurface::WholeTooth,
+        &ToothConditionKind::Crown,
+        &None,
+    );
+
+    assert_eq!(env.events().all().len(), before + 1);
+}
+
+#[test]
+fn test_invalid_tooth_numbers_rejected() {
+    let (env, client) = setup();
+    let universal = create_chart(&env, &client, "universal");
+    let fdi = create_chart(&env, &client, "fdi");
+    let palmer = create_chart(&env, &client, "palmer");
+
+    let cases = [
+        (universal, "99"),
+        (universal, ""),
+        (universal, "0"),
+        (universal, "33"),
+        (universal, "U"),
+        (fdi, "19"),
+        (fdi, "49"),
+        (fdi, "56"),
+        (fdi, "8"),
+        (palmer, "UR9"),
+        (palmer, "XX1"),
+        (palmer, "URF"),
+    ];
+    for (chart_id, tooth) in cases {
+        let result = client.try_record_tooth_condition(
+            &chart_id,
+            &String::from_str(&env, tooth),
+            &ToothSurface::Occlusal,
+            &ToothConditionKind::Caries,
+            &None,
+        );
+        assert_eq!(result, Err(Ok(Error::InvalidToothNumber)), "tooth {}", tooth);
+    }
+
+    let valid = [
+        (universal, "1"),
+        (universal, "32"),
+        (universal, "A"),
+        (universal, "T"),
+        (fdi, "11"),
+        (fdi, "48"),
+        (fdi, "55"),
+        (fdi, "85"),
+        (palmer, "UR1"),
+        (palmer, "LL8"),
+        (palmer, "ULE"),
+    ];
+    for (chart_id, tooth) in valid {
+        client.record_tooth_condition(
+            &chart_id,
+            &String::from_str(&env, tooth),
+            &ToothSurface::Occlusal,
+            &ToothConditionKind::Caries,
+            &None,
+        );
+    }
+}
+
+#[test]
+fn test_periodontal_assessment_rejects_invalid_tooth() {
+    let (env, client) = setup();
+    let chart_id = create_chart(&env, &client, "fdi");
+
+    let result = client.try_record_periodontal_assessment(
+        &chart_id,
+        &String::from_str(&env, "99"),
+        &PerioSite::Buccal,
+        &3,
+        &0,
+        &false,
+        &None,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidToothNumber)));
+}
+
+#[test]
+fn test_create_chart_rejects_unknown_notation() {
+    let (env, client) = setup();
+    let patient = Address::generate(&env);
+    let dentist = Address::generate(&env);
+
+    let result = client.try_create_dental_chart(
+        &patient,
+        &dentist,
+        &1_700_000_000,
+        &Symbol::new(&env, "klingon"),
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidNotationSystem)));
+}
+
+#[test]
+fn test_create_chart_rejects_future_date() {
+    let (env, client) = setup();
+    let patient = Address::generate(&env);
+    let dentist = Address::generate(&env);
+
+    let result = client.try_create_dental_chart(
+        &patient,
+        &dentist,
+        &(1_700_000_000 + 86_400),
+        &Symbol::new(&env, "fdi"),
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidPastDate)));
 }
 
 #[test]
@@ -69,7 +246,7 @@ fn test_record_periodontal_assessment() {
     client.record_periodontal_assessment(
         &chart_id,
         &String::from_str(&env, "11"),
-        &Symbol::new(&env, "mb"),
+        &PerioSite::MesioBuccal,
         &3,
         &0,
         &false,
@@ -208,4 +385,111 @@ fn test_document_procedure_performed_missing_appointment() {
     );
 
     assert_eq!(result, Err(Ok(Error::NotFound)));
+}
+
+#[test]
+fn test_add_radiograph() {
+    let (env, client) = setup();
+    let patient = Address::generate(&env);
+    let dentist = Address::generate(&env);
+
+    let chart_id = client.create_dental_chart(
+        &patient,
+        &dentist,
+        &1_700_000_000,
+        &Symbol::new(&env, "fdi"),
+    );
+
+    let radiograph_id = client.add_radiograph(
+        &chart_id,
+        &dentist,
+        &Symbol::new(&env, "bitewing"),
+        &1_700_000_000,
+        &sample_cid(&env),
+        &None,
+    );
+
+    assert_eq!(radiograph_id, 1);
+}
+
+#[test]
+fn test_get_radiograph() {
+    let (env, client) = setup();
+    let patient = Address::generate(&env);
+    let dentist = Address::generate(&env);
+
+    let chart_id = client.create_dental_chart(
+        &patient,
+        &dentist,
+        &1_700_000_000,
+        &Symbol::new(&env, "fdi"),
+    );
+
+    let radiograph_id = client.add_radiograph(
+        &chart_id,
+        &dentist,
+        &Symbol::new(&env, "bitewing"),
+        &1_700_000_000,
+        &sample_cid(&env),
+        &None,
+    );
+
+    let radiograph = client.get_radiograph(&radiograph_id);
+    assert_eq!(radiograph.id, radiograph_id);
+    assert_eq!(radiograph.dentist_id, dentist);
+    assert_eq!(radiograph.radiograph_type, Symbol::new(&env, "bitewing"));
+    assert_eq!(radiograph.taken_date, 1_700_000_000);
+}
+
+#[test]
+fn test_add_radiograph_unauthorized_dentist() {
+    let (env, client) = setup();
+    let patient = Address::generate(&env);
+    let dentist = Address::generate(&env);
+    let other_dentist = Address::generate(&env);
+
+    let chart_id = client.create_dental_chart(
+        &patient,
+        &dentist,
+        &1_700_000_000,
+        &Symbol::new(&env, "fdi"),
+    );
+
+    let result = client.try_add_radiograph(
+        &chart_id,
+        &other_dentist,
+        &Symbol::new(&env, "bitewing"),
+        &1_700_000_000,
+        &sample_cid(&env),
+        &None,
+    );
+
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_get_radiograph_unauthorized_read() {
+    let (env, client) = setup();
+    let patient = Address::generate(&env);
+    let dentist = Address::generate(&env);
+    let stranger = Address::generate(&env);
+
+    let chart_id = client.create_dental_chart(
+        &patient,
+        &dentist,
+        &1_700_000_000,
+        &Symbol::new(&env, "fdi"),
+    );
+
+    let radiograph_id = client.add_radiograph(
+        &chart_id,
+        &dentist,
+        &Symbol::new(&env, "bitewing"),
+        &1_700_000_000,
+        &sample_cid(&env),
+        &None,
+    );
+
+    let result = client.try_get_radiograph(&radiograph_id, &stranger);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
 }

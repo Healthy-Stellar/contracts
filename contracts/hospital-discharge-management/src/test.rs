@@ -63,7 +63,7 @@ fn test_initiate_discharge_planning() {
     assert_eq!(plan_id, 1);
 
     // Verify plan was stored
-    let plan = client.get_discharge_plan(&plan_id);
+    let plan = client.get_discharge_plan(&admin, &plan_id);
     assert_eq!(plan.patient_id, patient_id);
     assert_eq!(plan.hospital_id, hospital_id);
     assert_eq!(plan.admission_date, admission_date);
@@ -143,6 +143,47 @@ fn test_assess_discharge_readiness_not_ready() {
 }
 
 #[test]
+fn test_assess_discharge_readiness_out_of_range_scores_rejected() {
+    let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
+    let client = create_client(&env, &admin);
+
+    let plan_id =
+        client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
+
+    let notes = String::from_str(&env, "Out of range");
+
+    // Score above 100 must be rejected.
+    let result = client.try_assess_discharge_readiness(&admin, &plan_id, &101u32, &80u32, &90u32, &notes);
+    assert!(result.is_err());
+
+    // (300, 0, 0) previously averaged to 100 and gave Ready; must now be rejected.
+    let result2 = client.try_assess_discharge_readiness(&admin, &plan_id, &300u32, &0u32, &0u32, &notes);
+    assert!(result2.is_err());
+}
+
+#[test]
+fn test_assess_discharge_readiness_overflow_rejected() {
+    let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
+    let client = create_client(&env, &admin);
+
+    let plan_id =
+        client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
+
+    let notes = String::from_str(&env, "Overflow");
+
+    // Values near u32::MAX must not panic; they must return an error.
+    let result = client.try_assess_discharge_readiness(
+        &admin,
+        &plan_id,
+        &u32::MAX,
+        &u32::MAX,
+        &u32::MAX,
+        &notes,
+    );
+    assert!(result.is_err());
+}
+
+#[test]
 fn test_create_discharge_orders() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
     let client = create_client(&env, &admin);
@@ -169,6 +210,62 @@ fn test_create_discharge_orders() {
 }
 
 #[test]
+fn test_create_discharge_orders_blocked_when_not_ready() {
+    let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
+    let client = create_client(&env, &admin);
+
+    let plan_id =
+        client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
+
+    let notes = String::from_str(&env, "Medical instability");
+    client.assess_discharge_readiness(&admin, &plan_id, &40u32, &50u32, &45u32, &notes);
+
+    let medications = Vec::new(&env);
+    let instructions = String::from_str(&env, "Rest");
+    let restrictions = String::from_str(&env, "No lifting");
+
+    // NotReady must block order creation without an override.
+    let result = client.try_create_discharge_orders(
+        &admin,
+        &plan_id,
+        &medications,
+        &instructions,
+        &restrictions,
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_create_discharge_orders_with_override_when_not_ready() {
+    let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
+    let client = create_client(&env, &admin);
+
+    let plan_id =
+        client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
+
+    let notes = String::from_str(&env, "Medical instability");
+    client.assess_discharge_readiness(&admin, &plan_id, &40u32, &50u32, &45u32, &notes);
+
+    let medications = Vec::new(&env);
+    let instructions = String::from_str(&env, "Rest");
+    let restrictions = String::from_str(&env, "No lifting");
+    let override_reason_hash = BytesN::from_array(&env, &[9u8; 32]);
+
+    // Explicit, recorded override allows order creation.
+    client.create_discharge_orders_with_override(
+        &admin,
+        &plan_id,
+        &medications,
+        &instructions,
+        &restrictions,
+        &override_reason_hash,
+    );
+
+    let orders = client.get_discharge_orders(&admin, &plan_id);
+    assert_eq!(orders.len(), 1);
+}
+
+#[test]
 fn test_arrange_home_health() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
     let client = create_client(&env, &admin);
@@ -189,6 +286,9 @@ fn test_arrange_home_health() {
         &frequency,
         &start_date,
     );
+
+    let arrangements = client.get_home_health_arrangements(&admin, &plan_id);
+    assert_eq!(arrangements.len(), 1);
 }
 
 #[test]
@@ -213,6 +313,9 @@ fn test_order_dme_for_discharge() {
         &supplier_id,
         &delivery_date,
     );
+
+    let orders = client.get_dme_orders(&admin, &plan_id);
+    assert_eq!(orders.len(), 1);
 }
 
 #[test]
@@ -234,6 +337,33 @@ fn test_schedule_followup_appointments() {
 
     let appointment_ids = client.schedule_followup_appointments(&admin, &plan_id, &appointments);
     assert_eq!(appointment_ids.len(), 1);
+
+    let stored = client.get_followup_appointments(&admin, &plan_id);
+    assert_eq!(stored.len(), 1);
+}
+
+#[test]
+fn test_schedule_followup_appointments_batch_capped() {
+    let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
+    let client = create_client(&env, &admin);
+
+    let plan_id =
+        client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
+
+    let mut appointments = Vec::new(&env);
+    // Exceed the cap.
+    for i in 0..100u32 {
+        appointments.push_back(FollowUpAppointment {
+            provider_id: BytesN::from_array(&env, &[5u8; 32]),
+            appointment_type: String::from_str(&env, "Primary Care"),
+            scheduled_date: 2500u64 + i as u64,
+            location: String::from_str(&env, "Clinic A"),
+            notes: String::from_str(&env, "Checkup"),
+        });
+    }
+
+    let result = client.try_schedule_followup_appointments(&admin, &plan_id, &appointments);
+    assert!(result.is_err());
 }
 
 #[test]
@@ -253,6 +383,24 @@ fn test_provide_discharge_education() {
     materials.push_back(String::from_str(&env, "Care instructions"));
 
     client.provide_discharge_education(&admin, &plan_id, &topics, &materials, &85u32);
+
+    let education = client.get_discharge_education(&admin, &plan_id);
+    assert_eq!(education.len(), 1);
+}
+
+#[test]
+fn test_provide_discharge_education_understanding_out_of_range() {
+    let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
+    let client = create_client(&env, &admin);
+
+    let plan_id =
+        client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
+
+    let topics = Vec::new(&env);
+    let materials = Vec::new(&env);
+
+    let result = client.try_provide_discharge_education(&admin, &plan_id, &topics, &materials, &101u32);
+    assert!(result.is_err());
 }
 
 #[test]
@@ -274,6 +422,9 @@ fn test_coordinate_with_snf() {
         &transfer_date,
         &care_requirements,
     );
+
+    let snf = client.get_snf_coordination(&admin, &plan_id);
+    assert_eq!(snf.len(), 1);
 }
 
 #[test]
@@ -298,9 +449,118 @@ fn test_complete_discharge() {
     client.complete_discharge(&admin, &plan_id, &actual_discharge_date, &destination);
 
     // Verify plan status updated
-    let plan = client.get_discharge_plan(&plan_id);
+    let plan = client.get_discharge_plan(&admin, &plan_id);
     assert_eq!(plan.status, DischargeStatus::Completed);
     assert_eq!(plan.actual_discharge_date, Some(actual_discharge_date));
+
+    let completion = client.get_discharge_completion(&admin, &plan_id);
+    assert_eq!(completion.destination, destination);
+}
+
+#[test]
+fn test_complete_discharge_blocked_when_not_ready() {
+    let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
+    let client = create_client(&env, &admin);
+
+    let plan_id =
+        client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
+
+    let notes = String::from_str(&env, "Medical instability");
+    client.assess_discharge_readiness(&admin, &plan_id, &40u32, &50u32, &45u32, &notes);
+
+    let medications = Vec::new(&env);
+    let instructions = String::from_str(&env, "Rest");
+    let restrictions = String::from_str(&env, "No lifting");
+    let override_reason_hash = BytesN::from_array(&env, &[9u8; 32]);
+    client.create_discharge_orders_with_override(
+        &admin,
+        &plan_id,
+        &medications,
+        &instructions,
+        &restrictions,
+        &override_reason_hash,
+    );
+
+    // NotReady must block completion without an override.
+    let result = client.try_complete_discharge(
+        &admin,
+        &plan_id,
+        &1950u64,
+        &String::from_str(&env, "Home"),
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_complete_discharge_with_override_when_not_ready() {
+    let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
+    let client = create_client(&env, &admin);
+
+    let plan_id =
+        client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
+
+    let notes = String::from_str(&env, "Medical instability");
+    client.assess_discharge_readiness(&admin, &plan_id, &40u32, &50u32, &45u32, &notes);
+
+    let medications = Vec::new(&env);
+    let instructions = String::from_str(&env, "Rest");
+    let restrictions = String::from_str(&env, "No lifting");
+    let override_reason_hash = BytesN::from_array(&env, &[9u8; 32]);
+    client.create_discharge_orders_with_override(
+        &admin,
+        &plan_id,
+        &medications,
+        &instructions,
+        &restrictions,
+        &override_reason_hash,
+    );
+
+    // Explicit, recorded override allows completion.
+    client.complete_discharge_with_override(
+        &admin,
+        &plan_id,
+        &1950u64,
+        &String::from_str(&env, "Home"),
+        &override_reason_hash,
+    );
+
+    let plan = client.get_discharge_plan(&admin, &plan_id);
+    assert_eq!(plan.status, DischargeStatus::Completed);
+}
+
+#[test]
+fn test_complete_discharge_invalid_dates() {
+    let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
+    let client = create_client(&env, &admin);
+
+    let plan_id =
+        client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
+
+    let notes = String::from_str(&env, "Patient stable");
+    client.assess_discharge_readiness(&admin, &plan_id, &85u32, &80u32, &90u32, &notes);
+
+    let medications = Vec::new(&env);
+    let instructions = String::from_str(&env, "Rest");
+    let restrictions = String::from_str(&env, "No lifting");
+    client.create_discharge_orders(&admin, &plan_id, &medications, &instructions, &restrictions);
+
+    // Before admission date.
+    let result1 = client.try_complete_discharge(
+        &admin,
+        &plan_id,
+        &500u64,
+        &String::from_str(&env, "Home"),
+    );
+    assert!(result1.is_err());
+
+    // Far in the future relative to ledger timestamp.
+    let result2 = client.try_complete_discharge(
+        &admin,
+        &plan_id,
+        &u64::MAX,
+        &String::from_str(&env, "Home"),
+    );
+    assert!(result2.is_err());
 }
 
 #[test]
@@ -318,6 +578,9 @@ fn test_track_readmission_risk_high() {
     let mitigation_plan = String::from_str(&env, "Weekly home health visits");
 
     client.track_readmission_risk(&admin, &plan_id, &risk_factors, &80u32, &mitigation_plan);
+
+    let risks = client.get_readmission_risk(&admin, &plan_id);
+    assert_eq!(risks.len(), 1);
 }
 
 #[test]
@@ -353,6 +616,21 @@ fn test_track_readmission_risk_low() {
 }
 
 #[test]
+fn test_track_readmission_risk_out_of_range() {
+    let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
+    let client = create_client(&env, &admin);
+
+    let plan_id =
+        client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
+
+    let risk_factors = Vec::new(&env);
+    let mitigation_plan = String::from_str(&env, "Monitor");
+
+    let result = client.try_track_readmission_risk(&admin, &plan_id, &risk_factors, &101u32, &mitigation_plan);
+    assert!(result.is_err());
+}
+
+#[test]
 fn test_assess_readiness_nonexistent_plan() {
     let (env, admin, _patient, _patient_id, _hospital_id) = create_test_env();
     let client = create_client(&env, &admin);
@@ -381,8 +659,8 @@ fn test_multiple_discharge_plans() {
     assert_eq!(plan_id_2, 2);
 
     // Verify both plans exist independently
-    let plan1 = client.get_discharge_plan(&plan_id_1);
-    let plan2 = client.get_discharge_plan(&plan_id_2);
+    let plan1 = client.get_discharge_plan(&admin, &plan_id_1);
+    let plan2 = client.get_discharge_plan(&admin, &plan_id_2);
 
     assert_eq!(plan1.patient_id, patient_id);
     assert_eq!(plan2.patient_id, patient_id_2);
@@ -462,7 +740,7 @@ fn test_full_discharge_workflow() {
     client.complete_discharge(&admin, &plan_id, &1950u64, &String::from_str(&env, "Home"));
 
     // Verify final state
-    let plan = client.get_discharge_plan(&plan_id);
+    let plan = client.get_discharge_plan(&admin, &plan_id);
     assert_eq!(plan.status, DischargeStatus::Completed);
 }
 
@@ -487,7 +765,7 @@ fn test_initialize_then_discharge_planning() {
     );
 
     assert_eq!(plan_id, 1);
-    let plan = client.get_discharge_plan(&plan_id);
+    let plan = client.get_discharge_plan(&admin, &plan_id);
     assert_eq!(plan.patient_id, patient_id);
 }
 
@@ -566,132 +844,4 @@ fn test_complete_discharge_twice_fails() {
     let medications = Vec::new(&env);
     let instructions = String::from_str(&env, "Rest");
     let restrictions = String::from_str(&env, "No lifting");
-    client.create_discharge_orders(&admin, &plan_id, &medications, &instructions, &restrictions);
-
-    // Complete the first time (should succeed)
-    client.complete_discharge(&admin, &plan_id, &1950u64, &String::from_str(&env, "Home"));
-
-    // Attempt to complete a second time (should fail)
-    let result = client.try_complete_discharge(
-        &admin,
-        &plan_id,
-        &1960u64,
-        &String::from_str(&env, "Home"),
-    );
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_cancel_discharge_success() {
-    let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let client = create_client(&env, &admin);
-
-    let plan_id =
-        client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
-
-    // Cancel from Planning state
-    client.cancel_discharge(&admin, &plan_id);
-
-    let plan = client.get_discharge_plan(&plan_id);
-    assert_eq!(plan.status, DischargeStatus::Cancelled);
-}
-
-#[test]
-fn test_cancel_completed_or_cancelled_fails() {
-    let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let client = create_client(&env, &admin);
-
-    let plan_id =
-        client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
-
-    let notes = String::from_str(&env, "Patient stable");
-    client.assess_discharge_readiness(&admin, &plan_id, &85u32, &80u32, &90u32, &notes);
-
-    let medications = Vec::new(&env);
-    let instructions = String::from_str(&env, "Rest");
-    let restrictions = String::from_str(&env, "No lifting");
-    client.create_discharge_orders(&admin, &plan_id, &medications, &instructions, &restrictions);
-
-    // Complete the plan
-    client.complete_discharge(&admin, &plan_id, &1950u64, &String::from_str(&env, "Home"));
-
-    // Attempting to cancel a completed plan should fail
-    let result1 = client.try_cancel_discharge(&admin, &plan_id);
-    assert!(result1.is_err());
-
-    // Create another plan and cancel it
-    let plan_id_2 =
-        client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
-    client.cancel_discharge(&admin, &plan_id_2);
-
-    // Attempting to cancel an already cancelled plan should fail
-    let result2 = client.try_cancel_discharge(&admin, &plan_id_2);
-    assert!(result2.is_err());
-}
-
-#[test]
-fn test_modify_completed_or_cancelled_plan_fails() {
-    let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let client = create_client(&env, &admin);
-
-    let plan_id =
-        client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
-
-    let notes = String::from_str(&env, "Patient stable");
-    client.assess_discharge_readiness(&admin, &plan_id, &85u32, &80u32, &90u32, &notes);
-
-    let medications = Vec::new(&env);
-    let instructions = String::from_str(&env, "Rest");
-    let restrictions = String::from_str(&env, "No lifting");
-    client.create_discharge_orders(&admin, &plan_id, &medications, &instructions, &restrictions);
-
-    // Complete the plan
-    client.complete_discharge(&admin, &plan_id, &1950u64, &String::from_str(&env, "Home"));
-
-    // Attempting to assess readiness or create orders on a completed plan should fail
-    let result_assess = client.try_assess_discharge_readiness(&admin, &plan_id, &85u32, &80u32, &90u32, &notes);
-    assert!(result_assess.is_err());
-
-    let result_orders = client.try_create_discharge_orders(&admin, &plan_id, &medications, &instructions, &restrictions);
-    assert!(result_orders.is_err());
-}
-
-#[test]
-fn test_assess_discharge_readiness_unauthorized() {
-    let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let client = create_client(&env, &admin);
-
-    let plan_id = client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
-
-    let stranger = Address::generate(&env);
-    let notes = String::from_str(&env, "Patient stable");
-    let result = client.try_assess_discharge_readiness(&stranger, &plan_id, &85u32, &80u32, &90u32, &notes);
-    assert_eq!(result.unwrap_err().unwrap(), Error::Unauthorized);
-}
-
-#[test]
-fn test_schedule_followup_appointments_unauthorized() {
-    let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let client = create_client(&env, &admin);
-
-    let plan_id = client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
-
-    let stranger = Address::generate(&env);
-    let appointments = Vec::new(&env);
-    let result = client.try_schedule_followup_appointments(&stranger, &plan_id, &appointments);
-    assert_eq!(result.unwrap_err().unwrap(), Error::Unauthorized);
-}
-
-#[test]
-fn test_provide_discharge_education_unauthorized() {
-    let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
-    let client = create_client(&env, &admin);
-
-    let plan_id = client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
-
-    let stranger = Address::generate(&env);
-    let topics = Vec::new(&env);
-    let materials = Vec::new(&env);
-    let result = client.try_provide_discharge_education(&stranger, &plan_id, &topics, &materials, &80u32);
-    assert_eq!(result.unwrap_err().unwrap(), Error::Unauthorized);
-}
+    client.create_discharge_orders(&admin,

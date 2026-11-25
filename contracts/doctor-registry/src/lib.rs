@@ -90,16 +90,11 @@ pub struct DoctorRegistry;
 
 #[contractimpl]
 impl DoctorRegistry {
-    /// Set the contract admin. Must be called once before any profile operations.
-    /// Only the admin (or an authorized registrar) may create or modify doctor profiles.
-    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
-        validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
-        admin.require_auth();
-        if env.storage().persistent().has(&DataKey::Admin) {
-            return Err(Error::AlreadyInitialized);
-        }
+    /// Set the contract admin at deployment. Only the admin (or an authorized
+    /// registrar) may create or modify doctor profiles.
+    pub fn __constructor(env: Env, admin: Address) {
+        validate_nonzero_address(&admin).expect("admin address must not be zero");
         env.storage().persistent().set(&DataKey::Admin, &admin);
-        Ok(())
     }
 
     /// Create a new doctor profile with basic information and institution association.
@@ -119,6 +114,7 @@ impl DoctorRegistry {
         specialization: String,
         institution_wallet: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&registrar).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&institution_wallet).map_err(|_| Error::InvalidAddress)?;
@@ -162,6 +158,7 @@ impl DoctorRegistry {
         specialization: String,
         metadata: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&registrar).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         require_admin(&env, &registrar)?;
@@ -245,6 +242,7 @@ impl DoctorRegistry {
         wallet: Address,
         reason: String,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&registrar).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         require_admin(&env, &registrar)?;
@@ -292,6 +290,7 @@ impl DoctorRegistry {
         registrar: Address,
         wallet: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         validate_nonzero_address(&registrar).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         require_admin(&env, &registrar)?;
