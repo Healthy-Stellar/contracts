@@ -959,13 +959,19 @@ impl PrescriptionContract {
             return Err(Error::Expired);
         }
 
+        // Zero-quantity dispenses would let any pharmacy claim a prescription for free.
+        if req.quantity == 0 {
+            return Err(Error::InvalidPrescription);
+        }
+
         // Validate pharmacy authorization
         if let Some(ref current_pharmacy) = p.current_pharmacy {
             if current_pharmacy != &pharmacy_id {
                 return Err(Error::PharmacyNotAuthorized);
             }
         } else {
-            // First dispense sets the pharmacy
+            // First dispense sets the pharmacy, so the patient must consent to it.
+            p.patient_id.require_auth();
             p.current_pharmacy = Some(pharmacy_id.clone());
         }
 

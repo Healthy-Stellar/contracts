@@ -178,6 +178,8 @@ pub enum DataKey {
     ShareNonce(Address),
     /// Nonce counter per patient for data export ticket generation.
     ExportNonce(Address),
+    /// Issued export ticket record keyed by its nonce.
+    ExportTicketRecord(BytesN<32>),
     /// Share link data keyed by token hash.
     ShareLink(BytesN<32>),
     /// Marks a patient as deregistered (value: timestamp of deregistration).
@@ -239,7 +241,17 @@ pub struct ExportTicket {
     pub issued_at: u64,
     pub expires_at: u64,
     pub nonce: BytesN<32>,
-    pub signature: BytesN<32>,
+}
+
+/// Contract-side record of an issued export ticket; a ticket is valid only if
+/// it matches this record and the record has not been used yet.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredExportTicket {
+    pub patient: Address,
+    pub issued_at: u64,
+    pub expires_at: u64,
+    pub used: bool,
 }
 
 /// One entry in the platform-wide secondary index.
@@ -447,22 +459,6 @@ fn next_export_nonce(env: &Env, patient: &Address, issued_at: u64) -> BytesN<32>
     preimage.extend_from_array(&nonce_counter.to_be_bytes());
 
     env.crypto().sha256(&preimage).into()
-}
-
-fn sign_export_ticket(
-    env: &Env,
-    patient: &Address,
-    issued_at: u64,
-    expires_at: u64,
-    nonce: &BytesN<32>,
-) -> BytesN<32> {
-    let mut payload = Bytes::new(env);
-    payload.append(&patient.clone().to_xdr(env));
-    payload.extend_from_array(&issued_at.to_be_bytes());
-    payload.extend_from_array(&expires_at.to_be_bytes());
-    payload.append(&Bytes::from(nonce.clone()));
-
-    env.crypto().sha256(&payload).into()
 }
 
 /// Enforces that `caller` is the patient, their guardian, or an authorized doctor.
@@ -2808,32 +2804,46 @@ impl MedicalRegistry {
         let issued_at = env.ledger().timestamp();
         let expires_at = issued_at.saturating_add(3600);
         let nonce = next_export_nonce(&env, &patient, issued_at);
-        let signature = sign_export_ticket(&env, &patient, issued_at, expires_at, &nonce);
+
+        let record = StoredExportTicket {
+            patient: patient.clone(),
+            issued_at,
+            expires_at,
+            used: false,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::ExportTicketRecord(nonce.clone()), &record);
 
         ExportTicket {
             patient,
             issued_at,
             expires_at,
             nonce,
-            signature,
         }
     }
 
-    /// Validate a patient data export ticket for expiry and integrity.
+    /// Validate a patient data export ticket and consume it (single use).
+    /// Only tickets issued by `request_data_export` and not yet used are accepted.
     pub fn validate_export_ticket(env: Env, ticket: ExportTicket) -> bool {
-        if env.ledger().timestamp() > ticket.expires_at {
+        let key = DataKey::ExportTicketRecord(ticket.nonce.clone());
+        let mut record: StoredExportTicket = match env.storage().persistent().get(&key) {
+            Some(record) => record,
+            None => return false,
+        };
+
+        if record.used
+            || env.ledger().timestamp() > record.expires_at
+            || record.patient != ticket.patient
+            || record.issued_at != ticket.issued_at
+            || record.expires_at != ticket.expires_at
+        {
             return false;
         }
 
-        let expected_signature = sign_export_ticket(
-            &env,
-            &ticket.patient,
-            ticket.issued_at,
-            ticket.expires_at,
-            &ticket.nonce,
-        );
-
-        expected_signature == ticket.signature
+        record.used = true;
+        env.storage().persistent().set(&key, &record);
+        true
     }
 
     // =====================================================
