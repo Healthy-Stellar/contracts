@@ -32,6 +32,9 @@ const MAX_PROPOSALS: u32 = 100;
 const ADMIN_ROTATION_WINDOW: u64 = 86_400;
 const MIN_VOTING_DURATION: u64 = 3_600;
 const BPS_DENOMINATOR: u32 = 10_000;
+// Proposals and votes live in persistent storage; every write re-extends their TTL.
+const TTL_THRESHOLD: u32 = 17_280;    // ~1 day of ledgers
+const TTL_EXTEND_TO: u32 = 3_110_400; // ~180 days of ledgers
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -84,8 +87,7 @@ pub enum DataKey {
     Vote(u64, Address),  // (proposal_id, voter) → VoteChoice
     PendingAdmin,
     RotationExpiry,
-    ProposalCount,
-    Member(Address),     // persistent: member → MemberEpoch value at registration
+    Member(Address),     // persistent: member → bool
     MemberCount,
     MemberEpoch,
     ActiveProposalCount,
@@ -102,7 +104,6 @@ impl GovernanceVotingContract {
         ttl_config::extend_instance_ttl(&env);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::NextId, &1u64);
-        env.storage().instance().set(&DataKey::ProposalCount, &0u32);
         env.storage().instance().set(&DataKey::ActiveProposalCount, &0u32);
         env.storage().instance().set(&DataKey::MemberCount, &0u32);
         env.storage().instance().set(&DataKey::MemberEpoch, &0u64);
@@ -285,12 +286,12 @@ impl GovernanceVotingContract {
             return Err(Error::InvalidDuration);
         }
 
-        let count: u32 = env
+        let active: u32 = env
             .storage()
             .instance()
-            .get(&DataKey::ProposalCount)
+            .get(&DataKey::ActiveProposalCount)
             .unwrap_or(0);
-        if count >= MAX_PROPOSALS {
+        if active >= MAX_PROPOSALS {
             return Err(Error::TooManyProposals);
         }
 
@@ -327,14 +328,9 @@ impl GovernanceVotingContract {
             status: ProposalStatus::Active,
             member_epoch: epoch,
         };
-        env.storage().instance().set(&DataKey::Proposal(id), &proposal);
+        env.storage().persistent().set(&DataKey::Proposal(id), &proposal);
+        env.storage().persistent().extend_ttl(&DataKey::Proposal(id), TTL_THRESHOLD, TTL_EXTEND_TO);
         env.storage().instance().set(&DataKey::NextId, &(id + 1));
-        env.storage().instance().set(&DataKey::ProposalCount, &(count + 1));
-        let active: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::ActiveProposalCount)
-            .unwrap_or(0);
         env.storage().instance().set(&DataKey::ActiveProposalCount, &(active + 1));
 
         env.events().publish(
@@ -352,7 +348,7 @@ impl GovernanceVotingContract {
 
         let mut proposal: Proposal = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::Proposal(proposal_id))
             .ok_or(Error::ProposalNotFound)?;
 
@@ -364,7 +360,7 @@ impl GovernanceVotingContract {
         }
 
         let vote_key = DataKey::Vote(proposal_id, voter.clone());
-        if env.storage().instance().has(&vote_key) {
+        if env.storage().persistent().has(&vote_key) {
             return Err(Error::AlreadyVoted);
         }
 
@@ -381,8 +377,10 @@ impl GovernanceVotingContract {
             VoteChoice::Yes => proposal.yes_votes += 1,
             VoteChoice::No => proposal.no_votes += 1,
         }
-        env.storage().instance().set(&vote_key, &choice);
-        env.storage().instance().set(&DataKey::Proposal(proposal_id), &proposal);
+        env.storage().persistent().set(&vote_key, &choice);
+        env.storage().persistent().extend_ttl(&vote_key, TTL_THRESHOLD, TTL_EXTEND_TO);
+        env.storage().persistent().set(&DataKey::Proposal(proposal_id), &proposal);
+        env.storage().persistent().extend_ttl(&DataKey::Proposal(proposal_id), TTL_THRESHOLD, TTL_EXTEND_TO);
 
         env.events().publish(
             (symbol_short!("proposal"), symbol_short!("vote")),
@@ -396,7 +394,7 @@ impl GovernanceVotingContract {
         ttl_config::extend_instance_ttl(&env);
         let mut proposal: Proposal = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::Proposal(proposal_id))
             .ok_or(Error::ProposalNotFound)?;
 
@@ -417,7 +415,8 @@ impl GovernanceVotingContract {
         };
 
         proposal.status = status.clone();
-        env.storage().instance().set(&DataKey::Proposal(proposal_id), &proposal);
+        env.storage().persistent().set(&DataKey::Proposal(proposal_id), &proposal);
+        env.storage().persistent().extend_ttl(&DataKey::Proposal(proposal_id), TTL_THRESHOLD, TTL_EXTEND_TO);
         let active: u32 = env
             .storage()
             .instance()
@@ -435,7 +434,7 @@ impl GovernanceVotingContract {
     /// Read a proposal by id.
     pub fn get_proposal(env: Env, proposal_id: u64) -> Result<Proposal, Error> {
         env.storage()
-            .instance()
+            .persistent()
             .get(&DataKey::Proposal(proposal_id))
             .ok_or(Error::ProposalNotFound)
     }
