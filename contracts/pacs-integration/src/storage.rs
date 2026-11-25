@@ -4,7 +4,7 @@ use crate::types::{
 };
 use soroban_sdk::{Address, Env, String, Vec};
 use ttl_config::critical::{LEDGER_BUMP_AMOUNT, LEDGER_THRESHOLD};
-use shared_contracts::safe_increment;
+use shared::counters::safe_increment;
 
 pub fn next_study_id(env: &Env) -> u64 {
     safe_increment(env, &DataKey::StudyCounter)

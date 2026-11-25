@@ -8,6 +8,7 @@ version = "0.0.0"
 dependencies = [
  "shared",
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -16,6 +17,7 @@ version = "0.0.0"
 dependencies = [
  "proptest",
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -280,8 +282,9 @@ dependencies = [
 name = "care-plan"
 version = "0.1.0"
 dependencies = [
- "Contracts",
+ "shared",
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -328,14 +331,16 @@ name = "clinical-guideline"
 version = "0.1.0"
 dependencies = [
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
 name = "clinical-trial"
 version = "0.1.0"
 dependencies = [
- "Contracts",
+ "shared",
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -515,9 +520,9 @@ checksum = "d7a1e2f27636f116493b8b860f5546edb47c8d8f8ea73e1d2a20be88e28d1fea"
 name = "dental-records"
 version = "0.1.0"
 dependencies = [
- "Contracts",
  "shared",
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -580,6 +585,7 @@ version = "0.0.0"
 dependencies = [
  "shared",
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -676,6 +682,7 @@ name = "emergency-medical-info"
 version = "0.0.0"
 dependencies = [
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -734,6 +741,7 @@ version = "0.0.0"
 dependencies = [
  "shared",
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -808,6 +816,7 @@ name = "governance-voting"
 version = "0.0.0"
 dependencies = [
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -825,8 +834,9 @@ dependencies = [
 name = "hai-tracking"
 version = "0.1.0"
 dependencies = [
- "Contracts",
+ "shared",
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -872,11 +882,11 @@ checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 name = "health-records"
 version = "0.0.0"
 dependencies = [
- "Contracts",
  "patient-registry",
  "provider-registry",
  "shared",
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -885,6 +895,7 @@ version = "0.0.0"
 dependencies = [
  "shared",
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -892,6 +903,7 @@ name = "healthcare-credentialing"
 version = "0.0.0"
 dependencies = [
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -938,8 +950,9 @@ dependencies = [
 name = "hospital-discharge-management"
 version = "0.1.0"
 dependencies = [
- "Contracts",
+ "shared",
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -948,6 +961,7 @@ version = "0.0.0"
 dependencies = [
  "shared",
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -997,6 +1011,7 @@ dependencies = [
  "provider-registry",
  "shared",
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -1005,6 +1020,7 @@ version = "0.0.0"
 dependencies = [
  "provider-registry",
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -1042,6 +1058,7 @@ version = "0.0.0"
 dependencies = [
  "shared",
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -1097,6 +1114,7 @@ dependencies = [
  "provider-registry",
  "shared",
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -1154,6 +1172,7 @@ dependencies = [
  "insurer-registry",
  "shared",
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -1161,6 +1180,7 @@ name = "medical-device-tracking"
 version = "0.0.0"
 dependencies = [
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -1174,6 +1194,7 @@ name = "mental-health"
 version = "0.0.0"
 dependencies = [
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -1181,6 +1202,7 @@ name = "multisig-governance"
 version = "0.0.0"
 dependencies = [
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -1188,6 +1210,7 @@ name = "nft-badges"
 version = "0.0.0"
 dependencies = [
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -1239,8 +1262,9 @@ dependencies = [
 name = "nutrition-care-management"
 version = "0.1.0"
 dependencies = [
- "Contracts",
+ "shared",
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -1265,7 +1289,7 @@ dependencies = [
 name = "pacs-integration"
 version = "0.0.0"
 dependencies = [
- "Contracts",
+ "shared",
  "soroban-sdk",
  "ttl-config",
 ]
@@ -1292,6 +1316,7 @@ name = "patient-vitals"
 version = "0.1.0"
 dependencies = [
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -1323,9 +1348,10 @@ dependencies = [
 name = "prenatal-pediatric"
 version = "0.1.0"
 dependencies = [
- "Contracts",
  "provider-registry",
+ "shared",
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -1363,6 +1389,7 @@ dependencies = [
  "insurer-registry",
  "shared",
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -1399,6 +1426,7 @@ version = "0.0.0"
 dependencies = [
  "shared",
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -1520,10 +1548,10 @@ dependencies = [
 name = "referral"
 version = "0.1.0"
 dependencies = [
- "Contracts",
  "provider-registry",
  "shared",
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -2203,6 +2231,7 @@ name = "upgrade-governance"
 version = "0.0.0"
 dependencies = [
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]
@@ -2572,6 +2601,7 @@ name = "zk-eligibility"
 version = "0.0.0"
 dependencies = [
  "soroban-sdk",
+ "ttl-config",
 ]
 
 [[package]]

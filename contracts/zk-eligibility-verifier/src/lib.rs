@@ -59,6 +59,7 @@ impl ZkEligibilityVerifier {
         admin: Address,
         zk_eligibility_contract: Address,
     ) {
+        ttl_config::extend_instance_ttl(&env);
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage()
             .persistent()
@@ -67,6 +68,7 @@ impl ZkEligibilityVerifier {
 
     /// Check eligibility by delegating to the configured zk-eligibility contract.
     pub fn check_eligibility(env: Env, subject: Address) -> bool {
+        ttl_config::extend_instance_ttl(&env);
         let zk_contract: Address = match env
             .storage()
             .persistent()
@@ -91,6 +93,7 @@ impl ZkEligibilityVerifier {
         admin: Address,
         zk_eligibility_contract: Address,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         admin.require_auth();
         let stored_admin: Address = env
             .storage()

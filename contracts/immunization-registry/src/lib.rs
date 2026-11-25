@@ -77,6 +77,7 @@ impl ImmunizationRegistry {
     /// Runs atomically as part of contract creation and cannot be called again,
     /// so an attacker cannot front-run deployment and choose the regulator.
     pub fn __constructor(env: Env, regulator: Address, provider_registry: Address) {
+        ttl_config::extend_instance_ttl(&env);
         env.storage().instance().set(&DataKey::Regulator, &regulator);
         env.storage().instance().set(&DataKey::ProviderRegistry, &provider_registry);
     }
@@ -338,6 +339,7 @@ impl ImmunizationRegistry {
         severity: Symbol,
         onset_date: u64,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         reporter.require_auth();
 
         let record: VaccineRecord = env
