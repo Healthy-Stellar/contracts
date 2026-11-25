@@ -31,12 +31,58 @@ pub struct DentalChart {
     pub tooth_notation_system: Symbol,
 }
 
+/// Tooth surface a condition applies to. `WholeTooth` is used for findings
+/// that are not surface-specific (missing, implant, crown, ...).
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ToothSurface {
+    WholeTooth,
+    Occlusal,
+    Incisal,
+    Mesial,
+    Distal,
+    Buccal,
+    Facial,
+    Lingual,
+    Palatal,
+}
+
+/// Allow-listed tooth conditions.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ToothConditionKind {
+    Caries,
+    Filling,
+    Crown,
+    Missing,
+    Implant,
+    RootCanal,
+    Fracture,
+    Sealant,
+    Bridge,
+    Veneer,
+}
+
+/// Periodontal probing sites.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum PerioSite {
+    MesioBuccal,
+    Buccal,
+    DistoBuccal,
+    MesioLingual,
+    Lingual,
+    DistoLingual,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ToothCondition {
-    pub surface: Option<Symbol>,
-    pub condition: Symbol,
+    pub surface: ToothSurface,
+    pub condition: ToothConditionKind,
     pub condition_details: Option<String>,
+    pub recorded_by: Address,
+    pub recorded_at: u64,
 }
 
 #[contracttype]
@@ -106,8 +152,8 @@ pub struct OrthoAdjustment {
 pub enum DataKey {
     ChartCount,
     Chart(u64),                 // chart_id
-    ToothCond(u64, String),     // chart_id, tooth_number
-    Perio(u64, String, Symbol), // chart_id, tooth_number, site
+    ToothCond(u64, String, ToothSurface), // chart_id, tooth_number, surface
+    Perio(u64, String, PerioSite),        // chart_id, tooth_number, site
     PlanCount,
     Plan(u64), // treatment_plan_id
     AppointmentCount,
@@ -164,4 +210,8 @@ pub enum Error {
     InvalidScheduledDate = 4,
     /// procedure_date / image_date must not be in the future
     InvalidPastDate = 5,
+    /// tooth_notation_system is not one of universal, palmer, fdi
+    InvalidNotationSystem = 6,
+    /// tooth_number is not valid for the chart's notation system
+    InvalidToothNumber = 7,
 }

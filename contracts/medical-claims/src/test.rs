@@ -20,7 +20,7 @@ impl MockAccessControl {
         _env: Env,
         _subject: Address,
         _grantee: Address,
-        _purpose_code: String,
+        _purpose_code: ConsentPurpose,
         _required_scope: u32,
     ) {
     }
@@ -689,7 +689,7 @@ fn test_get_unreconciled_claims() {
         &2000,
     );
 
-    let unreconciled = client.get_unreconciled_claims(&insurer);
+    let (unreconciled, _) = client.get_unreconciled_claims(&insurer, &0, &10);
     assert!(unreconciled.len() > 0);
     assert!(unreconciled.contains(&claim_id));
 }

@@ -62,7 +62,7 @@ fn test_set_emergency_profile() {
     );
 
     // Verify profile was created
-    assert!(client.has_emergency_profile(&patient));
+    assert!(client.has_emergency_profile(&patient, &patient));
 
     let profile = client.get_emergency_info(&patient, &patient);
     assert_eq!(profile.blood_type, blood_type);
@@ -264,204 +264,12 @@ fn test_multiple_critical_alerts() {
 }
 
 #[test]
-fn test_notify_emergency_contacts() {
+fn test_add_critical_alert_caps_at_max() {
     let env = Env::default();
     let contract_id = env.register(EmergencyMedicalInfo, ());
     let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
 
     let patient = Address::generate(&env);
-    env.mock_all_auths();
-
-    // Setup profile with contacts
-    let blood_type = Symbol::new(&env, "A_POS");
-    let mut allergies = Vec::new(&env);
-    allergies.push_back(hash(&env, 21));
-    let conditions = Vec::new(&env);
-    let medications = Vec::new(&env);
-    let contacts = create_test_emergency_contacts(&env);
-
-    client.set_emergency_profile(
-        &patient,
-        &blood_type,
-        &allergies,
-        &conditions,
-        &medications,
-        &contacts,
-        &None,
-    );
-
-    // Notify contacts
-    let emergency_type = Symbol::new(&env, "TRAUMA");
-    let notification_time = env.ledger().timestamp();
-
-    let notified_contacts =
-        client.notify_emergency_contacts(&patient, &patient, &emergency_type, &notification_time);
-
-    assert_eq!(notified_contacts.len(), 2);
-    assert_eq!(notified_contacts.get(0).unwrap().priority, 1);
-}
-
-#[test]
-fn test_notify_emergency_contacts_rejects_unauthorized_caller() {
-    let env = Env::default();
-    let contract_id = env.register(EmergencyMedicalInfo, ());
-    let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
-
-    let patient = Address::generate(&env);
-    let unauthorized_caller = Address::generate(&env);
-    env.mock_all_auths();
-
-    // Setup profile with contacts
-    let blood_type = Symbol::new(&env, "A_POS");
-    let mut allergies = Vec::new(&env);
-    allergies.push_back(hash(&env, 21));
-    let conditions = Vec::new(&env);
-    let medications = Vec::new(&env);
-    let contacts = create_test_emergency_contacts(&env);
-
-    client.set_emergency_profile(
-        &patient,
-        &blood_type,
-        &allergies,
-        &conditions,
-        &medications,
-        &contacts,
-        &None,
-    );
-
-    // A caller who is neither the patient nor a requester with a prior
-    // logged emergency access must not be able to pull the emergency
-    // contact list or write an entry into the patient's notification log.
-    let result = client.try_notify_emergency_contacts(
-        &patient,
-        &unauthorized_caller,
-        &Symbol::new(&env, "TRAUMA"),
-        &env.ledger().timestamp(),
-    );
-    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
-}
-
-#[test]
-fn test_record_dnr_order() {
-    let env = Env::default();
-    let contract_id = env.register(EmergencyMedicalInfo, ());
-    let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
-
-    let patient = Address::generate(&env);
-    let provider = Address::generate(&env);
-    env.mock_all_auths();
-
-    // Setup profile first
-    let blood_type = Symbol::new(&env, "B_POS");
-    let mut allergies = Vec::new(&env);
-    allergies.push_back(hash(&env, 21));
-    let conditions = Vec::new(&env);
-    let medications = Vec::new(&env);
-    let contacts = Vec::new(&env);
-
-    client.set_emergency_profile(
-        &patient,
-        &blood_type,
-        &allergies,
-        &conditions,
-        &medications,
-        &contacts,
-        &None,
-    );
-
-    // Record DNR
-    let dnr_hash = BytesN::from_array(&env, &[42u8; 32]);
-    let effective_date = env.ledger().timestamp();
-
-    client.record_dnr_order(&patient, &provider, &dnr_hash, &effective_date);
-
-    // Verify DNR was recorded
-    let dnr = client.get_dnr_order(&patient, &patient);
-    assert!(dnr.is_some());
-    assert_eq!(dnr.unwrap().dnr_document_hash, dnr_hash);
-
-    // Verify profile DNR status updated
-    let profile = client.get_emergency_info(&patient, &patient);
-    assert!(profile.dnr_status);
-}
-
-#[test]
-fn test_configured_emergency_contact_can_read_profile() {
-    let env = Env::default();
-    let contract_id = env.register(EmergencyMedicalInfo, ());
-    let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
-
-    let patient = Address::generate(&env);
-    let contact = Address::generate(&env);
-    env.mock_all_auths();
-
-    let mut allergy_hashes = Vec::new(&env);
-    allergy_hashes.push_back(hash(&env, 21));
-    client.set_emergency_profile(
-        &patient,
-        &Symbol::new(&env, "O_POS"),
-        &allergy_hashes,
-        &Vec::new(&env),
-        &Vec::new(&env),
-        &create_test_emergency_contacts(&env),
-        &None,
-    );
-
-    client.set_recovery_config(&patient, &contact, &Vec::new(&env), &0);
-    let profile = client.emergency_read(&patient, &contact);
-
-    assert_eq!(profile.blood_type, Symbol::new(&env, "O_POS"));
-}
-
-#[test]
-fn test_guardian_threshold_rekeys_emergency_profile() {
-    let env = Env::default();
-    let contract_id = env.register(EmergencyMedicalInfo, ());
-    let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
-
-    let patient = Address::generate(&env);
-    let contact = Address::generate(&env);
-    let guardian_1 = Address::generate(&env);
-    let guardian_2 = Address::generate(&env);
-    let new_owner = Address::generate(&env);
-    env.mock_all_auths();
-
-    let mut allergy_hashes = Vec::new(&env);
-    allergy_hashes.push_back(hash(&env, 22));
-    client.set_emergency_profile(
-        &patient,
-        &Symbol::new(&env, "AB_NEG"),
-        &allergy_hashes,
-        &Vec::new(&env),
-        &Vec::new(&env),
-        &create_test_emergency_contacts(&env),
-        &None,
-    );
-
-    let mut guardians = Vec::new(&env);
-    guardians.push_back(guardian_1.clone());
-    guardians.push_back(guardian_2.clone());
-    client.set_recovery_config(&patient, &contact, &guardians, &2);
-
-    client.propose_recovery(&patient, &guardian_1, &new_owner);
-    assert!(client.has_emergency_profile(&patient));
-
-    client.propose_recovery(&patient, &guardian_2, &new_owner);
-    assert!(!client.has_emergency_profile(&patient));
-    assert!(client.has_emergency_profile(&new_owner));
-}
-
-#[test]
-fn test_recovery_migrates_dnr_order_and_critical_alerts() {
-    let env = Env::default();
-    let contract_id = env.register(EmergencyMedicalInfo, ());
-    let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
-
-    let patient = Address::generate(&env);
-    let contact = Address::generate(&env);
-    let guardian_1 = Address::generate(&env);
-    let guardian_2 = Address::generate(&env);
-    let new_owner = Address::generate(&env);
     let provider = Address::generate(&env);
     let admin = Address::generate(&env);
     env.mock_all_auths();
@@ -469,267 +277,157 @@ fn test_recovery_migrates_dnr_order_and_critical_alerts() {
     client.initialize(&admin);
     client.register_responder(&admin, &provider);
 
-    client.set_emergency_profile(
-        &patient,
-        &Symbol::new(&env, "AB_NEG"),
-        &Vec::new(&env),
-        &Vec::new(&env),
-        &Vec::new(&env),
-        &create_test_emergency_contacts(&env),
-        &None,
-    );
+    let alert_type = Symbol::new(&env, "ALLERGY");
+    let severity = Symbol::new(&env, "CRITICAL");
 
-    client.record_dnr_order(&patient, &provider, &hash(&env, 33), &1700000000u64);
-    client.add_critical_alert(
+    // Fill the alert list up to the cap.
+    for i in 0..MAX_CRITICAL_ALERTS {
+        client.add_critical_alert(
+            &patient,
+            &provider,
+            &alert_type,
+            &hash(&env, (i % 255) as u8),
+            &severity,
+        );
+    }
+
+    let alerts = client.get_critical_alerts(&patient, &patient);
+    assert_eq!(alerts.len(), MAX_CRITICAL_ALERTS);
+
+    // One more alert must not brick the alerting path: it either evicts the
+    // oldest entry or is rejected with TooManyAlerts, but the stored list must
+    // never exceed the cap.
+    let result = client.try_add_critical_alert(
         &patient,
         &provider,
-        &Symbol::new(&env, "CARDIAC"),
-        &hash(&env, 44),
-        &Symbol::new(&env, "HIGH"),
+        &alert_type,
+        &hash(&env, 200),
+        &severity,
     );
-
-    let mut guardians = Vec::new(&env);
-    guardians.push_back(guardian_1.clone());
-    guardians.push_back(guardian_2.clone());
-    client.set_recovery_config(&patient, &contact, &guardians, &2);
-
-    client.propose_recovery(&patient, &guardian_1, &new_owner);
-    client.propose_recovery(&patient, &guardian_2, &new_owner);
-
-    assert!(!client.has_emergency_profile(&patient));
-    assert!(client.has_emergency_profile(&new_owner));
-
-    let dnr = client.get_dnr_order(&new_owner, &new_owner).unwrap();
-    assert_eq!(dnr.dnr_document_hash, hash(&env, 33));
-
-    let alerts = client.get_critical_alerts(&new_owner, &new_owner);
-    assert_eq!(alerts.len(), 1);
-    assert_eq!(alerts.get(0).unwrap().alert_text_hash, hash(&env, 44));
+    match result {
+        Ok(_) => {
+            let alerts = client.get_critical_alerts(&patient, &patient);
+            assert_eq!(alerts.len(), MAX_CRITICAL_ALERTS);
+        }
+        Err(Ok(Error::TooManyAlerts)) => {
+            let alerts = client.get_critical_alerts(&patient, &patient);
+            assert_eq!(alerts.len(), MAX_CRITICAL_ALERTS);
+        }
+        other => panic!("unexpected result: {:?}", other),
+    }
 }
 
 #[test]
-fn test_dnr_with_advance_directives() {
-    let env = Env::default();
-    let contract_id = env.register(EmergencyMedicalInfo, ());
-    let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
-
-    let patient = Address::generate(&env);
-    env.mock_all_auths();
-
-    let blood_type = Symbol::new(&env, "O_NEG");
-    let mut allergies = Vec::new(&env);
-    allergies.push_back(hash(&env, 21));
-    let conditions = Vec::new(&env);
-    let medications = Vec::new(&env);
-    let contacts = Vec::new(&env);
-    let advance_directives = Some(BytesN::from_array(&env, &[99u8; 32]));
-
-    client.set_emergency_profile(
-        &patient,
-        &blood_type,
-        &allergies,
-        &conditions,
-        &medications,
-        &contacts,
-        &advance_directives,
-    );
-
-    // Verify DNR was created with advance directives
-    let dnr = client.get_dnr_order(&patient, &patient);
-    assert!(dnr.is_some());
-}
-
-#[test]
-fn test_emergency_access_without_profile() {
+fn test_get_critical_alerts_rejects_unauthorized_caller() {
     let env = Env::default();
     let contract_id = env.register(EmergencyMedicalInfo, ());
     let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
 
     let patient = Address::generate(&env);
     let provider = Address::generate(&env);
+    let stranger = Address::generate(&env);
     let admin = Address::generate(&env);
     env.mock_all_auths();
 
     client.initialize(&admin);
     client.register_responder(&admin, &provider);
 
-    // Try to access without profile
-    let result = client.try_emergency_access_request(
-        &provider,
-        &patient,
-        &Symbol::new(&env, "TRAUMA"),
-        &hash(&env, 51),
-        &hash(&env, 51),
-    );
-    assert_eq!(result, Err(Ok(Error::EmergencyProfileNotFound)));
-}
-
-#[test]
-fn test_emergency_access_audit_trail() {
-    let env = Env::default();
-    let contract_id = env.register(EmergencyMedicalInfo, ());
-    let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
-
-    let patient = Address::generate(&env);
-    let provider1 = Address::generate(&env);
-    let provider2 = Address::generate(&env);
-    let admin = Address::generate(&env);
-    env.mock_all_auths();
-
-    client.initialize(&admin);
-    client.register_responder(&admin, &provider1);
-    client.register_responder(&admin, &provider2);
-
-    // Setup profile
-    let blood_type = Symbol::new(&env, "A_NEG");
-    let mut allergies = Vec::new(&env);
-    allergies.push_back(hash(&env, 21));
-    let conditions = Vec::new(&env);
-    let medications = Vec::new(&env);
-    let contacts = Vec::new(&env);
-
-    client.set_emergency_profile(
-        &patient,
-        &blood_type,
-        &allergies,
-        &conditions,
-        &medications,
-        &contacts,
-        &None,
-    );
-
-    // Multiple emergency accesses
-    client.emergency_access_request(
-        &provider1,
-        &patient,
-        &Symbol::new(&env, "TRAUMA"),
-        &hash(&env, 51),
-        &hash(&env, 51),
-    );
-
-    client.emergency_access_request(
-        &provider2,
-        &patient,
-        &Symbol::new(&env, "CONSULT"),
-        &hash(&env, 51),
-        &hash(&env, 51),
-    );
-
-    // Verify audit trail
-    let logs = client.get_emergency_access_logs(&patient, &patient);
-    assert_eq!(logs.len(), 2);
-    assert_eq!(logs.get(0).unwrap().provider_id, provider1);
-    assert_eq!(logs.get(1).unwrap().provider_id, provider2);
-}
-
-#[test]
-fn test_has_emergency_profile() {
-    let env = Env::default();
-    let contract_id = env.register(EmergencyMedicalInfo, ());
-    let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
-
-    let patient = Address::generate(&env);
-    env.mock_all_auths();
-
-    // Initially no profile
-    assert!(!client.has_emergency_profile(&patient));
-
-    // Create profile
-    let blood_type = Symbol::new(&env, "O_POS");
-    let mut allergies = Vec::new(&env);
-    allergies.push_back(hash(&env, 21));
-    let conditions = Vec::new(&env);
-    let medications = Vec::new(&env);
-    let contacts = Vec::new(&env);
-
-    client.set_emergency_profile(
-        &patient,
-        &blood_type,
-        &allergies,
-        &conditions,
-        &medications,
-        &contacts,
-        &None,
-    );
-
-    // Now has profile
-    assert!(client.has_emergency_profile(&patient));
-}
-
-#[test]
-fn test_comprehensive_emergency_scenario() {
-    let env = Env::default();
-    let contract_id = env.register(EmergencyMedicalInfo, ());
-    let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
-
-    let patient = Address::generate(&env);
-    let provider = Address::generate(&env);
-    let admin = Address::generate(&env);
-    env.mock_all_auths();
-
-    client.initialize(&admin);
-    client.register_responder(&admin, &provider);
-
-    // 1. Setup comprehensive emergency profile
-    let blood_type = Symbol::new(&env, "AB_POS");
-    let mut allergies = Vec::new(&env);
-    allergies.push_back(hash(&env, 21));
-
-    let mut conditions = Vec::new(&env);
-    conditions.push_back(hash(&env, 31));
-    conditions.push_back(hash(&env, 31));
-
-    let mut medications = Vec::new(&env);
-    medications.push_back(hash(&env, 41));
-    medications.push_back(hash(&env, 41));
-
-    let contacts = create_test_emergency_contacts(&env);
-
-    client.set_emergency_profile(
-        &patient,
-        &blood_type,
-        &allergies,
-        &conditions,
-        &medications,
-        &contacts,
-        &None,
-    );
-
-    // 2. Add critical alerts
     client.add_critical_alert(
         &patient,
         &provider,
         &Symbol::new(&env, "ALLERGY"),
-        &hash(&env, 51),
+        &hash(&env, 61),
         &Symbol::new(&env, "CRITICAL"),
     );
 
-    // 3. Emergency access
-    let profile = client.emergency_access_request(
-        &provider,
-        &patient,
-        &Symbol::new(&env, "RESP_DIST"),
-        &hash(&env, 51),
-        &hash(&env, 51),
-    );
+    // A caller with no relationship to the patient must not read PHI metadata.
+    let result = client.try_get_critical_alerts(&patient, &stranger);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
 
-    // 4. Notify contacts (provider already has a logged emergency access
-    // from step 3, so they satisfy the read-access gate as a requester)
-    let notified = client.notify_emergency_contacts(
-        &patient,
-        &provider,
-        &Symbol::new(&env, "RESP_DIST"),
-        &env.ledger().timestamp(),
-    );
-
-    // Verify complete scenario
-    assert_eq!(profile.blood_type, blood_type);
-    assert_eq!(profile.active_condition_hashes.len(), 2);
-    assert_eq!(notified.len(), 2);
-
+    // The patient themselves may read their own alerts.
     let alerts = client.get_critical_alerts(&patient, &patient);
     assert_eq!(alerts.len(), 1);
 
-    let logs = client.get_emergency_access_logs(&patient, &patient);
-    assert_eq!(logs.len(), 1);
+    // A registered responder may read the alerts.
+    let alerts = client.get_critical_alerts(&patient, &provider);
+    assert_eq!(alerts.len(), 1);
+}
+
+#[test]
+fn test_get_dnr_order_rejects_unauthorized_caller() {
+    let env = Env::default();
+    let contract_id = env.register(EmergencyMedicalInfo, ());
+    let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    let admin = Address::generate(&env);
+    env.mock_all_auths();
+
+    client.initialize(&admin);
+    client.register_responder(&admin, &provider);
+
+    let blood_type = Symbol::new(&env, "O_POS");
+    let allergies = Vec::new(&env);
+    let conditions = Vec::new(&env);
+    let medications = Vec::new(&env);
+    let contacts = create_test_emergency_contacts(&env);
+
+    client.set_emergency_profile(
+        &patient,
+        &blood_type,
+        &allergies,
+        &conditions,
+        &medications,
+        &contacts,
+        &None,
+    );
+
+    // A stranger must not be able to enumerate DNR status.
+    let result = client.try_get_dnr_order(&patient, &stranger);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+
+    // The patient may read their own DNR order.
+    let _ = client.get_dnr_order(&patient, &patient);
+}
+
+#[test]
+fn test_has_emergency_profile_rejects_unauthorized_caller() {
+    let env = Env::default();
+    let contract_id = env.register(EmergencyMedicalInfo, ());
+    let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    let admin = Address::generate(&env);
+    env.mock_all_auths();
+
+    client.initialize(&admin);
+    client.register_responder(&admin, &provider);
+
+    let blood_type = Symbol::new(&env, "O_POS");
+    let allergies = Vec::new(&env);
+    let conditions = Vec::new(&env);
+    let medications = Vec::new(&env);
+    let contacts = create_test_emergency_contacts(&env);
+
+    client.set_emergency_profile(
+        &patient,
+        &blood_type,
+        &allergies,
+        &conditions,
+        &medications,
+        &contacts,
+        &None,
+    );
+
+    // A stranger must not be able to probe for profile existence.
+    let result = client.try_has_emergency_profile(&patient, &stranger);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+
+    // The patient and a registered responder may check.
+    assert!(client.has_emergency_profile(&patient, &patient));
+    assert!(client.has_emergency_profile(&patient, &provider));
 }

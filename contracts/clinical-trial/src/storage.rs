@@ -1,4 +1,4 @@
-use shared_contracts::safe_increment;
+use shared::counters::safe_increment;
 use soroban_sdk::{Address, BytesN, Env, Vec};
 
 use crate::{

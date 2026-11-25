@@ -144,6 +144,7 @@ pub struct ProviderRegistry;
 #[contractimpl]
 impl ProviderRegistry {
     pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_not_initialized(&env)?;
         validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
         admin.require_auth();
@@ -161,6 +162,7 @@ impl ProviderRegistry {
         authority: Address,
         trusted: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
         validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&authority).map_err(|_| Error::InvalidAddress)?;
@@ -190,6 +192,7 @@ impl ProviderRegistry {
         provider: Address,
         active: bool,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
         validate_nonzero_address(&caller).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
@@ -247,6 +250,7 @@ impl ProviderRegistry {
         expires_at: u64,
         revocation_reference: BytesN<32>,
     ) -> Result<(), Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
         validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
@@ -289,6 +293,7 @@ impl ProviderRegistry {
         admin: Address,
         entries: Vec<BatchProviderEntry>,
     ) -> Result<Vec<BatchEntryStatus>, Error> {
+        ttl_config::extend_instance_ttl(&env);
         Self::assert_initialized(&env)?;
         Self::assert_admin(&env, &admin)?;
 
