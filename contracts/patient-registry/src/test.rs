@@ -3141,7 +3141,7 @@ fn test_validate_export_ticket_rejects_tampered_ticket() {
 
     let ticket = client.request_data_export(&patient);
     let tampered = ExportTicket {
-        signature: BytesN::from_array(&env, &[0xabu8; 32]),
+        nonce: BytesN::from_array(&env, &[0xabu8; 32]),
         ..ticket
     };
 
