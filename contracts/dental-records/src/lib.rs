@@ -409,32 +409,69 @@ impl DentalRecordsContract {
         Ok(())
     }
 
-    pub fn record_radiograph(
+    /// Record a radiograph for a patient.
+    ///
+    /// Requires the treating dentist's auth AND a patient relationship (the dentist must be
+    /// the dentist on one of the patient's dental charts). Image references are content
+    /// hashes/CIDs validated by the shared CID validator. TTL is bumped on write.
+    pub fn add_radiograph(
         env: Env,
         patient_id: Address,
         dentist_id: Address,
-        radiograph_type: Symbol, // periapical, bitewing, panoramic, cbct
+        radiograph_type: Symbol,
         taken_date: u64,
-        findings: String,
-        image_hash: BytesN<32>,
+        image_cids: Vec<String>,
+        findings_hash: BytesN<32>,
     ) -> Result<u64, Error> {
         ttl_config::extend_instance_ttl(&env);
         dentist_id.require_auth();
 
+        // #215 – taken_date records when the radiograph was captured; it must not be future
+        temporal::not_future(&env, taken_date).map_err(|_| Error::InvalidPastDate)?;
+
+        // Validate every image reference is a well-formed CID/content hash.
+        for cid in image_cids.iter() {
+            shared::cid::validate_cid(&cid).map_err(|_| Error::InvalidCid)?;
+        }
+
+        // Patient relationship check: the dentist must be assigned to one of the patient's charts.
+        if !Self::has_patient_relationship(&env, &patient_id, &dentist_id) {
+            return Err(Error::Unauthorized);
+        }
+
         let count = safe_increment(&env, &DataKey::RadiographCount);
 
         let radiograph = Radiograph {
-            patient_id,
+            patient_id: patient_id.clone(),
             dentist_id,
             radiograph_type,
             taken_date,
-            findings,
-            image_hash,
+            image_cids,
+            findings_hash,
         };
 
         env.storage()
             .persistent()
             .set(&DataKey::Radiograph(count), &radiograph);
+
+        // Per-patient index, bounded to MAX_RADIOGRAPHS_PER_PATIENT.
+        let mut index: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RadiographIndex(patient_id.clone()))
+            .unwrap_or(Vec::new(&env));
+        if index.len() >= MAX_RADIOGRAPHS_PER_PATIENT {
+            return Err(Error::IndexFull);
+        }
+        index.push_back(count);
+        env.storage()
+            .persistent()
+            .set(&DataKey::RadiographIndex(patient_id), &index);
+
+        // Bump TTL on write so the record does not expire.
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Radiograph(count), RADIOGRAPH_TTL, RADIOGRAPH_TTL);
 
         RadiographRecorded {
             version: EVENT_VERSION,
@@ -443,5 +480,77 @@ impl DentalRecordsContract {
         .publish(&env);
 
         Ok(count)
+    }
+
+    /// Read a radiograph. Requires the patient's auth or the treating dentist's auth.
+    pub fn get_radiograph(
+        env: Env,
+        caller: Address,
+        radiograph_id: u64,
+    ) -> Result<Radiograph, Error> {
+        caller.require_auth();
+
+        let radiograph: Radiograph = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Radiograph(radiograph_id))
+            .ok_or(Error::NotFound)?;
+
+        if caller != radiograph.patient_id && caller != radiograph.dentist_id {
+            return Err(Error::Unauthorized);
+        }
+
+        Ok(radiograph)
+    }
+
+    /// Paginated read of a patient's radiograph index.
+    pub fn get_patient_radiographs(
+        env: Env,
+        caller: Address,
+        patient_id: Address,
+        start: u32,
+        limit: u32,
+    ) -> Result<Vec<u64>, Error> {
+        caller.require_auth();
+        if caller != patient_id && !Self::has_patient_relationship(&env, &patient_id, &caller) {
+            return Err(Error::Unauthorized);
+        }
+
+        let index: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RadiographIndex(patient_id))
+            .unwrap_or(Vec::new(&env));
+
+        let mut page = Vec::new(&env);
+        let end = core::cmp::min(start.saturating_add(limit), index.len());
+        let mut i = start;
+        while i < end {
+            page.push_back(index.get(i).unwrap());
+            i += 1;
+        }
+        Ok(page)
+    }
+
+    fn has_patient_relationship(env: &Env, patient_id: &Address, dentist_id: &Address) -> bool {
+        let chart_count: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ChartCount)
+            .unwrap_or(0);
+        let mut i = 1;
+        while i <= chart_count {
+            if let Some(chart) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, DentalChart>(&DataKey::Chart(i))
+            {
+                if &chart.patient_id == patient_id && &chart.dentist_id == dentist_id {
+                    return true;
+                }
+            }
+            i += 1;
+        }
+        false
     }
 }
